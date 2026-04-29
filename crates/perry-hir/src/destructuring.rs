@@ -1453,15 +1453,27 @@ pub(crate) fn lower_var_decl_with_destructuring(
                             }
                             // Issue #237: Web Streams API constructors.
                             "ReadableStream" => {
-                                ctx.register_native_instance(name.clone(), "readable_stream".to_string(), "ReadableStream".to_string());
+                                ctx.register_native_instance(
+                                    name.clone(),
+                                    "readable_stream".to_string(),
+                                    "ReadableStream".to_string(),
+                                );
                                 ctx.uses_fetch = true;
                             }
                             "WritableStream" => {
-                                ctx.register_native_instance(name.clone(), "writable_stream".to_string(), "WritableStream".to_string());
+                                ctx.register_native_instance(
+                                    name.clone(),
+                                    "writable_stream".to_string(),
+                                    "WritableStream".to_string(),
+                                );
                                 ctx.uses_fetch = true;
                             }
                             "TransformStream" => {
-                                ctx.register_native_instance(name.clone(), "transform_stream".to_string(), "TransformStream".to_string());
+                                ctx.register_native_instance(
+                                    name.clone(),
+                                    "transform_stream".to_string(),
+                                    "TransformStream".to_string(),
+                                );
                                 ctx.uses_fetch = true;
                             }
                             _ => {}
@@ -1591,13 +1603,25 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                         .map(|(_, c)| c.to_string());
                                     if let Some(c) = class_owned {
                                         if m == "stream" && c == "Blob" {
-                                            ctx.register_native_instance(name.clone(), "readable_stream".to_string(), "ReadableStream".to_string());
+                                            ctx.register_native_instance(
+                                                name.clone(),
+                                                "readable_stream".to_string(),
+                                                "ReadableStream".to_string(),
+                                            );
                                         }
                                         if m == "getReader" && c == "ReadableStream" {
-                                            ctx.register_native_instance(name.clone(), "readable_stream_reader".to_string(), "ReadableStreamDefaultReader".to_string());
+                                            ctx.register_native_instance(
+                                                name.clone(),
+                                                "readable_stream_reader".to_string(),
+                                                "ReadableStreamDefaultReader".to_string(),
+                                            );
                                         }
                                         if m == "getWriter" && c == "WritableStream" {
-                                            ctx.register_native_instance(name.clone(), "writable_stream_writer".to_string(), "WritableStreamDefaultWriter".to_string());
+                                            ctx.register_native_instance(
+                                                name.clone(),
+                                                "writable_stream_writer".to_string(),
+                                                "WritableStreamDefaultWriter".to_string(),
+                                            );
                                         }
                                     }
                                 }
@@ -1618,13 +1642,25 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                 .map(|(_, c)| c.to_string());
                             if let Some(c) = class_owned {
                                 if p == "body" && c == "Response" {
-                                    ctx.register_native_instance(name.clone(), "readable_stream".to_string(), "ReadableStream".to_string());
+                                    ctx.register_native_instance(
+                                        name.clone(),
+                                        "readable_stream".to_string(),
+                                        "ReadableStream".to_string(),
+                                    );
                                 }
                                 if p == "readable" && c == "TransformStream" {
-                                    ctx.register_native_instance(name.clone(), "readable_stream".to_string(), "ReadableStream".to_string());
+                                    ctx.register_native_instance(
+                                        name.clone(),
+                                        "readable_stream".to_string(),
+                                        "ReadableStream".to_string(),
+                                    );
                                 }
                                 if p == "writable" && c == "TransformStream" {
-                                    ctx.register_native_instance(name.clone(), "writable_stream".to_string(), "WritableStream".to_string());
+                                    ctx.register_native_instance(
+                                        name.clone(),
+                                        "writable_stream".to_string(),
+                                        "WritableStream".to_string(),
+                                    );
                                 }
                             }
                         }
@@ -1643,7 +1679,11 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                             .lookup_native_instance(obj_ident.sym.as_ref())
                                             .map(|(_, c)| c.to_string());
                                         if class_owned.as_deref() == Some("ReadableStream") {
-                                            ctx.register_native_instance(name.clone(), "readable_stream".to_string(), "ReadableStream".to_string());
+                                            ctx.register_native_instance(
+                                                name.clone(),
+                                                "readable_stream".to_string(),
+                                                "ReadableStream".to_string(),
+                                            );
                                         }
                                     }
                                 }

@@ -73,7 +73,8 @@ pub extern "C" fn js_ethers_wallet_create_random() -> *mut ObjectHeader {
         let obj = js_object_alloc(0, 2);
 
         let key_addr_str = js_string_from_bytes(b"address".as_ptr(), 7);
-        let val_addr_str = js_string_from_bytes(addr_checksummed.as_ptr(), addr_checksummed.len() as u32);
+        let val_addr_str =
+            js_string_from_bytes(addr_checksummed.as_ptr(), addr_checksummed.len() as u32);
         js_object_set_field_by_name(obj, key_addr_str, nanbox_str(val_addr_str));
 
         let key_pk_str = js_string_from_bytes(b"privateKey".as_ptr(), 10);

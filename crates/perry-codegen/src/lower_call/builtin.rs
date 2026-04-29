@@ -374,10 +374,18 @@ pub(super) fn lower_builtin_new(
                 if let Some(props) = extract_options_fields(ctx, &args[0]) {
                     for (k, vexpr) in &props {
                         match k.as_str() {
-                            "start" => { start = lower_expr(ctx, vexpr)?; }
-                            "pull" => { pull = lower_expr(ctx, vexpr)?; }
-                            "cancel" => { cancel = lower_expr(ctx, vexpr)?; }
-                            _ => { let _ = lower_expr(ctx, vexpr)?; }
+                            "start" => {
+                                start = lower_expr(ctx, vexpr)?;
+                            }
+                            "pull" => {
+                                pull = lower_expr(ctx, vexpr)?;
+                            }
+                            "cancel" => {
+                                cancel = lower_expr(ctx, vexpr)?;
+                            }
+                            _ => {
+                                let _ = lower_expr(ctx, vexpr)?;
+                            }
                         }
                     }
                 } else {
@@ -387,14 +395,21 @@ pub(super) fn lower_builtin_new(
             if args.len() >= 2 {
                 if let Some(qprops) = extract_options_fields(ctx, &args[1]) {
                     for (k, vexpr) in &qprops {
-                        if k == "highWaterMark" { hwm = lower_expr(ctx, vexpr)?; }
+                        if k == "highWaterMark" {
+                            hwm = lower_expr(ctx, vexpr)?;
+                        }
                     }
                 }
             }
             let h = ctx.block().call(
                 DOUBLE,
                 "js_readable_stream_new",
-                &[(DOUBLE, &start), (DOUBLE, &pull), (DOUBLE, &cancel), (DOUBLE, &hwm)],
+                &[
+                    (DOUBLE, &start),
+                    (DOUBLE, &pull),
+                    (DOUBLE, &cancel),
+                    (DOUBLE, &hwm),
+                ],
             );
             Ok(Some(h))
         }
@@ -408,10 +423,18 @@ pub(super) fn lower_builtin_new(
                 if let Some(props) = extract_options_fields(ctx, &args[0]) {
                     for (k, vexpr) in &props {
                         match k.as_str() {
-                            "write" => { write = lower_expr(ctx, vexpr)?; }
-                            "close" => { close = lower_expr(ctx, vexpr)?; }
-                            "abort" => { abort = lower_expr(ctx, vexpr)?; }
-                            _ => { let _ = lower_expr(ctx, vexpr)?; }
+                            "write" => {
+                                write = lower_expr(ctx, vexpr)?;
+                            }
+                            "close" => {
+                                close = lower_expr(ctx, vexpr)?;
+                            }
+                            "abort" => {
+                                abort = lower_expr(ctx, vexpr)?;
+                            }
+                            _ => {
+                                let _ = lower_expr(ctx, vexpr)?;
+                            }
                         }
                     }
                 } else {
@@ -421,14 +444,21 @@ pub(super) fn lower_builtin_new(
             if args.len() >= 2 {
                 if let Some(qprops) = extract_options_fields(ctx, &args[1]) {
                     for (k, vexpr) in &qprops {
-                        if k == "highWaterMark" { hwm = lower_expr(ctx, vexpr)?; }
+                        if k == "highWaterMark" {
+                            hwm = lower_expr(ctx, vexpr)?;
+                        }
                     }
                 }
             }
             let h = ctx.block().call(
                 DOUBLE,
                 "js_writable_stream_new",
-                &[(DOUBLE, &write), (DOUBLE, &close), (DOUBLE, &abort), (DOUBLE, &hwm)],
+                &[
+                    (DOUBLE, &write),
+                    (DOUBLE, &close),
+                    (DOUBLE, &abort),
+                    (DOUBLE, &hwm),
+                ],
             );
             Ok(Some(h))
         }
@@ -441,9 +471,15 @@ pub(super) fn lower_builtin_new(
                 if let Some(props) = extract_options_fields(ctx, &args[0]) {
                     for (k, vexpr) in &props {
                         match k.as_str() {
-                            "transform" => { transform = lower_expr(ctx, vexpr)?; }
-                            "flush" => { flush = lower_expr(ctx, vexpr)?; }
-                            _ => { let _ = lower_expr(ctx, vexpr)?; }
+                            "transform" => {
+                                transform = lower_expr(ctx, vexpr)?;
+                            }
+                            "flush" => {
+                                flush = lower_expr(ctx, vexpr)?;
+                            }
+                            _ => {
+                                let _ = lower_expr(ctx, vexpr)?;
+                            }
                         }
                     }
                 } else {
@@ -453,7 +489,9 @@ pub(super) fn lower_builtin_new(
             if args.len() >= 2 {
                 if let Some(qprops) = extract_options_fields(ctx, &args[1]) {
                     for (k, vexpr) in &qprops {
-                        if k == "highWaterMark" { hwm = lower_expr(ctx, vexpr)?; }
+                        if k == "highWaterMark" {
+                            hwm = lower_expr(ctx, vexpr)?;
+                        }
                     }
                 }
             }

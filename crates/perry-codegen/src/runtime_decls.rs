@@ -962,24 +962,48 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_blob_stream", DOUBLE, &[DOUBLE]);
     module.declare_function("js_response_body", DOUBLE, &[DOUBLE]);
     // ReadableStream constructor + methods.
-    module.declare_function("js_readable_stream_new", DOUBLE, &[DOUBLE, DOUBLE, DOUBLE, DOUBLE]);
+    module.declare_function(
+        "js_readable_stream_new",
+        DOUBLE,
+        &[DOUBLE, DOUBLE, DOUBLE, DOUBLE],
+    );
     module.declare_function("js_readable_stream_get_reader", DOUBLE, &[DOUBLE]);
     module.declare_function("js_readable_stream_locked", DOUBLE, &[DOUBLE]);
     module.declare_function("js_readable_stream_cancel", I64, &[DOUBLE, DOUBLE]);
     module.declare_function("js_readable_stream_tee", DOUBLE, &[DOUBLE]);
     module.declare_function("js_readable_stream_pipe_to", I64, &[DOUBLE, DOUBLE]);
-    module.declare_function("js_readable_stream_pipe_through", DOUBLE, &[DOUBLE, DOUBLE, DOUBLE]);
-    module.declare_function("js_readable_stream_controller_enqueue", DOUBLE, &[DOUBLE, DOUBLE]);
+    module.declare_function(
+        "js_readable_stream_pipe_through",
+        DOUBLE,
+        &[DOUBLE, DOUBLE, DOUBLE],
+    );
+    module.declare_function(
+        "js_readable_stream_controller_enqueue",
+        DOUBLE,
+        &[DOUBLE, DOUBLE],
+    );
     module.declare_function("js_readable_stream_controller_close", DOUBLE, &[DOUBLE]);
-    module.declare_function("js_readable_stream_controller_error", DOUBLE, &[DOUBLE, DOUBLE]);
-    module.declare_function("js_readable_stream_controller_desired_size", DOUBLE, &[DOUBLE]);
+    module.declare_function(
+        "js_readable_stream_controller_error",
+        DOUBLE,
+        &[DOUBLE, DOUBLE],
+    );
+    module.declare_function(
+        "js_readable_stream_controller_desired_size",
+        DOUBLE,
+        &[DOUBLE],
+    );
     // ReadableStreamDefaultReader.
     module.declare_function("js_reader_read", I64, &[DOUBLE]);
     module.declare_function("js_reader_release_lock", DOUBLE, &[DOUBLE]);
     module.declare_function("js_reader_closed", I64, &[DOUBLE]);
     module.declare_function("js_reader_cancel", I64, &[DOUBLE, DOUBLE]);
     // WritableStream + Writer.
-    module.declare_function("js_writable_stream_new", DOUBLE, &[DOUBLE, DOUBLE, DOUBLE, DOUBLE]);
+    module.declare_function(
+        "js_writable_stream_new",
+        DOUBLE,
+        &[DOUBLE, DOUBLE, DOUBLE, DOUBLE],
+    );
     module.declare_function("js_writable_stream_get_writer", DOUBLE, &[DOUBLE]);
     module.declare_function("js_writable_stream_locked", DOUBLE, &[DOUBLE]);
     module.declare_function("js_writable_stream_close", I64, &[DOUBLE]);

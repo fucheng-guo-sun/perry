@@ -1365,14 +1365,22 @@ pub unsafe extern "C" fn js_blob_slice(
 /// unknown handle.
 #[doc(hidden)]
 pub fn blob_bytes_clone(blob_id: usize) -> Option<Vec<u8>> {
-    BLOB_REGISTRY.lock().unwrap().get(&blob_id).map(|b| b.body.clone())
+    BLOB_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&blob_id)
+        .map(|b| b.body.clone())
 }
 
 /// Clone the body bytes of the given fetch Response handle. Returns
 /// `None` for an unknown handle.
 #[doc(hidden)]
 pub fn response_bytes_clone(resp_id: usize) -> Option<Vec<u8>> {
-    FETCH_RESPONSES.lock().unwrap().get(&resp_id).map(|r| r.body.clone())
+    FETCH_RESPONSES
+        .lock()
+        .unwrap()
+        .get(&resp_id)
+        .map(|r| r.body.clone())
 }
 
 /// `blob.stream()` — returns a single-chunk ReadableStream handle (f64,

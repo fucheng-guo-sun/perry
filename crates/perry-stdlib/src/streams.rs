@@ -25,10 +25,9 @@
 //! site.
 
 use perry_runtime::{
-    js_array_alloc, js_array_push, js_object_alloc, js_object_set_field, js_object_set_keys,
-    js_string_from_bytes, js_promise_new, js_promise_resolve, js_promise_reject,
-    js_closure_call0, js_closure_call1, js_closure_call2,
-    JSValue, ClosureHeader, Promise,
+    js_array_alloc, js_array_push, js_closure_call0, js_closure_call1, js_closure_call2,
+    js_object_alloc, js_object_set_field, js_object_set_keys, js_promise_new, js_promise_reject,
+    js_promise_resolve, js_string_from_bytes, ClosureHeader, JSValue, Promise,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -487,12 +486,18 @@ pub unsafe extern "C" fn js_readable_stream_get_reader(stream_handle: f64) -> f6
 pub unsafe extern "C" fn js_readable_stream_locked(stream_handle: f64) -> f64 {
     let id = stream_handle as usize;
     let g = READABLE_STREAMS.lock().unwrap();
-    let locked = g.get(&id).map(|s| s.reader_handle.is_some()).unwrap_or(false);
+    let locked = g
+        .get(&id)
+        .map(|s| s.reader_handle.is_some())
+        .unwrap_or(false);
     f64::from_bits(if locked { TAG_TRUE } else { TAG_FALSE })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn js_readable_stream_cancel(stream_handle: f64, reason: f64) -> *mut Promise {
+pub unsafe extern "C" fn js_readable_stream_cancel(
+    stream_handle: f64,
+    reason: f64,
+) -> *mut Promise {
     let promise = js_promise_new();
     let id = stream_handle as usize;
     let cb = {
@@ -600,7 +605,10 @@ pub unsafe extern "C" fn js_readable_stream_controller_close(stream_handle: f64)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn js_readable_stream_controller_error(stream_handle: f64, reason: f64) -> f64 {
+pub unsafe extern "C" fn js_readable_stream_controller_error(
+    stream_handle: f64,
+    reason: f64,
+) -> f64 {
     let id = stream_handle as usize;
     let reason_bits = reason.to_bits();
     let reader_id = {
@@ -943,7 +951,10 @@ pub unsafe extern "C" fn js_writable_stream_get_writer(stream_handle: f64) -> f6
 pub unsafe extern "C" fn js_writable_stream_locked(stream_handle: f64) -> f64 {
     let id = stream_handle as usize;
     let g = WRITABLE_STREAMS.lock().unwrap();
-    let locked = g.get(&id).map(|s| s.writer_handle.is_some()).unwrap_or(false);
+    let locked = g
+        .get(&id)
+        .map(|s| s.writer_handle.is_some())
+        .unwrap_or(false);
     f64::from_bits(if locked { TAG_TRUE } else { TAG_FALSE })
 }
 
@@ -1186,10 +1197,7 @@ pub unsafe extern "C" fn js_transform_stream_new(
             flush_cb,
         },
     );
-    TRANSFORM_PAIRS
-        .lock()
-        .unwrap()
-        .insert(writable_id, id);
+    TRANSFORM_PAIRS.lock().unwrap().insert(writable_id, id);
     id as f64
 }
 
@@ -1239,7 +1247,11 @@ unsafe fn transform_write(writable_id: usize, chunk: f64) -> *mut Promise {
         }
     };
     if transform_cb != 0 && readable_id != 0 {
-        js_closure_call2(transform_cb as *const ClosureHeader, chunk, readable_id as f64);
+        js_closure_call2(
+            transform_cb as *const ClosureHeader,
+            chunk,
+            readable_id as f64,
+        );
     } else {
         // Identity transform — pass-through.
         js_readable_stream_controller_enqueue(readable_id as f64, chunk);
@@ -1284,9 +1296,7 @@ unsafe fn transform_close(writable_id: usize) -> *mut Promise {
 
 #[no_mangle]
 pub unsafe extern "C" fn js_streams_throw_byob_not_implemented() -> f64 {
-    let err = make_error_with_message(
-        "BYOB readers are not yet implemented (issue #237 followup)",
-    );
+    let err = make_error_with_message("BYOB readers are not yet implemented (issue #237 followup)");
     perry_runtime::exception::js_throw(f64::from_bits(err));
 }
 

@@ -3369,7 +3369,9 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                         ctx.lookup_native_instance(ident.sym.as_ref()),
                         Some((_, "ReadableStream"))
                     )
-                } else { false };
+                } else {
+                    false
+                };
 
                 if is_readable_stream {
                     let scope_mark = ctx.push_block_scope();
@@ -3377,7 +3379,8 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
 
                     // const __reader = stream.getReader();
                     let reader_id = ctx.fresh_local();
-                    ctx.locals.push((format!("__reader_{}", reader_id), reader_id, Type::Any));
+                    ctx.locals
+                        .push((format!("__reader_{}", reader_id), reader_id, Type::Any));
                     ctx.register_native_instance(
                         format!("__reader_{}", reader_id),
                         "readable_stream_reader".to_string(),
@@ -3399,14 +3402,17 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
 
                     // let __res = await __reader.read();
                     let res_id = ctx.fresh_local();
-                    ctx.locals.push((format!("__res_{}", res_id), res_id, Type::Any));
-                    let read_call = || Expr::Await(Box::new(Expr::NativeMethodCall {
-                        module: "readable_stream_reader".to_string(),
-                        class_name: Some("ReadableStreamDefaultReader".to_string()),
-                        object: Some(Box::new(Expr::LocalGet(reader_id))),
-                        method: "read".to_string(),
-                        args: vec![],
-                    }));
+                    ctx.locals
+                        .push((format!("__res_{}", res_id), res_id, Type::Any));
+                    let read_call = || {
+                        Expr::Await(Box::new(Expr::NativeMethodCall {
+                            module: "readable_stream_reader".to_string(),
+                            class_name: Some("ReadableStreamDefaultReader".to_string()),
+                            object: Some(Box::new(Expr::LocalGet(reader_id))),
+                            method: "read".to_string(),
+                            args: vec![],
+                        }))
+                    };
                     result.push(Stmt::Let {
                         id: res_id,
                         name: format!("__res_{}", res_id),
@@ -3419,9 +3425,15 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                         if let Some(decl) = var_decl.decls.first() {
                             if let ast::Pat::Ident(ident) = &decl.name {
                                 ident.id.sym.to_string()
-                            } else { "__chunk".to_string() }
-                        } else { "__chunk".to_string() }
-                    } else { "__chunk".to_string() };
+                            } else {
+                                "__chunk".to_string()
+                            }
+                        } else {
+                            "__chunk".to_string()
+                        }
+                    } else {
+                        "__chunk".to_string()
+                    };
                     let item_id = ctx.define_local(item_name.clone(), Type::Any);
 
                     let mut body_stmts: Vec<Stmt> = Vec::new();
@@ -3437,10 +3449,7 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                     });
                     let user_body = lower_body_stmt(ctx, &for_of_stmt.body)?;
                     body_stmts.extend(user_body);
-                    body_stmts.push(Stmt::Expr(Expr::LocalSet(
-                        res_id,
-                        Box::new(read_call()),
-                    )));
+                    body_stmts.push(Stmt::Expr(Expr::LocalSet(res_id, Box::new(read_call()))));
 
                     result.push(Stmt::While {
                         condition: Expr::Unary {

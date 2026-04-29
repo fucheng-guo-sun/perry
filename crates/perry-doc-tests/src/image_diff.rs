@@ -186,7 +186,10 @@ mod tests {
         solid(4, 4, 64, 128, 192).save(&actual_path).unwrap();
         solid(2, 2, 64, 128, 192).save(&baseline_path).unwrap();
         let outcome = diff(&actual_path, &baseline_path, 0.05).unwrap();
-        assert!(outcome.passed(), "2× retina capture should pass after downsampling");
+        assert!(
+            outcome.passed(),
+            "2× retina capture should pass after downsampling"
+        );
     }
 
     #[test]

@@ -3364,7 +3364,9 @@ pub(super) fn lower_fetch_native_method(
             // buffered body bytes. Property access lowers as a zero-arg
             // method call here, same as response.headers above.
             "body" => {
-                let h = ctx.block().call(DOUBLE, "js_response_body", &[(DOUBLE, &recv_handle)]);
+                let h = ctx
+                    .block()
+                    .call(DOUBLE, "js_response_body", &[(DOUBLE, &recv_handle)]);
                 return Ok(Some(h));
             }
             _ => return Ok(None),
@@ -3441,7 +3443,9 @@ pub(super) fn lower_fetch_native_method(
             // Issue #237: blob.stream() — returns ReadableStream over the
             // blob's bytes. Single-chunk; closes after one read.
             "stream" => {
-                let h = ctx.block().call(DOUBLE, "js_blob_stream", &[(DOUBLE, &recv_handle)]);
+                let h = ctx
+                    .block()
+                    .call(DOUBLE, "js_blob_stream", &[(DOUBLE, &recv_handle)]);
                 return Ok(Some(h));
             }
             _ => return Ok(None),
@@ -3460,7 +3464,11 @@ pub(super) fn lower_fetch_native_method(
         let recv_handle = lower_expr(ctx, recv)?;
         match method {
             "getReader" => {
-                let h = ctx.block().call(DOUBLE, "js_readable_stream_get_reader", &[(DOUBLE, &recv_handle)]);
+                let h = ctx.block().call(
+                    DOUBLE,
+                    "js_readable_stream_get_reader",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(h));
             }
             "cancel" => {
@@ -3470,11 +3478,17 @@ pub(super) fn lower_fetch_native_method(
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
                 let blk = ctx.block();
-                let promise = blk.call(I64, "js_readable_stream_cancel", &[(DOUBLE, &recv_handle), (DOUBLE, &reason)]);
+                let promise = blk.call(
+                    I64,
+                    "js_readable_stream_cancel",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &reason)],
+                );
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "tee" => {
-                let h = ctx.block().call(DOUBLE, "js_readable_stream_tee", &[(DOUBLE, &recv_handle)]);
+                let h =
+                    ctx.block()
+                        .call(DOUBLE, "js_readable_stream_tee", &[(DOUBLE, &recv_handle)]);
                 return Ok(Some(h));
             }
             "pipeTo" => {
@@ -3484,7 +3498,11 @@ pub(super) fn lower_fetch_native_method(
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
                 let blk = ctx.block();
-                let promise = blk.call(I64, "js_readable_stream_pipe_to", &[(DOUBLE, &recv_handle), (DOUBLE, &dest)]);
+                let promise = blk.call(
+                    I64,
+                    "js_readable_stream_pipe_to",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &dest)],
+                );
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "pipeThrough" => {
@@ -3496,17 +3514,33 @@ pub(super) fn lower_fetch_native_method(
                 } else {
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
-                let writable = ctx.block().call(DOUBLE, "js_transform_stream_writable", &[(DOUBLE, &transform)]);
-                let readable = ctx.block().call(DOUBLE, "js_transform_stream_readable", &[(DOUBLE, &transform)]);
+                let writable = ctx.block().call(
+                    DOUBLE,
+                    "js_transform_stream_writable",
+                    &[(DOUBLE, &transform)],
+                );
+                let readable = ctx.block().call(
+                    DOUBLE,
+                    "js_transform_stream_readable",
+                    &[(DOUBLE, &transform)],
+                );
                 let new_h = ctx.block().call(
                     DOUBLE,
                     "js_readable_stream_pipe_through",
-                    &[(DOUBLE, &recv_handle), (DOUBLE, &writable), (DOUBLE, &readable)],
+                    &[
+                        (DOUBLE, &recv_handle),
+                        (DOUBLE, &writable),
+                        (DOUBLE, &readable),
+                    ],
                 );
                 return Ok(Some(new_h));
             }
             "locked" => {
-                let v = ctx.block().call(DOUBLE, "js_readable_stream_locked", &[(DOUBLE, &recv_handle)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_readable_stream_locked",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(v));
             }
             // ReadableStreamDefaultController on the same handle:
@@ -3516,11 +3550,19 @@ pub(super) fn lower_fetch_native_method(
                 } else {
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
-                let v = ctx.block().call(DOUBLE, "js_readable_stream_controller_enqueue", &[(DOUBLE, &recv_handle), (DOUBLE, &chunk)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_readable_stream_controller_enqueue",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &chunk)],
+                );
                 return Ok(Some(v));
             }
             "close" => {
-                let v = ctx.block().call(DOUBLE, "js_readable_stream_controller_close", &[(DOUBLE, &recv_handle)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_readable_stream_controller_close",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(v));
             }
             "error" => {
@@ -3529,11 +3571,19 @@ pub(super) fn lower_fetch_native_method(
                 } else {
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
-                let v = ctx.block().call(DOUBLE, "js_readable_stream_controller_error", &[(DOUBLE, &recv_handle), (DOUBLE, &reason)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_readable_stream_controller_error",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &reason)],
+                );
                 return Ok(Some(v));
             }
             "desiredSize" => {
-                let v = ctx.block().call(DOUBLE, "js_readable_stream_controller_desired_size", &[(DOUBLE, &recv_handle)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_readable_stream_controller_desired_size",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(v));
             }
             _ => return Ok(None),
@@ -3549,7 +3599,9 @@ pub(super) fn lower_fetch_native_method(
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "releaseLock" => {
-                let v = ctx.block().call(DOUBLE, "js_reader_release_lock", &[(DOUBLE, &recv_handle)]);
+                let v =
+                    ctx.block()
+                        .call(DOUBLE, "js_reader_release_lock", &[(DOUBLE, &recv_handle)]);
                 return Ok(Some(v));
             }
             "cancel" => {
@@ -3559,7 +3611,11 @@ pub(super) fn lower_fetch_native_method(
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
                 let blk = ctx.block();
-                let promise = blk.call(I64, "js_reader_cancel", &[(DOUBLE, &recv_handle), (DOUBLE, &reason)]);
+                let promise = blk.call(
+                    I64,
+                    "js_reader_cancel",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &reason)],
+                );
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "closed" => {
@@ -3575,7 +3631,11 @@ pub(super) fn lower_fetch_native_method(
         let recv_handle = lower_expr(ctx, recv)?;
         match method {
             "getWriter" => {
-                let h = ctx.block().call(DOUBLE, "js_writable_stream_get_writer", &[(DOUBLE, &recv_handle)]);
+                let h = ctx.block().call(
+                    DOUBLE,
+                    "js_writable_stream_get_writer",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(h));
             }
             "abort" => {
@@ -3585,7 +3645,11 @@ pub(super) fn lower_fetch_native_method(
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
                 let blk = ctx.block();
-                let promise = blk.call(I64, "js_writable_stream_abort", &[(DOUBLE, &recv_handle), (DOUBLE, &reason)]);
+                let promise = blk.call(
+                    I64,
+                    "js_writable_stream_abort",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &reason)],
+                );
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "close" => {
@@ -3594,7 +3658,11 @@ pub(super) fn lower_fetch_native_method(
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "locked" => {
-                let v = ctx.block().call(DOUBLE, "js_writable_stream_locked", &[(DOUBLE, &recv_handle)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_writable_stream_locked",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(v));
             }
             _ => return Ok(None),
@@ -3611,7 +3679,11 @@ pub(super) fn lower_fetch_native_method(
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
                 let blk = ctx.block();
-                let promise = blk.call(I64, "js_writer_write", &[(DOUBLE, &recv_handle), (DOUBLE, &chunk)]);
+                let promise = blk.call(
+                    I64,
+                    "js_writer_write",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &chunk)],
+                );
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "close" => {
@@ -3626,11 +3698,17 @@ pub(super) fn lower_fetch_native_method(
                     double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
                 };
                 let blk = ctx.block();
-                let promise = blk.call(I64, "js_writer_abort", &[(DOUBLE, &recv_handle), (DOUBLE, &reason)]);
+                let promise = blk.call(
+                    I64,
+                    "js_writer_abort",
+                    &[(DOUBLE, &recv_handle), (DOUBLE, &reason)],
+                );
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "releaseLock" => {
-                let v = ctx.block().call(DOUBLE, "js_writer_release_lock", &[(DOUBLE, &recv_handle)]);
+                let v =
+                    ctx.block()
+                        .call(DOUBLE, "js_writer_release_lock", &[(DOUBLE, &recv_handle)]);
                 return Ok(Some(v));
             }
             "closed" => {
@@ -3644,7 +3722,9 @@ pub(super) fn lower_fetch_native_method(
                 return Ok(Some(nanbox_pointer_inline(blk, &promise)));
             }
             "desiredSize" => {
-                let v = ctx.block().call(DOUBLE, "js_writer_desired_size", &[(DOUBLE, &recv_handle)]);
+                let v =
+                    ctx.block()
+                        .call(DOUBLE, "js_writer_desired_size", &[(DOUBLE, &recv_handle)]);
                 return Ok(Some(v));
             }
             _ => return Ok(None),
@@ -3655,11 +3735,19 @@ pub(super) fn lower_fetch_native_method(
         let recv_handle = lower_expr(ctx, recv)?;
         match method {
             "readable" => {
-                let v = ctx.block().call(DOUBLE, "js_transform_stream_readable", &[(DOUBLE, &recv_handle)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_transform_stream_readable",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(v));
             }
             "writable" => {
-                let v = ctx.block().call(DOUBLE, "js_transform_stream_writable", &[(DOUBLE, &recv_handle)]);
+                let v = ctx.block().call(
+                    DOUBLE,
+                    "js_transform_stream_writable",
+                    &[(DOUBLE, &recv_handle)],
+                );
                 return Ok(Some(v));
             }
             _ => return Ok(None),
