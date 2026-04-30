@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use windows::core::HSTRING;
 use windows::Foundation::{TimeSpan, Uri};
-use windows::Media::Playback::{MediaPlaybackState, MediaPlayer};
 use windows::Media::Core::MediaSource;
+use windows::Media::Playback::{MediaPlaybackState, MediaPlayer};
 
 extern "C" {
     fn js_nanbox_get_pointer(value: f64) -> i64;
@@ -306,11 +306,7 @@ fn with_entry_mut<F: FnOnce(&mut PlayerEntry)>(handle: f64, f: F) {
 // Event handlers (MediaEnded / MediaFailed)
 // ---------------------------------------------------------------------------
 
-fn install_event_handlers(
-    player: &MediaPlayer,
-    ended: Arc<AtomicBool>,
-    error: Arc<AtomicBool>,
-) {
+fn install_event_handlers(player: &MediaPlayer, ended: Arc<AtomicBool>, error: Arc<AtomicBool>) {
     use windows::Foundation::TypedEventHandler;
 
     let ended_clone = Arc::clone(&ended);

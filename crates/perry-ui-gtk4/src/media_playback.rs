@@ -379,9 +379,7 @@ fn poll_tick() {
             // forever (which leaves duration_seconds at 0.0 and disables
             // the time/duration `ended` fallback — correct).
             if entry.duration_seconds == 0.0 {
-                if let Some(dur) =
-                    entry.pipeline.query_duration::<gstreamer::ClockTime>()
-                {
+                if let Some(dur) = entry.pipeline.query_duration::<gstreamer::ClockTime>() {
                     entry.duration_seconds = dur.nseconds() as f64 / 1_000_000_000.0;
                 }
             }
@@ -437,7 +435,9 @@ fn derive_state(entry: &PlayerEntry) -> MediaState {
         }
     }
 
-    let (_ret, current, _pending) = entry.pipeline.state(gstreamer::ClockTime::from_mseconds(50));
+    let (_ret, current, _pending) = entry
+        .pipeline
+        .state(gstreamer::ClockTime::from_mseconds(50));
     match current {
         gstreamer::State::Playing => MediaState::Playing,
         gstreamer::State::Paused => {

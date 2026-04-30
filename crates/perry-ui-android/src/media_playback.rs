@@ -176,12 +176,7 @@ pub fn create_player(url_ptr: *const u8) -> i64 {
         // setAudioStreamType(STREAM_MUSIC=3) — deprecated since API 26 but
         // still works; the modern AudioAttributes setter is more verbose
         // and the deprecated path is a single call.
-        let _ = env.call_method(
-            &mp,
-            "setAudioStreamType",
-            "(I)V",
-            &[JValue::Int(3)],
-        );
+        let _ = env.call_method(&mp, "setAudioStreamType", "(I)V", &[JValue::Int(3)]);
         let _ = env.exception_clear();
 
         // prepare() — synchronous. Blocks until the source is ready.
@@ -272,12 +267,7 @@ pub fn stop(handle: f64) {
         if let Some(global) = lock_player(&entry.player) {
             with_env(|env| {
                 let _ = env.call_method(global.as_obj(), "pause", "()V", &[]);
-                let _ = env.call_method(
-                    global.as_obj(),
-                    "seekTo",
-                    "(I)V",
-                    &[JValue::Int(0)],
-                );
+                let _ = env.call_method(global.as_obj(), "seekTo", "(I)V", &[JValue::Int(0)]);
                 let _ = env.exception_clear();
             });
             entry.has_started = false;
@@ -290,12 +280,7 @@ pub fn seek(handle: f64, seconds: f64) {
         if let Some(global) = lock_player(&entry.player) {
             let ms = (seconds * 1000.0).max(0.0) as i32;
             with_env(|env| {
-                let _ = env.call_method(
-                    global.as_obj(),
-                    "seekTo",
-                    "(I)V",
-                    &[JValue::Int(ms)],
-                );
+                let _ = env.call_method(global.as_obj(), "seekTo", "(I)V", &[JValue::Int(ms)]);
                 let _ = env.exception_clear();
             });
         }
@@ -523,17 +508,10 @@ fn poll_tick() {
 
             // Refresh duration once prepared — getDuration returns ms,
             // -1 if unknown (live stream).
-            if entry.prepared.load(Ordering::Relaxed)
-                && entry.duration_seconds == 0.0
-            {
+            if entry.prepared.load(Ordering::Relaxed) && entry.duration_seconds == 0.0 {
                 if let Some(global) = lock_player(&entry.player) {
                     let mut env = jni_bridge::get_env();
-                    if let Ok(v) = env.call_method(
-                        global.as_obj(),
-                        "getDuration",
-                        "()I",
-                        &[],
-                    ) {
+                    if let Ok(v) = env.call_method(global.as_obj(), "getDuration", "()I", &[]) {
                         let ms = v.i().unwrap_or(0);
                         if ms > 0 {
                             entry.duration_seconds = ms as f64 / 1000.0;

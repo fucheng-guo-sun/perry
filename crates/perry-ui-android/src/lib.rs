@@ -1,6 +1,5 @@
 pub mod app;
 pub mod audio;
-pub mod media_playback;
 pub mod callback;
 pub mod camera;
 pub mod clipboard;
@@ -13,6 +12,7 @@ pub mod jni_bridge;
 pub mod json;
 pub mod keychain;
 pub mod location;
+pub mod media_playback;
 pub mod menu;
 #[cfg(feature = "geisterhand")]
 pub mod screenshot;

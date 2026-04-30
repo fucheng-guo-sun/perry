@@ -95,7 +95,7 @@ impl MediaState {
 
 struct PlayerEntry {
     player: Retained<AnyObject>, // AVPlayer
-    item: Retained<AnyObject>,   // AVPlayerItem (kept retained — AVPlayer holds a weak ref via property)
+    item: Retained<AnyObject>, // AVPlayerItem (kept retained — AVPlayer holds a weak ref via property)
     state: MediaState,
     /// Set on `play()` to disambiguate ready-and-paused (which is "ready"
     /// before first play) from explicitly-paused (after a play+pause).
@@ -455,13 +455,16 @@ pub fn set_now_playing(
 
         if !title.is_empty() {
             // MPMediaItemPropertyTitle = "title"
-            let _: () = msg_send![&*dict, setObject: &*nsstring(title), forKey: &*nsstring("title")];
+            let _: () =
+                msg_send![&*dict, setObject: &*nsstring(title), forKey: &*nsstring("title")];
         }
         if !artist.is_empty() {
-            let _: () = msg_send![&*dict, setObject: &*nsstring(artist), forKey: &*nsstring("artist")];
+            let _: () =
+                msg_send![&*dict, setObject: &*nsstring(artist), forKey: &*nsstring("artist")];
         }
         if !album.is_empty() {
-            let _: () = msg_send![&*dict, setObject: &*nsstring(album), forKey: &*nsstring("albumTitle")];
+            let _: () =
+                msg_send![&*dict, setObject: &*nsstring(album), forKey: &*nsstring("albumTitle")];
         }
 
         if !artwork.is_empty() {
@@ -681,7 +684,11 @@ unsafe extern "C" fn poll_tick(
             // Snapshot the closures we want to fire so we can release the
             // PLAYERS borrow before invoking JS — the closure itself may
             // call back into perry/media.
-            let on_state = if state_changed { entry.on_state_change } else { None };
+            let on_state = if state_changed {
+                entry.on_state_change
+            } else {
+                None
+            };
             let on_time = if matches!(new_state, MediaState::Playing | MediaState::Loading) {
                 entry.on_time_update
             } else {
@@ -980,18 +987,21 @@ fn register_remote_commands(_handle: f64) {
         *reg.borrow_mut() = true;
         unsafe {
             let superclass = objc_getClass(c"NSObject".as_ptr());
-            let cls = objc_allocateClassPair(
-                superclass,
-                c"PerryMediaRemoteCommandTarget".as_ptr(),
-                0,
-            );
+            let cls =
+                objc_allocateClassPair(superclass, c"PerryMediaRemoteCommandTarget".as_ptr(), 0);
             if cls.is_null() {
                 return;
             }
             for (name, imp) in &[
                 ("playEvent:", remote_play_handler as *const std::ffi::c_void),
-                ("pauseEvent:", remote_pause_handler as *const std::ffi::c_void),
-                ("toggleEvent:", remote_toggle_handler as *const std::ffi::c_void),
+                (
+                    "pauseEvent:",
+                    remote_pause_handler as *const std::ffi::c_void,
+                ),
+                (
+                    "toggleEvent:",
+                    remote_toggle_handler as *const std::ffi::c_void,
+                ),
             ] {
                 let cs = CString::new(*name).unwrap();
                 let sel = sel_registerName(cs.as_ptr());
@@ -1025,22 +1035,19 @@ fn register_remote_commands(_handle: f64) {
             if !play_cmd.is_null() {
                 let _: () = msg_send![play_cmd, setEnabled: true];
                 let action = Sel::register(c"playEvent:");
-                let _: *mut AnyObject =
-                    msg_send![play_cmd, addTarget: &*target, action: action];
+                let _: *mut AnyObject = msg_send![play_cmd, addTarget: &*target, action: action];
             }
             let pause_cmd: *mut AnyObject = msg_send![cmd_center, pauseCommand];
             if !pause_cmd.is_null() {
                 let _: () = msg_send![pause_cmd, setEnabled: true];
                 let action = Sel::register(c"pauseEvent:");
-                let _: *mut AnyObject =
-                    msg_send![pause_cmd, addTarget: &*target, action: action];
+                let _: *mut AnyObject = msg_send![pause_cmd, addTarget: &*target, action: action];
             }
             let toggle_cmd: *mut AnyObject = msg_send![cmd_center, togglePlayPauseCommand];
             if !toggle_cmd.is_null() {
                 let _: () = msg_send![toggle_cmd, setEnabled: true];
                 let action = Sel::register(c"toggleEvent:");
-                let _: *mut AnyObject =
-                    msg_send![toggle_cmd, addTarget: &*target, action: action];
+                let _: *mut AnyObject = msg_send![toggle_cmd, addTarget: &*target, action: action];
             }
 
             // Keep target alive; MPRemoteCommandCenter holds a weak ref.

@@ -1,8 +1,8 @@
 pub mod app;
 pub mod audio;
-pub mod media_playback;
 #[cfg(target_os = "windows")]
 pub mod dpi_compat;
+pub mod media_playback;
 
 // Install a vectored exception handler that prints crash info to stderr.
 #[cfg(target_os = "windows")]

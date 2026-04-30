@@ -1,11 +1,11 @@
 pub mod app;
 pub mod audio;
-pub mod media_playback;
 pub mod clipboard;
 pub mod dialog;
 pub mod file_dialog;
 pub mod keychain;
 pub mod location;
+pub mod media_playback;
 pub mod menu;
 pub mod sheet;
 pub mod state;
