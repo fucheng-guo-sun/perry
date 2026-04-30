@@ -119,9 +119,7 @@ pub(super) fn collect_modules(
     // rewrite the source as ESM before SWC parses it. Only fires for files
     // inside a `compilePackages` target — user TypeScript and ESM-shaped
     // packages skip the wrap. See `cjs_wrap.rs` for the wrap shape.
-    let source = if is_in_compiled_pkg
-        && super::cjs_wrap::is_commonjs(&raw_source)
-    {
+    let source = if is_in_compiled_pkg && super::cjs_wrap::is_commonjs(&raw_source) {
         super::cjs_wrap::wrap_commonjs(&raw_source, &canonical)
     } else {
         raw_source
