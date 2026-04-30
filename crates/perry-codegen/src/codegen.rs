@@ -489,6 +489,79 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         };
         imported_class_stubs.push(stub);
     }
+    // Issue #309: break inheritance-chain cycles in imported_class_stubs.
+    // Effect (and other heavily-modular TypeScript packages) declare
+    // same-named classes across modules (e.g. multiple `class Base extends X`
+    // inside IIFEs in Data.ts, plus `class Class extends Base` in
+    // Effectable.ts). When pulled into a single importing module's
+    // class_table by name, the chains can form a cycle:
+    //     local Base → extends "Class" (imported stub from Effectable)
+    //     imported Class → parent_name "Base" (resolves back to local Base)
+    //     → cycle.
+    // Every chain-walking site in codegen assumed acyclic inheritance, so
+    // a single such cycle causes either an OOM (Vec-accumulating walks like
+    // `apply_field_initializers_recursive`) or a CPU-hang (counter walks
+    // like `class_field_global_index`). We break the cycle once at this
+    // central point by detecting it via DFS over the (local ∪ stub) union
+    // and dropping `extends_name` on the FIRST imported stub that closes
+    // the cycle. All downstream chain walks then operate on a guaranteed-
+    // acyclic graph. The fundamental name-collision problem (Data.ts's
+    // local "Base" being a different class than Effectable.ts's "Base"
+    // even though they share a name) is left unfixed — that requires
+    // module-prefixing class names in HIR and is a separate refactor; the
+    // cycle break here is purely defensive.
+    {
+        let local_class_names: std::collections::HashSet<&str> =
+            hir.classes.iter().map(|c| c.name.as_str()).collect();
+        let mut stub_idx_by_name: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (idx, stub) in imported_class_stubs.iter().enumerate() {
+            stub_idx_by_name.entry(stub.name.clone()).or_insert(idx);
+        }
+        // For each stub, walk the chain in the union name space. If the
+        // walk revisits a name OR exceeds a sane depth cap, drop this
+        // stub's parent so the cycle dies here.
+        let mut to_drop: Vec<usize> = Vec::new();
+        for (idx, stub) in imported_class_stubs.iter().enumerate() {
+            let mut visited: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            visited.insert(stub.name.clone());
+            let mut cur = stub.extends_name.clone();
+            let mut depth: usize = 0;
+            let mut cycle = false;
+            while let Some(name) = cur {
+                depth += 1;
+                if depth > 64 {
+                    cycle = true;
+                    break;
+                }
+                if !visited.insert(name.clone()) {
+                    cycle = true;
+                    break;
+                }
+                // Parent resolution: prefer LOCAL class over imported stub
+                // (matches `class_table.entry().or_insert()` semantics
+                // below).
+                cur = if local_class_names.contains(name.as_str()) {
+                    hir.classes
+                        .iter()
+                        .find(|c| c.name == name)
+                        .and_then(|c| c.extends_name.clone())
+                } else if let Some(&pidx) = stub_idx_by_name.get(&name) {
+                    imported_class_stubs[pidx].extends_name.clone()
+                } else {
+                    None
+                };
+            }
+            if cycle {
+                to_drop.push(idx);
+            }
+        }
+        for idx in to_drop {
+            imported_class_stubs[idx].extends_name = None;
+        }
+    }
+
     // Add imported class stubs to the class_table (references into the
     // Vec we just built — the Vec lives for the remainder of compile_module).
     // Also build a map from class name → source module prefix so method
