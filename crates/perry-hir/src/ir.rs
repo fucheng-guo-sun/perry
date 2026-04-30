@@ -601,17 +601,6 @@ pub enum Export {
     },
     /// Export all: export * from "..."
     ExportAll { source: String },
-    /// Namespace re-export: export * as Foo from "..."
-    ///
-    /// `name` is the local namespace alias the consumer sees as a Named
-    /// import. The source module's full export surface is reachable via
-    /// `<name>.<member>`, mirroring `import * as <name> from "..."` on
-    /// the consumer side. Closes #310 (without this variant, SWC's
-    /// `ExportSpecifier::Namespace` was silently dropped by the
-    /// `ExportNamed` lowering's `if let Named` filter, so the re-exported
-    /// file never entered the module graph and every `<name>.<member>`
-    /// access lowered to 0).
-    NamespaceReExport { source: String, name: String },
 }
 
 /// A class definition

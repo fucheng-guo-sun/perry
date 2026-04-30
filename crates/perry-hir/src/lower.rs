@@ -4045,55 +4045,32 @@ fn lower_module_decl(
                 // Re-export from another module
                 let source = src.value.as_str().unwrap_or("").to_string();
                 for spec in &export_named.specifiers {
-                    match spec {
-                        ast::ExportSpecifier::Named(named) => {
-                            // Skip individual type-only specifiers (export { type Foo, Bar })
-                            if named.is_type_only {
-                                continue;
+                    if let ast::ExportSpecifier::Named(named) = spec {
+                        // Skip individual type-only specifiers (export { type Foo, Bar })
+                        if named.is_type_only {
+                            continue;
+                        }
+                        let local = match &named.orig {
+                            ast::ModuleExportName::Ident(id) => id.sym.to_string(),
+                            ast::ModuleExportName::Str(s) => {
+                                s.value.as_str().unwrap_or("").to_string()
                             }
-                            let local = match &named.orig {
+                        };
+                        let exported = named
+                            .exported
+                            .as_ref()
+                            .map(|e| match e {
                                 ast::ModuleExportName::Ident(id) => id.sym.to_string(),
                                 ast::ModuleExportName::Str(s) => {
                                     s.value.as_str().unwrap_or("").to_string()
                                 }
-                            };
-                            let exported = named
-                                .exported
-                                .as_ref()
-                                .map(|e| match e {
-                                    ast::ModuleExportName::Ident(id) => id.sym.to_string(),
-                                    ast::ModuleExportName::Str(s) => {
-                                        s.value.as_str().unwrap_or("").to_string()
-                                    }
-                                })
-                                .unwrap_or_else(|| local.clone());
-                            module.exports.push(Export::ReExport {
-                                source: source.clone(),
-                                imported: local,
-                                exported,
-                            });
-                        }
-                        ast::ExportSpecifier::Namespace(ns) => {
-                            // `export * as Foo from "./Foo"` — closes #310. Pre-fix
-                            // SWC's `ExportSpecifier::Namespace` was silently dropped
-                            // here because the arm only matched `Named`. The
-                            // re-exported file then never entered the module graph,
-                            // and every `<name>.<member>` access in consumer code
-                            // lowered to 0 (the unknown-identifier sentinel).
-                            let name = match &ns.name {
-                                ast::ModuleExportName::Ident(id) => id.sym.to_string(),
-                                ast::ModuleExportName::Str(s) => {
-                                    s.value.as_str().unwrap_or("").to_string()
-                                }
-                            };
-                            module.exports.push(Export::NamespaceReExport {
-                                source: source.clone(),
-                                name,
-                            });
-                        }
-                        // `export v from 'mod'` — TC39 stage-1, never standardised.
-                        // Not emitted by tsc/swc TS output, so silently ignore.
-                        ast::ExportSpecifier::Default(_) => {}
+                            })
+                            .unwrap_or_else(|| local.clone());
+                        module.exports.push(Export::ReExport {
+                            source: source.clone(),
+                            imported: local,
+                            exported,
+                        });
                     }
                 }
             } else {

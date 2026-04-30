@@ -414,13 +414,6 @@ pub(super) fn collect_modules(
         let source = match export {
             perry_hir::Export::ReExport { source, .. } => Some(source),
             perry_hir::Export::ExportAll { source } => Some(source),
-            // `export * as Foo from "./Foo"` (#310): pull the source file
-            // into the module graph the same way the other re-export
-            // shapes do. Without this, the consumer's `import { Foo }`
-            // would resolve to the re-exporter, but `Foo`'s actual
-            // implementation file would never be visited and codegen
-            // would have no symbols to dispatch against.
-            perry_hir::Export::NamespaceReExport { source, .. } => Some(source),
             perry_hir::Export::Named { .. } => None,
         };
         if let Some(src) = source {

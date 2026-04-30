@@ -523,7 +523,8 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // stub's parent so the cycle dies here.
         let mut to_drop: Vec<usize> = Vec::new();
         for (idx, stub) in imported_class_stubs.iter().enumerate() {
-            let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut visited: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             visited.insert(stub.name.clone());
             let mut cur = stub.extends_name.clone();
             let mut depth: usize = 0;
