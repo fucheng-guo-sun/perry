@@ -156,6 +156,21 @@ pub(crate) fn infer_type_from_expr(expr: &ast::Expr, ctx: &LoweringContext) -> T
             // Property access on known types (e.g., arr.length → Number)
             if let ast::MemberProp::Ident(prop) = &member.prop {
                 let prop_name = prop.sym.as_ref();
+                // Closes #305: `this.<field>` inside a class method must
+                // consult the class_field_types registry (set up in v0.5.388
+                // for #302 to resolve for-of element types) so a `const m =
+                // this.map` Let binding inherits the declared `Map<K, V>`
+                // type. Pre-fix the Let's RHS-inferred type was Any (the
+                // `_ => Type::Any` catch-all below), so `m`'s for-of fell
+                // off the Map fast path and produced 0 iterations + raw
+                // pointer-bits keys.
+                if matches!(member.obj.as_ref(), ast::Expr::This(_)) {
+                    if let Some(class_name) = &ctx.current_class {
+                        if let Some(ty) = ctx.lookup_class_field_type(class_name, prop_name) {
+                            return ty.clone();
+                        }
+                    }
+                }
                 let obj_ty = infer_type_from_expr(&member.obj, ctx);
                 match (&obj_ty, prop_name) {
                     (Type::Array(_), "length") => Type::Number,

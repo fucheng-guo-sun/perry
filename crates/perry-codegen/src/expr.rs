@@ -2696,6 +2696,32 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             property,
             value,
         } => {
+            // Closes #304: `arr.length = N` must mutate the ArrayHeader, not
+            // set a "length" field in the object dispatch. Pre-fix the generic
+            // `js_object_set_field_by_name(arr, "length", N)` path silently
+            // recorded a property on the array's hidden dispatch object but
+            // never touched the real ArrayHeader.length, so subsequent reads
+            // of `arr.length` returned the stale original count and the
+            // elements stayed live. Statically Array-typed receivers route to
+            // `js_array_set_length` which truncates / extends the header.
+            // Open question: dynamic `Any`-typed receivers that happen to be
+            // arrays at runtime still hit the generic path and miss the fix —
+            // they'd need a runtime-side check inside js_object_set_field_by_name
+            // (route to js_array_set_length when the target is registered as
+            // an array). Deliberately out of scope here; the static-typed
+            // case covers the issue's repro.
+            if property == "length" && crate::type_analysis::is_array_expr(ctx, object) {
+                let arr_box = lower_expr(ctx, object)?;
+                let val_double = lower_expr(ctx, value)?;
+                let blk = ctx.block();
+                let arr_bits = blk.bitcast_double_to_i64(&arr_box);
+                let arr_handle = blk.and(I64, &arr_bits, POINTER_MASK_I64);
+                blk.call_void(
+                    "js_array_set_length",
+                    &[(I64, &arr_handle), (DOUBLE, &val_double)],
+                );
+                return Ok(val_double);
+            }
             // Scalar replacement fast path: store to the field's alloca.
             if let Expr::LocalGet(id) = object.as_ref() {
                 if let Some(slot) = ctx

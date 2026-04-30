@@ -1096,6 +1096,8 @@ pub fn declare_phase_b_arrays(module: &mut LlModule) {
     module.declare_function("js_array_forEach", VOID, &[I64, I64]);
     module.declare_function("js_array_fill", I64, &[I64, DOUBLE]);
     module.declare_function("js_array_delete", I32, &[I64, I32]);
+    // Closes #304: `arr.length = N` truncate / extend.
+    module.declare_function("js_array_set_length", VOID, &[I64, DOUBLE]);
     // Array.from() — js_array_clone handles arrays, Sets, and Maps.
     module.declare_function("js_array_clone", I64, &[I64]);
     // Generator / iterator protocol: walk `.next()`/`.value` loop and collect into array.

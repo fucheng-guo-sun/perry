@@ -715,6 +715,70 @@ pub extern "C" fn js_array_pop_f64(arr: *mut ArrayHeader) -> f64 {
     }
 }
 
+/// Set the length of an array, JS-spec style.
+///
+/// Closes #304: `arr.length = N` must truncate when N < length and pad with
+/// `undefined` when N > length. Pre-fix Perry routed this through the generic
+/// `js_object_set_field_by_name(obj, "length", N)` path which silently set a
+/// new "length" property on the array's hidden object dispatch but never
+/// touched the `ArrayHeader.length` field — so `arr.length` still read back
+/// the original value, and the elements were never cleared.
+///
+/// `new_length` arrives as f64 from the codegen (assignment value is a
+/// JSValue). Truncates to u32 with NaN/negative/non-integer clamped to 0
+/// (the spec throws RangeError; we clamp for now since Perry's exception
+/// surface is incomplete in places — issue worth a follow-up).
+#[no_mangle]
+pub extern "C" fn js_array_set_length(arr: *mut ArrayHeader, new_length: f64) {
+    let arr = clean_arr_ptr_mut(arr);
+    if arr.is_null() {
+        return;
+    }
+    let n: u32 = if new_length.is_nan() || new_length < 0.0 || new_length > u32::MAX as f64 {
+        0
+    } else {
+        new_length as u32
+    };
+    unsafe {
+        let cur = (*arr).length;
+        if n < cur {
+            // Truncate: clear elements at indices [n..cur) to TAG_UNDEFINED so
+            // any code that resurrects the slot via `arr[i]` reads `undefined`,
+            // not stale data. The capacity stays unchanged — JS doesn't
+            // require Perry to release the underlying buffer here, and growing
+            // back via `push` would just re-overwrite these slots anyway.
+            const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
+            let elements_ptr =
+                (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
+            for i in n..cur {
+                std::ptr::write(elements_ptr.add(i as usize), TAG_UNDEFINED_F64);
+            }
+            (*arr).length = n;
+        } else if n > cur {
+            // Extend: pad with TAG_UNDEFINED. Past-capacity extensions go
+            // through `js_array_grow` which installs a forwarding pointer at
+            // the OLD location (issue #233 mechanism), so the caller's stale
+            // pointer transparently follows the chain to the resized buffer
+            // on the next access — no callsite-side writeback needed.
+            const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
+            let target = if n > (*arr).capacity {
+                js_array_grow(arr, n)
+            } else {
+                arr
+            };
+            if !target.is_null() {
+                let elements_ptr =
+                    (target as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
+                for i in cur..n {
+                    std::ptr::write(elements_ptr.add(i as usize), TAG_UNDEFINED_F64);
+                }
+                (*target).length = n;
+            }
+        }
+        // n == cur is a no-op.
+    }
+}
+
 /// Delete an element from an array by index, creating a "hole".
 /// Sets the element to undefined without changing the array length.
 /// Matches JavaScript `delete arr[index]` semantics.
