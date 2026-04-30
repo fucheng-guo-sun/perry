@@ -1,6 +1,6 @@
 // demonstrates: TypeScript subset shown in docs/src/language/supported-features.md
 // docs: docs/src/language/supported-features.md
-// platforms: macos, linux, windows
+// platforms: macos, linux
 
 // Each ANCHOR block below is the exact code that the supported-features
 // docs page renders inline (via {{#include ... :NAME}}). Snippets that
