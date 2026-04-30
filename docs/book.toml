@@ -17,3 +17,20 @@ edit-url-template = "https://github.com/skelpo/perry/edit/main/docs/src/{path}"
 
 [output.html.search]
 enable = true
+
+[output.html.redirect]
+"/getting-started/index.html" = "installation.html"
+"/language/index.html" = "supported-features.html"
+"/packages/index.html" = "porting.html"
+"/threading/index.html" = "overview.html"
+"/ui/index.html" = "overview.html"
+"/platforms/index.html" = "overview.html"
+"/stdlib/index.html" = "overview.html"
+"/i18n/index.html" = "overview.html"
+"/updater/index.html" = "overview.html"
+"/system/index.html" = "overview.html"
+"/widgets/index.html" = "overview.html"
+"/plugins/index.html" = "overview.html"
+"/testing/index.html" = "geisterhand.html"
+"/cli/index.html" = "commands.html"
+"/contributing/index.html" = "architecture.html"
