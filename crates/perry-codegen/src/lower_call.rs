@@ -4207,7 +4207,7 @@ pub(super) fn lower_perry_ui_table_call(
 // ============================================================================
 
 /// How each argument should be coerced before passing to the runtime fn.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum NativeArgKind {
     /// NaN-boxed f64 — pass as-is (objects, generic JSValues).
     F64,
@@ -4222,6 +4222,16 @@ enum NativeArgKind {
     /// similar — the callee expects the full NaN-boxed value, not an
     /// unboxed raw pointer. Common pattern in fastify context methods.
     JsvalI64,
+    /// Pack all remaining user-supplied args (from this position onward)
+    /// into a freshly allocated JS array and pass a single i64
+    /// `*const ArrayHeader` to the runtime. Must be the last entry in
+    /// `sig.args`. When the user supplies no args at this position, an
+    /// empty array is passed (a real allocated header, not a null
+    /// pointer — callees that walk `*arr_ptr` unconditionally are safe).
+    /// Used for variadic JS-side call shapes like
+    /// `stmt.all(...params)` / `stmt.run(...)` / `stmt.get(...)` that
+    /// the runtime consumes as a single `*const ArrayHeader`.
+    VarArgsAsArray,
 }
 
 /// What the runtime function returns.
@@ -4265,6 +4275,7 @@ const NA_F64: NativeArgKind = NativeArgKind::F64;
 const NA_STR: NativeArgKind = NativeArgKind::StrPtr;
 const NA_PTR: NativeArgKind = NativeArgKind::PtrI64;
 const NA_JSV: NativeArgKind = NativeArgKind::JsvalI64;
+const NA_VARARGS: NativeArgKind = NativeArgKind::VarArgsAsArray;
 const NR_PTR: NativeRetKind = NativeRetKind::Ptr;
 const NR_STR: NativeRetKind = NativeRetKind::Str;
 const NR_BIGINT: NativeRetKind = NativeRetKind::BigInt;
@@ -5190,13 +5201,21 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         args: &[NA_STR],
         ret: NR_PTR,
     },
+    // stmt.run/get/all/iterate take JS-side variadic params. The runtime
+    // consumes them as a single `*const ArrayHeader`, so VarArgsAsArray
+    // packs every user-supplied arg into a real JS array before the call.
+    // Pre-#339 these used `NA_F64` and the runtime had to defensively
+    // bail when the high-16 bits looked like a NaN-box tag — fine for
+    // the no-arg case (TAG_UNDEFINED), but `.all('a')` passed a
+    // STRING-tagged f64 that also tripped the bail and the params were
+    // silently dropped.
     NativeModSig {
         module: "better-sqlite3",
         has_receiver: true,
         method: "run",
         class_filter: None,
         runtime: "js_sqlite_stmt_run",
-        args: &[NA_F64],
+        args: &[NA_VARARGS],
         ret: NR_PTR,
     },
     NativeModSig {
@@ -5205,7 +5224,7 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         method: "get",
         class_filter: None,
         runtime: "js_sqlite_stmt_get",
-        args: &[NA_F64],
+        args: &[NA_VARARGS],
         ret: NR_F64,
     },
     NativeModSig {
@@ -5214,7 +5233,7 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         method: "all",
         class_filter: None,
         runtime: "js_sqlite_stmt_all",
-        args: &[NA_F64],
+        args: &[NA_VARARGS],
         ret: NR_PTR,
     },
     NativeModSig {
@@ -7325,9 +7344,28 @@ pub(super) fn lower_native_module_dispatch(
 
     // Coerce each arg per the sig's coercion rules.
     // If more args are passed than the sig declares, pass extras as F64.
-    for (i, arg) in args.iter().enumerate() {
+    let mut i = 0;
+    while i < args.len() {
         let kind = sig.args.get(i).copied().unwrap_or(NativeArgKind::F64);
-        let lowered = lower_expr(ctx, arg)?;
+        if kind == NativeArgKind::VarArgsAsArray {
+            // Pack args[i..] into a freshly allocated JS array and pass a
+            // single i64 ArrayHeader pointer. VarArgsAsArray must be the
+            // last entry in `sig.args`, so any further declared kinds
+            // would be unreachable — break after consuming.
+            let remaining = &args[i..];
+            let cap = (remaining.len() as u32).to_string();
+            let mut arr = ctx.block().call(I64, "js_array_alloc", &[(I32, &cap)]);
+            for r in remaining {
+                let v = lower_expr(ctx, r)?;
+                let blk = ctx.block();
+                arr = blk.call(I64, "js_array_push_f64", &[(I64, &arr), (DOUBLE, &v)]);
+            }
+            llvm_args.push((I64, arr));
+            arg_types.push(I64);
+            i = args.len();
+            break;
+        }
+        let lowered = lower_expr(ctx, &args[i])?;
         match kind {
             NativeArgKind::F64 => {
                 llvm_args.push((DOUBLE, lowered));
@@ -7353,11 +7391,13 @@ pub(super) fn lower_native_module_dispatch(
                 llvm_args.push((I64, bits));
                 arg_types.push(I64);
             }
+            NativeArgKind::VarArgsAsArray => unreachable!("handled above"),
         }
+        i += 1;
     }
-    // If fewer args than sig expects, pad with undefined / 0.
-    for i in args.len()..sig.args.len() {
-        match sig.args[i] {
+    // If fewer args than sig expects, pad with undefined / 0 / empty-array.
+    for j in i..sig.args.len() {
+        match sig.args[j] {
             NativeArgKind::F64 => {
                 llvm_args.push((
                     DOUBLE,
@@ -7367,6 +7407,12 @@ pub(super) fn lower_native_module_dispatch(
             }
             NativeArgKind::StrPtr | NativeArgKind::PtrI64 | NativeArgKind::JsvalI64 => {
                 llvm_args.push((I64, "0".to_string()));
+                arg_types.push(I64);
+            }
+            NativeArgKind::VarArgsAsArray => {
+                // No user args at this position — pass an empty array.
+                let arr = ctx.block().call(I64, "js_array_alloc", &[(I32, "0")]);
+                llvm_args.push((I64, arr));
                 arg_types.push(I64);
             }
         }
