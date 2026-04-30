@@ -22,7 +22,7 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Sel};
-use objc2::{define_class, msg_send};
+use objc2::{define_class, msg_send, AnyThread};
 use objc2_foundation::{NSObject, NSString};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
