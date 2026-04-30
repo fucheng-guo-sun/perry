@@ -668,6 +668,16 @@ pub(crate) fn lower_class_decl(
     // pluck from `prop.type_ann`. Registered again at end-of-class
     // (line ~1058) once `fields` is complete in case any field types got
     // refined during body lowering.
+    //
+    // Issue #305 (re-repro on v0.5.415): fields without an explicit
+    // annotation but WITH an initializer like `private map = new Map<K,V>()`
+    // also need their generic type registered, otherwise `for-of this.map`
+    // and `const m = this.map; for-of m` (whose type inference consults this
+    // registry via lower_types::infer_type_from_expr's `this.<field>` arm)
+    // both fall off the Map fast path and the loop body never executes.
+    // Falls back to `infer_type_from_expr` on the AST initializer when the
+    // annotation is absent — this is the same routine used elsewhere for
+    // `let m = new Map<K,V>()`, so the two shapes now agree.
     let mut early_field_types: Vec<(String, Type)> = Vec::new();
     for member in &class_decl.class.body {
         if let ast::ClassMember::ClassProp(prop) = member {
@@ -679,11 +689,14 @@ pub(crate) fn lower_class_decl(
                 ast::PropName::Str(s) => s.value.as_str().unwrap_or("").to_string(),
                 _ => continue,
             };
-            let ty = prop
-                .type_ann
-                .as_ref()
-                .map(|ann| extract_ts_type_with_ctx(&ann.type_ann, Some(ctx)))
-                .unwrap_or(Type::Any);
+            let ty = match prop.type_ann.as_ref() {
+                Some(ann) => extract_ts_type_with_ctx(&ann.type_ann, Some(ctx)),
+                None => prop
+                    .value
+                    .as_ref()
+                    .map(|v| infer_type_from_expr(v, ctx))
+                    .unwrap_or(Type::Any),
+            };
             early_field_types.push((field_name, ty));
         }
     }
@@ -2527,12 +2540,19 @@ pub(crate) fn lower_class_prop(
         _ => return Err(anyhow!("Unsupported property key")),
     };
 
-    // Extract type from type annotation (using context for class type param resolution)
-    let ty = prop
-        .type_ann
-        .as_ref()
-        .map(|ann| extract_ts_type_with_ctx(&ann.type_ann, Some(ctx)))
-        .unwrap_or(Type::Any);
+    // Extract type from type annotation (using context for class type param resolution).
+    // Issue #305: when the annotation is absent, fall back to inferring the type from the
+    // initializer (`= new Map<K,V>()`, `= new Set<T>()`, `= []`, ...) so the late
+    // `register_class_field_types` call doesn't clobber the early-registered correct type
+    // with Type::Any.
+    let ty = match prop.type_ann.as_ref() {
+        Some(ann) => extract_ts_type_with_ctx(&ann.type_ann, Some(ctx)),
+        None => prop
+            .value
+            .as_ref()
+            .map(|v| infer_type_from_expr(v, ctx))
+            .unwrap_or(Type::Any),
+    };
 
     // Lower initializer expression if present
     let init = prop
@@ -2726,12 +2746,18 @@ pub(crate) fn lower_private_prop(
     // We store the name with the # prefix to distinguish private fields
     let name = format!("#{}", prop.key.name);
 
-    // Extract type from type annotation (using context for class type param resolution)
-    let ty = prop
-        .type_ann
-        .as_ref()
-        .map(|ann| extract_ts_type_with_ctx(&ann.type_ann, Some(ctx)))
-        .unwrap_or(Type::Any);
+    // Extract type from type annotation (using context for class type param resolution).
+    // Issue #305 (private-field shape): same initializer-fallback as the public class-prop
+    // path so `#map = new Map<K,V>()` and friends keep their generic type past the
+    // late `register_class_field_types` re-registration.
+    let ty = match prop.type_ann.as_ref() {
+        Some(ann) => extract_ts_type_with_ctx(&ann.type_ann, Some(ctx)),
+        None => prop
+            .value
+            .as_ref()
+            .map(|v| infer_type_from_expr(v, ctx))
+            .unwrap_or(Type::Any),
+    };
 
     // Lower initializer expression if present
     let init = prop
