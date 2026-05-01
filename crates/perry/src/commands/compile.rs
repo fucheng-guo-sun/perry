@@ -1113,14 +1113,12 @@ pub fn run_with_parse_cache(
                     }
 
                     ctx.harmonyos_index_ets = Some(harvest.ets_source);
-                    // UI is in the .ets, not the .so — release the
-                    // perry-ui-* link requirement.
-                    ctx.needs_ui = false;
                 }
                 Ok(None) => {
-                    // Logic-only program — keep needs_ui as-is. (If the user
-                    // imported perry/ui without ever calling App({...}), the
-                    // link will still fail — that's a real bug to surface.)
+                    // Logic-only program (no `App({...})` literal — perfectly
+                    // valid; e.g. `import { state } from "perry/ui"` for shared
+                    // state between modules without a top-level UI mount).
+                    // Falls through to needs_ui=false below.
                 }
                 Err(e) => {
                     eprintln!(
@@ -1131,6 +1129,17 @@ pub fn run_with_parse_cache(
                 }
             }
         }
+        // HarmonyOS has no `perry-ui-harmonyos` crate by design — the
+        // ArkUI side handles UI via the harvested Index.ets, and any
+        // `perry_ui_*` / `perry_system_*` / `perry_updater_*` symbols
+        // that survive into the .so resolve via the no-op stubs in
+        // `perry-runtime/src/ui_harmonyos_stubs.rs` (build.rs auto-
+        // generates them from the dispatch tables — see #395 + #399).
+        // So flipping `needs_ui = false` is always safe regardless of
+        // harvest outcome — and required, because the build path at
+        // `optimized_libs.rs` would otherwise try to compile a
+        // nonexistent `perry-ui-harmonyos` crate. Closes #400.
+        ctx.needs_ui = false;
     }
 
     // --- i18n: apply i18n transform pass ---
