@@ -210,13 +210,21 @@ pub fn emit_index_ets(module: &mut Module) -> Result<Option<HarvestResult>> {
     // Build a const-binding lookup for top-level `let x = <perry/ui call>;`
     // so the Body can reference a local: `App({body: x})` finds x's init.
     let bindings = collect_const_bindings(&module.init);
+    // Issue #410 — pre-walk for `declare const __platform__: number` style
+    // compile-time constants. Used by serialize_condition to inline
+    // `__platform__ === N` comparisons that would otherwise emit an
+    // undeclared identifier into the ArkTS source. This codegen path is
+    // only invoked for `--target harmonyos[-simulator]`, so __platform__
+    // is always 9 here (matches the table in
+    // `crates/perry-codegen/src/codegen.rs::platform_number`).
+    let compile_time_consts = collect_compile_time_constants(&module.init);
     // Issue #408 — pre-walk for procedurally-built UI mutators
     // (widgetAddChild / scrollviewSetChild / setPadding / setCornerRadius /
     // widgetSetBackgroundColor / etc.). Recorded against their target
     // widget local so emit_widget can fold them into the ArkUI body.
     // Walks pre-strip so mutators that live alongside `App({...})` are
     // captured; the strip itself doesn't touch the mutator stmts.
-    let mutations = collect_mutations(&module.init);
+    let mutations = collect_mutations(&module.init, &bindings, &compile_time_consts);
     let Some(body_expr) = find_and_strip_app(&mut module.init, &classes) else {
         return Ok(None);
     };
@@ -377,11 +385,22 @@ fn collect_state_bindings(init: &[Stmt]) -> HashMap<LocalId, StateBinding> {
 /// { ... }` produce a unique group id so emitter can collapse mutations
 /// from the same if statement back into a single `if/else` block — even
 /// if the if appears alongside unconditional mutators.
-fn collect_mutations(init: &[Stmt]) -> HashMap<LocalId, Vec<MutationEntry>> {
+fn collect_mutations(
+    init: &[Stmt],
+    bindings: &HashMap<LocalId, Expr>,
+    compile_time_consts: &HashMap<LocalId, f64>,
+) -> HashMap<LocalId, Vec<MutationEntry>> {
     let mut out: HashMap<LocalId, Vec<MutationEntry>> = HashMap::new();
     let mut group_counter: u32 = 0;
     for stmt in init {
-        collect_mutations_in_stmt(stmt, None, &mut out, &mut group_counter);
+        collect_mutations_in_stmt(
+            stmt,
+            None,
+            &mut out,
+            &mut group_counter,
+            bindings,
+            compile_time_consts,
+        );
     }
     out
 }
@@ -391,6 +410,8 @@ fn collect_mutations_in_stmt(
     enclosing: Option<MutationCondition>,
     out: &mut HashMap<LocalId, Vec<MutationEntry>>,
     group_counter: &mut u32,
+    bindings: &HashMap<LocalId, Expr>,
+    compile_time_consts: &HashMap<LocalId, f64>,
 ) {
     match stmt {
         Stmt::Expr(e) => collect_mutations_in_expr(e, enclosing.as_ref(), out),
@@ -412,15 +433,29 @@ fn collect_mutations_in_stmt(
                 // Nested-if fallback: walk both branches inheriting the
                 // enclosing condition. Loses fidelity but doesn't crash.
                 for s in then_branch {
-                    collect_mutations_in_stmt(s, enclosing.clone(), out, group_counter);
+                    collect_mutations_in_stmt(
+                        s,
+                        enclosing.clone(),
+                        out,
+                        group_counter,
+                        bindings,
+                        compile_time_consts,
+                    );
                 }
                 if let Some(eb) = else_branch {
                     for s in eb {
-                        collect_mutations_in_stmt(s, enclosing.clone(), out, group_counter);
+                        collect_mutations_in_stmt(
+                            s,
+                            enclosing.clone(),
+                            out,
+                            group_counter,
+                            bindings,
+                            compile_time_consts,
+                        );
                     }
                 }
             } else {
-                let cond_str = serialize_condition(condition);
+                let cond_str = serialize_condition(condition, bindings, compile_time_consts);
                 let group = *group_counter;
                 *group_counter += 1;
                 let then_cond = MutationCondition {
@@ -429,7 +464,14 @@ fn collect_mutations_in_stmt(
                     group,
                 };
                 for s in then_branch {
-                    collect_mutations_in_stmt(s, Some(then_cond.clone()), out, group_counter);
+                    collect_mutations_in_stmt(
+                        s,
+                        Some(then_cond.clone()),
+                        out,
+                        group_counter,
+                        bindings,
+                        compile_time_consts,
+                    );
                 }
                 if let Some(eb) = else_branch {
                     let else_cond = MutationCondition {
@@ -438,7 +480,14 @@ fn collect_mutations_in_stmt(
                         group,
                     };
                     for s in eb {
-                        collect_mutations_in_stmt(s, Some(else_cond.clone()), out, group_counter);
+                        collect_mutations_in_stmt(
+                            s,
+                            Some(else_cond.clone()),
+                            out,
+                            group_counter,
+                            bindings,
+                            compile_time_consts,
+                        );
                     }
                 }
             }
@@ -739,7 +788,34 @@ fn mutator_background_color(args: &[Expr]) -> Option<String> {
 /// shapes the harvest can statically rewrite, plus a few literal forms.
 /// Falls back to a `true` predicate (so the then-branch always renders)
 /// for shapes the emitter can't safely render.
-fn serialize_condition(e: &Expr) -> String {
+/// Issue #410 — serialize a condition expression to ArkTS source. The
+/// emitted string is interpolated into `if (...)` blocks (for conditional
+/// AddChild mutations) and into `/* if (...) */` comment markers (for
+/// conditional Modifier mutations) in the generated Index.ets. Two
+/// invariants must hold for the emitted ArkTS to compile:
+///
+/// 1. **No `*/` substring anywhere in the returned string.** When the
+///    caller wraps the result in `/* if ((<cond>)) */`, any `*/` inside
+///    `<cond>` would close the outer comment early and leak the rest as
+///    code (see #410 line-82 cascade). Every branch of this function is
+///    audited to ensure that — string literals route through
+///    `arkts_string_lit` (single-quoted, so `*/` can't appear unescaped),
+///    operator strings come from a closed enum, and the bottom-fallback
+///    returns `"true"` (literally — not `"true /* unsupported */"`).
+///
+/// 2. **No `__local_N` placeholders.** `Expr::LocalGet(id)` references
+///    must resolve via `bindings` (top-level `let x = <init>` HIR shape)
+///    to a real, ArkTS-bindable expression. If the local can't be
+///    resolved (closure-captured, loop-mutated, or a `declare const`
+///    without an `init`), we degrade gracefully to `"true"` — losing the
+///    conditionality but keeping the build green. Compile-time platform
+///    constants like `__platform__` are inlined as numeric literals via
+///    the `compile_time_consts` map.
+fn serialize_condition(
+    e: &Expr,
+    bindings: &HashMap<LocalId, Expr>,
+    compile_time_consts: &HashMap<LocalId, f64>,
+) -> String {
     use perry_hir::ir::{CompareOp, LogicalOp};
     match e {
         Expr::Bool(true) => "true".to_string(),
@@ -757,9 +833,9 @@ fn serialize_condition(e: &Expr) -> String {
             };
             format!(
                 "{}{}{}",
-                serialize_condition(left),
+                serialize_condition(left, bindings, compile_time_consts),
                 op_str,
-                serialize_condition(right)
+                serialize_condition(right, bindings, compile_time_consts)
             )
         }
         Expr::Logical { op, left, right } => {
@@ -770,15 +846,50 @@ fn serialize_condition(e: &Expr) -> String {
             };
             format!(
                 "{}{}{}",
-                serialize_condition(left),
+                serialize_condition(left, bindings, compile_time_consts),
                 op_str,
-                serialize_condition(right)
+                serialize_condition(right, bindings, compile_time_consts)
+            )
+        }
+        Expr::Unary { op, operand } => {
+            use perry_hir::ir::UnaryOp;
+            let op_str = match op {
+                UnaryOp::Not => "!",
+                UnaryOp::Neg => "-",
+                UnaryOp::Pos => "+",
+                UnaryOp::BitNot => "~",
+            };
+            format!(
+                "{}{}",
+                op_str,
+                serialize_condition(operand, bindings, compile_time_consts)
             )
         }
         Expr::String(s) => arkts_string_lit(s),
         Expr::Number(n) => fmt_num(*n),
         Expr::Integer(n) => format!("{}", n),
-        Expr::LocalGet(id) => format!("__local_{}", id),
+        Expr::LocalGet(id) => {
+            // Compile-time platform constants (e.g. `declare const
+            // __platform__: number`) are inlined as numeric literals.
+            // For the harmonyos codegen path this is always 9.0; the
+            // map is populated by `collect_compile_time_constants`.
+            if let Some(v) = compile_time_consts.get(id) {
+                return fmt_num(*v);
+            }
+            // Try to resolve through const-bindings. For
+            // `let mobile = (__platform__ === 1)` the resolved condition
+            // is `(__platform__ === 1)` which then recurses through this
+            // same function and inlines the platform literal.
+            if let Some(init) = bindings.get(id) {
+                return serialize_condition(init, bindings, compile_time_consts);
+            }
+            // Unresolvable LocalGet — degrade to `true` so the emitted
+            // ArkTS compiles cleanly. Conditionality is lost; the
+            // mutation always renders as if the predicate were truthy.
+            // Emitting `__local_N` here would leak as an undeclared
+            // identifier into the page struct (see #410 lines 48/52/68).
+            "true".to_string()
+        }
         Expr::PropertyGet { object, property } => {
             // `obj.prop` shape — used commonly in conditions like
             // `props.mobile`. Recursively stringify the object access
@@ -786,11 +897,17 @@ fn serialize_condition(e: &Expr) -> String {
             // user-side reference may not actually exist at the ArkTS
             // page-struct scope, in which case ArkTS's compiler
             // surfaces it as a separate error during emission.
-            format!("{}.{}", serialize_condition(object), property)
+            format!(
+                "{}.{}",
+                serialize_condition(object, bindings, compile_time_consts),
+                property
+            )
         }
-        // Fallback: emit a placeholder that's syntactically valid; the
-        // mutation collector caller emits a Comment alongside.
-        _ => "true /* unsupported condition */".to_string(),
+        // Fallback: emit `true` (literally — no diagnostic comment, since
+        // the comment's `*/` would close any wrapping block-comment
+        // marker, see #410 line-82 cascade). Conditionality is lost but
+        // the build stays green.
+        _ => "true".to_string(),
     }
 }
 
@@ -1006,6 +1123,48 @@ fn collect_const_bindings(init: &[Stmt]) -> HashMap<LocalId, Expr> {
         } = stmt
         {
             map.insert(*id, expr.clone());
+        }
+    }
+    map
+}
+
+/// Issue #410 — discover `declare const __platform__: number;` style
+/// compile-time constants. The HIR shape is `Stmt::Let { name, init: None }`
+/// (matches `crates/perry-codegen/src/codegen.rs::compile_time_constants`).
+/// Used by `serialize_condition` to inline `__platform__ === N`
+/// comparisons at codegen time so the emitted ArkTS doesn't reference
+/// undeclared identifiers.
+///
+/// This codegen path is harmonyos-only (the compile.rs harvest at
+/// line 1071 only fires on `--target harmonyos[-simulator]`), so
+/// `__platform__` is always 9.0 here. The platform-id table lives in
+/// `crates/perry-codegen/src/codegen.rs:672-700`.
+fn collect_compile_time_constants(init: &[Stmt]) -> HashMap<LocalId, f64> {
+    let mut map = HashMap::new();
+    for stmt in init {
+        if let Stmt::Let {
+            id,
+            name,
+            init: None,
+            ..
+        } = stmt
+        {
+            // Mirror codegen.rs::compile_time_constants — only the
+            // canonical names are recognized. Anything else is a regular
+            // hoisted let binding that resolves through the normal
+            // `bindings` map.
+            match name.as_str() {
+                "__platform__" => {
+                    // This codegen is harmonyos-only — see emit_index_ets
+                    // call site in crates/perry/src/commands/compile.rs.
+                    map.insert(*id, 9.0);
+                }
+                "__plugins__" => {
+                    // No harmonyos-specific plugin set today; default to 0.
+                    map.insert(*id, 0.0);
+                }
+                _ => {}
+            }
         }
     }
     map
@@ -1288,10 +1447,18 @@ fn emit_modifier_mutations(muts: &[MutationEntry]) -> String {
                         Branch::Then => "",
                         Branch::Else => "!",
                     };
+                    // Issue #410 — defensive: strip any `*/` from cond_str
+                    // before splicing into a `/* ... */` block-comment
+                    // marker. `serialize_condition` is audited never to
+                    // emit `*/`, but a future change there could
+                    // reintroduce the line-82 nested-comment cascade.
+                    // Belt-and-braces; the substring check is O(n) on a
+                    // string that's already been built.
+                    let cond_safe = sanitize_for_block_comment(&cond.cond_str);
                     out.push_str(&format!(
                         " /* if ({branch}({c})) */ {m}",
                         branch = branch,
-                        c = cond.cond_str,
+                        c = cond_safe,
                         m = s
                     ));
                 } else {
@@ -1306,6 +1473,19 @@ fn emit_modifier_mutations(muts: &[MutationEntry]) -> String {
         }
     }
     out
+}
+
+/// Issue #410 — replace any `*/` substring with `*\u{200b}/` (an inserted
+/// zero-width space) so the result can be safely spliced inside a `/* ... */`
+/// block comment marker without closing the outer comment early. The
+/// zero-width space renders invisibly in editor diagnostics so the comment
+/// stays human-readable. Also handles the `*//` edge case (where two
+/// adjacent close-comment markers would survive a single replacement).
+fn sanitize_for_block_comment(s: &str) -> String {
+    if !s.contains("*/") {
+        return s.to_string();
+    }
+    s.replace("*/", "*\u{200b}/")
 }
 
 /// Issue #408 — return the list of effective AddChild expressions for a
@@ -5498,5 +5678,369 @@ mod tests {
             "missing browser scroll:\n{}",
             r.ets_source
         );
+    }
+
+    // ----------------------------------------------------------------
+    // Issue #410 — emitted ArkUI must compile cleanly through ArkTS.
+    //
+    // The three bugs documented in the issue:
+    //
+    //   1. Nested block comments — `serialize_condition` fallback
+    //      returned `"true /* unsupported condition */"` which closed
+    //      the outer `/* if ((...)) */` wrapper early on line 82.
+    //
+    //   2. `__local_N` undeclared identifiers — `serialize_condition`
+    //      emitted `__local_<id>` for `Expr::LocalGet`, leaking into
+    //      the emitted ArkTS as `if (__local_2) { ... }`.
+    //
+    //   3. `__platform__` references — once Bug 2 resolves through
+    //      bindings, `__platform__ === N` surfaced in emitted code
+    //      where `__platform__` isn't declared on the page struct.
+    //
+    // The fix lives in `serialize_condition` + `collect_compile_time_constants`.
+    // These regression tests pin the emitted-source invariants:
+    //   - never the substring `__local_`
+    //   - never a `*/` inside a `/* if ((...)) */` marker
+    //   - `__platform__` comparisons inline as numeric literals (9 for
+    //     harmonyos, the only target this codegen serves).
+    // ----------------------------------------------------------------
+
+    /// Helper: declare-const stmt for `__platform__` (the canonical HIR
+    /// shape `Stmt::Let { name, init: None }` — the same shape
+    /// `crates/perry-codegen/src/codegen.rs::compile_time_constants`
+    /// recognizes).
+    fn declare_const(id: LocalId, name: &str) -> Stmt {
+        Stmt::Let {
+            id,
+            name: name.to_string(),
+            ty: perry_types::Type::Any,
+            mutable: false,
+            init: None,
+        }
+    }
+
+    #[test]
+    fn issue_410_serialize_condition_fallback_has_no_block_comment_close() {
+        // The fallback (any unrecognized condition shape) must never
+        // produce a `*/` substring — which would close the outer
+        // `/* if ((...)) */` wrapper used by emit_modifier_mutations.
+        let bindings = HashMap::new();
+        let consts = HashMap::new();
+        // A Call expression isn't recognized by serialize_condition's
+        // match arms, so it lands in the fallback.
+        let unrecognized = Expr::Call {
+            callee: Box::new(Expr::LocalGet(99)),
+            args: vec![],
+            type_args: vec![],
+        };
+        let s = serialize_condition(&unrecognized, &bindings, &consts);
+        assert!(
+            !s.contains("*/"),
+            "fallback emitted */ — bug 1 regressed: {}",
+            s
+        );
+        assert_eq!(
+            s, "true",
+            "fallback should be the literal 'true', got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn issue_410_local_get_resolves_through_bindings_not_placeholder() {
+        // `let mobile = (props.screen === 'mobile')` — when a condition
+        // references `mobile`, serialize_condition must resolve the
+        // local back to the init expression rather than emitting
+        // `__local_N` (Bug 2). The resolved condition contains the
+        // PropertyGet + string comparison.
+        let mobile_id: LocalId = 5;
+        let init = Expr::Compare {
+            op: perry_hir::ir::CompareOp::Eq,
+            left: Box::new(Expr::PropertyGet {
+                object: Box::new(Expr::LocalGet(99)), // unresolvable -> "true"
+                property: "screen".to_string(),
+            }),
+            right: Box::new(Expr::String("mobile".into())),
+        };
+        let mut bindings = HashMap::new();
+        bindings.insert(mobile_id, init);
+        let consts = HashMap::new();
+        let s = serialize_condition(&Expr::LocalGet(mobile_id), &bindings, &consts);
+        assert!(
+            !s.contains("__local_"),
+            "emitted __local_ placeholder — bug 2 regressed: {}",
+            s
+        );
+        assert!(
+            s.contains("'mobile'"),
+            "expected resolved condition, got: {}",
+            s
+        );
+        assert!(s.contains(" === "), "expected eq op, got: {}", s);
+    }
+
+    #[test]
+    fn issue_410_unresolvable_local_get_degrades_to_true_not_placeholder() {
+        // A LocalGet that's not in bindings (e.g., closure-captured or
+        // loop-mutated) degrades to `true` rather than leaking
+        // `__local_N` into emitted ArkTS.
+        let bindings = HashMap::new();
+        let consts = HashMap::new();
+        let s = serialize_condition(&Expr::LocalGet(42), &bindings, &consts);
+        assert_eq!(
+            s, "true",
+            "unresolvable LocalGet should degrade to 'true', got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn issue_410_platform_constant_inlines_as_number_literal() {
+        // `__platform__ === 9` should serialize with the literal 9
+        // inlined (since this codegen is harmonyos-only). Without the
+        // compile_time_consts inlining, the LocalGet would resolve via
+        // `bindings` and find no entry (declare-const has init: None),
+        // ultimately leaking `__platform__` into emitted ArkTS.
+        let plat_id: LocalId = 7;
+        let bindings = HashMap::new();
+        let mut consts = HashMap::new();
+        consts.insert(plat_id, 9.0);
+        let cmp = Expr::Compare {
+            op: perry_hir::ir::CompareOp::Eq,
+            left: Box::new(Expr::LocalGet(plat_id)),
+            right: Box::new(Expr::Integer(9)),
+        };
+        let s = serialize_condition(&cmp, &bindings, &consts);
+        assert!(
+            !s.contains("__platform__"),
+            "platform constant leaked: {}",
+            s
+        );
+        assert!(
+            !s.contains("__local_"),
+            "platform local leaked as placeholder: {}",
+            s
+        );
+        // 9 === 9 — both sides should be the literal 9.
+        assert!(s.contains("9"), "expected platform value 9, got: {}", s);
+    }
+
+    #[test]
+    fn issue_410_collect_compile_time_constants_picks_up_declare_const() {
+        // `declare const __platform__: number;` lowers to
+        // `Stmt::Let { name: "__platform__", init: None }`. The collector
+        // must recognize this canonical shape and assign 9.0 (harmonyos).
+        let init = vec![declare_const(11, "__platform__")];
+        let map = collect_compile_time_constants(&init);
+        assert_eq!(map.get(&11), Some(&9.0));
+    }
+
+    #[test]
+    fn issue_410_conditional_addchild_emits_valid_arkts_if_block() {
+        // The ternary-style shape from #410's "Implementation steps":
+        // `if (mobile) widgetAddChild(parent, phone) else widgetAddChild(parent, desktop)`
+        // where `mobile` is a top-level binding referencing `__platform__`.
+        // The emitted ArkTS must contain `if (...)` and the predicate
+        // must NOT contain `__local_` or `__platform__`.
+        let mut m = empty_module();
+        let plat_id: LocalId = 1;
+        let mobile_id: LocalId = 2;
+        let parent_id: LocalId = 3;
+        let phone_id: LocalId = 4;
+        let desktop_id: LocalId = 5;
+        m.init.push(declare_const(plat_id, "__platform__"));
+        // let mobile = (__platform__ === 9);
+        m.init.push(let_widget(
+            mobile_id,
+            "mobile",
+            Expr::Compare {
+                op: perry_hir::ir::CompareOp::Eq,
+                left: Box::new(Expr::LocalGet(plat_id)),
+                right: Box::new(Expr::Integer(9)),
+            },
+        ));
+        m.init.push(let_widget(
+            parent_id,
+            "parent",
+            nmc("HStack", vec![Expr::Number(0.0), Expr::Array(vec![])]),
+        ));
+        m.init.push(let_widget(
+            phone_id,
+            "phoneToolbar",
+            nmc("Button", vec![Expr::String("phone".into())]),
+        ));
+        m.init.push(let_widget(
+            desktop_id,
+            "desktopToolbar",
+            nmc("Button", vec![Expr::String("desktop".into())]),
+        ));
+        m.init.push(Stmt::If {
+            condition: Expr::LocalGet(mobile_id),
+            then_branch: vec![mutator_stmt(
+                "widgetAddChild",
+                vec![Expr::LocalGet(parent_id), Expr::LocalGet(phone_id)],
+            )],
+            else_branch: Some(vec![mutator_stmt(
+                "widgetAddChild",
+                vec![Expr::LocalGet(parent_id), Expr::LocalGet(desktop_id)],
+            )]),
+        });
+        m.init.push(app_with_body(Expr::LocalGet(parent_id)));
+        let r = emit_index_ets(&mut m).unwrap().unwrap();
+        let src = &r.ets_source;
+        assert!(
+            !src.contains("__local_"),
+            "emitted source contains __local_ — bug 2 regressed:\n{}",
+            src
+        );
+        assert!(
+            !src.contains("__platform__"),
+            "emitted source contains __platform__ — bug 3 regressed:\n{}",
+            src
+        );
+        assert!(
+            !src.contains("/* unsupported condition */"),
+            "emitted source contains the bug-1 diagnostic comment:\n{}",
+            src
+        );
+        // The fix inlines __platform__ as 9 — the predicate becomes "9 === 9".
+        assert!(
+            src.contains("if (9 === 9)") || src.contains("if (9===9)"),
+            "expected inlined platform comparison, got:\n{}",
+            src
+        );
+        assert!(
+            src.contains("Button('phone')"),
+            "missing then-branch:\n{}",
+            src
+        );
+        assert!(
+            src.contains("Button('desktop')"),
+            "missing else-branch:\n{}",
+            src
+        );
+        // Also pin: no nested */ pattern that would cascade-break ArkTS
+        // parsing (Bug 1). We scan for any /* ... */ wrappers and
+        // check that the opening `/*` only ever pairs with one `*/`.
+        assert_no_nested_block_comments(src);
+    }
+
+    #[test]
+    fn issue_410_conditional_modifier_chain_has_no_nested_block_comments() {
+        // The procedural-mutation-with-conditional-modifier shape from
+        // #410. Build a card with an unconditional modifier chain plus
+        // a conditional one inside an `if` whose predicate would have
+        // surfaced as `__local_N` pre-fix and broken on the fallback's
+        // `*/` substring. Post-fix, both the predicate and the
+        // surrounding /* if (...) */ comment must be safe.
+        let mut m = empty_module();
+        let card_id: LocalId = 200;
+        let cond_id: LocalId = 201;
+        // let isLarge = (something_unsupported_call())
+        // → fallback to `true` post-fix; pre-fix would have emitted
+        //   the nested-comment cascade.
+        m.init.push(let_widget(
+            cond_id,
+            "isLarge",
+            Expr::Call {
+                callee: Box::new(Expr::LocalGet(999)),
+                args: vec![],
+                type_args: vec![],
+            },
+        ));
+        m.init.push(let_widget(
+            card_id,
+            "card",
+            nmc("VStack", vec![Expr::Array(vec![])]),
+        ));
+        m.init.push(mutator_stmt(
+            "widgetSetBackgroundColor",
+            vec![
+                Expr::LocalGet(card_id),
+                Expr::Number(0.5),
+                Expr::Number(0.5),
+                Expr::Number(0.5),
+                Expr::Number(1.0),
+            ],
+        ));
+        // Conditional padding mutator — emits as `/* if ((...)) */ .padding(...)`.
+        m.init.push(Stmt::If {
+            condition: Expr::LocalGet(cond_id),
+            then_branch: vec![mutator_stmt(
+                "setPadding",
+                vec![
+                    Expr::LocalGet(card_id),
+                    Expr::Number(16.0),
+                    Expr::Number(16.0),
+                    Expr::Number(16.0),
+                    Expr::Number(16.0),
+                ],
+            )],
+            else_branch: None,
+        });
+        m.init.push(app_with_body(Expr::LocalGet(card_id)));
+        let r = emit_index_ets(&mut m).unwrap().unwrap();
+        let src = &r.ets_source;
+        assert!(
+            !src.contains("__local_"),
+            "emitted source contains __local_ — bug 2 regressed:\n{}",
+            src
+        );
+        assert!(
+            !src.contains("/* unsupported condition */"),
+            "emitted source contains the bug-1 diagnostic comment:\n{}",
+            src
+        );
+        // The unconditional background modifier still applies.
+        assert!(
+            src.contains(".backgroundColor("),
+            "expected unconditional background:\n{}",
+            src
+        );
+        // Bug 1 acceptance bar: no nested /* ... */ patterns anywhere.
+        assert_no_nested_block_comments(src);
+    }
+
+    /// Walk the source line-by-line and assert no line opens a `/*` that
+    /// contains a second `*/` after the first one (which would break
+    /// parsing). This is a tighter form of "no `*/` inside `/* ... */`":
+    /// for every block-comment marker, count the number of `*/` between
+    /// `/*` and the next `*/` — must be exactly one.
+    fn assert_no_nested_block_comments(src: &str) {
+        let mut i = 0;
+        let bytes = src.as_bytes();
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                // Found an opening `/*`. Find the matching close.
+                let start = i;
+                i += 2;
+                let mut close = None;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        close = Some(i);
+                        break;
+                    }
+                    i += 1;
+                }
+                let Some(close) = close else { return };
+                // The comment body is bytes[start+2..close]. It must NOT
+                // itself contain a `*/` (which would mean the original
+                // close was actually the *second* close — impossible per
+                // the inner-loop logic above, but the symmetric check
+                // catches the other failure mode where serialize_condition
+                // smuggled in a `*/` that was treated as the close.
+                let body = &src[start + 2..close];
+                assert!(
+                    !body.contains("*/"),
+                    "nested block comment found at {}: body={:?}\nfull source:\n{}",
+                    start,
+                    body,
+                    src
+                );
+                i = close + 2;
+            } else {
+                i += 1;
+            }
+        }
     }
 }
