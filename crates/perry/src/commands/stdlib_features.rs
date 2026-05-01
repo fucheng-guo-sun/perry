@@ -84,6 +84,13 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         // dotenv has no optional dep.
         "dotenv" | "dotenv/config" => &[],
 
+        // readline (#347) — needs the async-runtime feature so the
+        // event-loop pump tick drains its line / data / keypress
+        // queues. Without async-runtime, `import readline` still
+        // compiles (rl.close() fires synchronously) but live stdin
+        // events won't propagate to user callbacks.
+        "readline" => &["async-runtime"],
+
         // Modules with no optional perry-stdlib dependency (decimal.js,
         // bignumber.js, lru-cache, commander, exponential-backoff, http,
         // https, events, async_hooks, worker_threads, …) — handled by

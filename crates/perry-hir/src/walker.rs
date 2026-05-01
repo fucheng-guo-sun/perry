@@ -134,6 +134,7 @@ where
         | Expr::EnvGetDynamic(v)
         | Expr::ProcessNextTick(v)
         | Expr::ProcessChdir(v)
+        | Expr::ProcessStdinSetRawMode(v)
         | Expr::FsReadFileSync(v)
         | Expr::FsExistsSync(v)
         | Expr::FsMkdirSync(v)
@@ -750,6 +751,10 @@ where
             f(event);
             f(handler);
         }
+        Expr::ProcessStdinOn { event, handler } => {
+            f(event);
+            f(handler);
+        }
         Expr::ProcessKill { pid, signal } => {
             f(pid);
             if let Some(s) = signal {
@@ -1185,6 +1190,7 @@ where
         | Expr::EnvGetDynamic(v)
         | Expr::ProcessNextTick(v)
         | Expr::ProcessChdir(v)
+        | Expr::ProcessStdinSetRawMode(v)
         | Expr::FsReadFileSync(v)
         | Expr::FsExistsSync(v)
         | Expr::FsMkdirSync(v)
@@ -1778,6 +1784,10 @@ where
             f(value);
         }
         Expr::ProcessOn { event, handler } => {
+            f(event);
+            f(handler);
+        }
+        Expr::ProcessStdinOn { event, handler } => {
             f(event);
             f(handler);
         }

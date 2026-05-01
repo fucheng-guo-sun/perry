@@ -253,6 +253,52 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                 }
             }
 
+            // process.stdin.setRawMode(enabled) and process.stdin.on(event, handler)
+            // — the only two methods we currently recognize on the stdin stream
+            // object. (#347 Phase 2.) Recognized BEFORE the generic
+            // module.Class.staticMethod() arm because process.stdin is not a
+            // class. Falls through to the generic dispatch (which lowers it as
+            // a closure call on the `process.stdin` stub object) for any other
+            // method name — that path correctly handles `process.stdin.write`.
+            if let ast::Expr::Member(outer_member) = expr.as_ref() {
+                if let ast::Expr::Member(inner_member) = outer_member.obj.as_ref() {
+                    if let ast::Expr::Ident(root_ident) = inner_member.obj.as_ref() {
+                        if root_ident.sym.as_ref() == "process" {
+                            if let ast::MemberProp::Ident(stream_ident) = &inner_member.prop {
+                                if stream_ident.sym.as_ref() == "stdin" {
+                                    if let ast::MemberProp::Ident(method_ident) = &outer_member.prop
+                                    {
+                                        let method_name = method_ident.sym.as_ref();
+                                        match method_name {
+                                            "setRawMode" => {
+                                                if !args.is_empty() {
+                                                    let arg = args.into_iter().next().unwrap();
+                                                    return Ok(Expr::ProcessStdinSetRawMode(
+                                                        Box::new(arg),
+                                                    ));
+                                                }
+                                            }
+                                            "on" => {
+                                                if args.len() >= 2 {
+                                                    let mut iter = args.into_iter();
+                                                    let event = iter.next().unwrap();
+                                                    let handler = iter.next().unwrap();
+                                                    return Ok(Expr::ProcessStdinOn {
+                                                        event: Box::new(event),
+                                                        handler: Box::new(handler),
+                                                    });
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check for native module method calls (e.g., mysql.createConnection())
             if let ast::Expr::Member(member) = expr.as_ref() {
                 if let ast::Expr::Ident(obj_ident) = member.obj.as_ref() {

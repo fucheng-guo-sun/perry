@@ -504,6 +504,21 @@ pub(super) fn collect_modules(
         }
     }
 
+    // Detect readline usage via process.stdin.setRawMode / .on (#347
+    // Phase 2). These don't go through an `import 'readline'` statement,
+    // so the import-based needs_stdlib detection above misses them.
+    // The codegen lowers ProcessStdinSetRawMode / ProcessStdinOn to direct
+    // extern calls to js_readline_set_raw_mode / js_readline_stdin_on
+    // which live in perry-stdlib::readline; without stdlib linked, those
+    // symbols are unresolved.
+    {
+        let hir_debug: String = format!("{:?}{:?}", &hir_module.init, &hir_module.functions);
+        if hir_debug.contains("ProcessStdinSetRawMode") || hir_debug.contains("ProcessStdinOn") {
+            ctx.needs_stdlib = true;
+            ctx.native_module_imports.insert("readline".to_string());
+        }
+    }
+
     // Detect ioredis usage (detected by class name, not import path)
     let mut found_ioredis = false;
     for (_, module_name, _) in &hir_module.exported_native_instances {

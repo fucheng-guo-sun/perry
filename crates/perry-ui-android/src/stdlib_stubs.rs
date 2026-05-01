@@ -1622,6 +1622,15 @@ pub extern "C" fn js_readline_process_pending() -> i64 {
 pub extern "C" fn js_readline_has_active() -> i64 {
     0
 }
+// Phase 2 stubs.
+#[no_mangle]
+pub extern "C" fn js_readline_set_raw_mode() -> i64 {
+    0
+}
+#[no_mangle]
+pub extern "C" fn js_readline_stdin_on() -> i64 {
+    0
+}
 #[no_mangle]
 pub extern "C" fn js_worker_threads_get_worker_data() -> i64 {
     0

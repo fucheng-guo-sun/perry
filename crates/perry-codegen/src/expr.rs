@@ -6160,6 +6160,34 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)))
         }
 
+        // -------- process.stdin.setRawMode(enabled) — toggle raw-mode
+        // termios on stdin and flip the readline reader's mode flag
+        // (#347 Phase 2).
+        Expr::ProcessStdinSetRawMode(arg) => {
+            let arg_box = lower_expr(ctx, arg)?;
+            Ok(ctx
+                .block()
+                .call(DOUBLE, "js_readline_set_raw_mode", &[(DOUBLE, &arg_box)]))
+        }
+
+        // -------- process.stdin.on(event, handler) — register a callback
+        // for raw-mode 'data' / 'keypress' events or 'end'/'close' EOF
+        // (#347 Phase 2). Event string goes through unbox_str_handle so
+        // SSO operands resolve to a real heap StringHeader; handler is
+        // unboxed to its closure pointer via the standard mask.
+        Expr::ProcessStdinOn { event, handler } => {
+            let event_box = lower_expr(ctx, event)?;
+            let handler_box = lower_expr(ctx, handler)?;
+            let blk = ctx.block();
+            let event_handle = unbox_str_handle(blk, &event_box);
+            let handler_handle = unbox_to_i64(blk, &handler_box);
+            blk.call_void(
+                "js_readline_stdin_on",
+                &[(I64, &event_handle), (I64, &handler_handle)],
+            );
+            Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)))
+        }
+
         // -------- performance.now() — sub-millisecond resolution --------
         Expr::PerformanceNow => Ok(ctx.block().call(DOUBLE, "js_performance_now", &[])),
 

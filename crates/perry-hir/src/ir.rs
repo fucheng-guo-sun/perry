@@ -1114,6 +1114,14 @@ pub enum Expr {
     ProcessStdout,
     // process.stderr -> stub object { write: fn }
     ProcessStderr,
+    // process.stdin.setRawMode(enabled) -> stdin (#347 Phase 2)
+    ProcessStdinSetRawMode(Box<Expr>),
+    // process.stdin.on(event, handler) -> stdin (#347 Phase 2)
+    // Supported events: 'data', 'keypress', 'end', 'close'.
+    ProcessStdinOn {
+        event: Box<Expr>,
+        handler: Box<Expr>,
+    },
 
     // File system operations
     FsReadFileSync(Box<Expr>), // fs.readFileSync(path) -> string

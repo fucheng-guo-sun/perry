@@ -95,6 +95,11 @@ once_cell = "1.19"
 lazy_static = "1.5"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"  # Required by lodash (core module)
+# libc — termios for readline's raw-mode toggle (#347 Phase 2). No-op
+# stub on non-Unix platforms (Windows raw mode goes via the windows
+# crate; iOS/Android stdlibs are stubbed entirely).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # === OPTIONAL DEPENDENCIES ===
 

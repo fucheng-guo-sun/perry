@@ -96,3 +96,22 @@ pub extern "C" fn js_stdlib_process_pending() -> i32 {
 #[cfg(not(target_os = "android"))]
 #[no_mangle]
 pub extern "C" fn js_stdlib_init_dispatch() {}
+
+// === readline (#347) stubs ===
+// `process.stdin.setRawMode(...)` and `process.stdin.on(...)` always
+// codegen direct extern calls to these symbols, even when the user's
+// program doesn't `import 'readline'` and stdlib isn't linked. The
+// stubs are no-ops so the program links cleanly; when stdlib IS
+// linked, the real implementations from `perry-stdlib::readline`
+// override these (linker picks stdlib over runtime). Android stdlib
+// stubs cover those targets independently.
+#[cfg(not(target_os = "android"))]
+#[no_mangle]
+pub extern "C" fn js_readline_set_raw_mode(_enabled: f64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001) // TAG_UNDEFINED
+}
+#[cfg(not(target_os = "android"))]
+#[no_mangle]
+pub extern "C" fn js_readline_stdin_on(_event_ptr: i64, _callback: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
