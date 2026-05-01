@@ -9,6 +9,7 @@
 
 use super::cell::{Grid, Style};
 use super::color::Color;
+use super::style::BoxStyle;
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
@@ -16,12 +17,19 @@ use std::sync::Mutex;
 /// Widget node. `Box` carries an ordered Vec of child handles so the
 /// parent → child relationship is explicit (children are paint roots
 /// in their own right; we don't store a back-ref).
+///
+/// Phase 3 (#358) attached a `BoxStyle` to every Box for the Taffy
+/// flexbox solver — `flexDirection`, `justifyContent`, `alignItems`,
+/// `gap`, `padding`, explicit `width`/`height`. Defaults match the
+/// v0.1 vertical-stack behavior so existing code keeps working
+/// without supplying a style.
 #[derive(Clone, Debug)]
 pub enum Node {
     Box {
         children: Vec<i64>,
         fg: Color,
         bg: Color,
+        style: BoxStyle,
     },
     Text {
         content: String,
@@ -68,6 +76,21 @@ pub fn box_add_child(parent: i64, child: i64) {
     }
 }
 
+/// Run a closure with mutable access to a node by handle. Returns
+/// `true` if the handle was found, `false` otherwise. Used by the FFI
+/// box-style setters in `ffi.rs` so the lock is acquired once per
+/// mutation.
+pub fn with_node_mut(handle: i64, f: impl FnOnce(&mut Node)) -> bool {
+    let mut reg = REGISTRY.lock().unwrap();
+    for (h, n) in reg.iter_mut() {
+        if *h == handle {
+            f(n);
+            return true;
+        }
+    }
+    false
+}
+
 /// Total number of nodes currently registered. Test-only.
 #[doc(hidden)]
 #[cfg(test)]
@@ -75,9 +98,11 @@ pub fn registry_len() -> usize {
     REGISTRY.lock().unwrap().len()
 }
 
-/// Paint a node tree into the given grid starting at (row, col). Each
-/// child of a Box advances `row` by 1 (vertical stack — Phase 3 swaps
-/// this for Taffy). Returns the row the next sibling should start on.
+/// Paint a node tree into the given grid using the v0.1 vertical-
+/// stack semantics (each Box child advances row by 1). Used as a
+/// fallback when no layout pass has been run, e.g. unit tests that
+/// pre-date Phase 3's Taffy integration. Returns the next available
+/// row.
 pub fn paint(grid: &mut Grid, root: i64, row: u16, col: u16) -> u16 {
     let node = match lookup(root) {
         Some(n) => n,
@@ -99,6 +124,41 @@ pub fn paint(grid: &mut Grid, root: i64, row: u16, col: u16) -> u16 {
                 r = paint(grid, child, r, col);
             }
             r
+        }
+    }
+}
+
+/// Paint using a precomputed Taffy layout map. Each node's rect is
+/// looked up by its handle; Text nodes paint at the stored (row, col)
+/// position, Box nodes don't paint themselves (they're invisible
+/// containers in v0.3 — borders / backgrounds are Phase 3.5). Out-
+/// of-tree handles or missing rects are silently dropped.
+pub fn paint_with_layout(
+    grid: &mut Grid,
+    root: i64,
+    rects: &std::collections::HashMap<i64, super::layout::Rect>,
+) {
+    let node = match lookup(root) {
+        Some(n) => n,
+        None => return,
+    };
+    let rect = match rects.get(&root) {
+        Some(r) => *r,
+        None => return,
+    };
+    match node {
+        Node::Text {
+            content,
+            fg,
+            bg,
+            style,
+        } => {
+            grid.paint_text(rect.row, rect.col, &content, fg, bg, style);
+        }
+        Node::Box { children, .. } => {
+            for child in children {
+                paint_with_layout(grid, child, rects);
+            }
         }
     }
 }
@@ -140,6 +200,7 @@ mod tests {
             children: vec![],
             fg: Color::Default,
             bg: Color::Default,
+            style: BoxStyle::default(),
         });
         box_add_child(b, t1);
         box_add_child(b, t2);

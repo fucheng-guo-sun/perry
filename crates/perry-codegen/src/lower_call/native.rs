@@ -31,6 +31,121 @@ use super::{
     perry_ui_instance_method_lookup, perry_ui_table_lookup, perry_updater_table_lookup,
 };
 
+/// Apply a perry/tui Box style options object — recognized as a
+/// trailing arg in `Box({ flexDirection: "row", gap: 1 }, [children])`
+/// — by emitting per-field `js_perry_tui_box_set_*` FFI calls. The
+/// parent handle is reloaded from `parent_slot` for each setter so
+/// inter-call SSA isn't an issue. Unknown fields are silently dropped
+/// (forward-compat).
+fn apply_box_style(ctx: &mut FnCtx<'_>, parent_slot: &str, style_arg: &Expr) -> anyhow::Result<()> {
+    let Some(props) = extract_options_fields(ctx, style_arg) else {
+        return Ok(());
+    };
+    for (key, val) in &props {
+        // Reload parent handle each iteration so the SSA name is
+        // valid in the current block (apply_inline_style does the
+        // same thing).
+        let blk = ctx.block();
+        let parent_d = blk.load(DOUBLE, parent_slot);
+        let parent_handle = unbox_to_i64(blk, &parent_d);
+        match key.as_str() {
+            "flexDirection" => {
+                let s = get_raw_string_ptr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_flex_direction".to_string(),
+                    DOUBLE,
+                    vec![I64, I64],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_flex_direction",
+                    &[(I64, &parent_handle), (I64, &s)],
+                );
+            }
+            "justifyContent" => {
+                let s = get_raw_string_ptr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_justify_content".to_string(),
+                    DOUBLE,
+                    vec![I64, I64],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_justify_content",
+                    &[(I64, &parent_handle), (I64, &s)],
+                );
+            }
+            "alignItems" => {
+                let s = get_raw_string_ptr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_align_items".to_string(),
+                    DOUBLE,
+                    vec![I64, I64],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_align_items",
+                    &[(I64, &parent_handle), (I64, &s)],
+                );
+            }
+            "gap" => {
+                let v = lower_expr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_gap".to_string(),
+                    DOUBLE,
+                    vec![I64, DOUBLE],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_gap",
+                    &[(I64, &parent_handle), (DOUBLE, &v)],
+                );
+            }
+            "padding" => {
+                let v = lower_expr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_padding".to_string(),
+                    DOUBLE,
+                    vec![I64, DOUBLE],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_padding",
+                    &[(I64, &parent_handle), (DOUBLE, &v)],
+                );
+            }
+            "width" => {
+                let v = lower_expr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_width".to_string(),
+                    DOUBLE,
+                    vec![I64, DOUBLE],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_width",
+                    &[(I64, &parent_handle), (DOUBLE, &v)],
+                );
+            }
+            "height" => {
+                let v = lower_expr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_height".to_string(),
+                    DOUBLE,
+                    vec![I64, DOUBLE],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_height",
+                    &[(I64, &parent_handle), (DOUBLE, &v)],
+                );
+            }
+            _ => {} // Unknown field — silently drop for forward-compat.
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn lower_native_method_call(
     ctx: &mut FnCtx<'_>,
     module: &str,
@@ -73,13 +188,19 @@ pub(crate) fn lower_native_method_call(
     // HStack, etc.) are NOT dispatched yet so the body is the
     // zero-sentinel — the window appears with the right title/size but
     // no widget tree. Full widget dispatch is a separate followup.
-    // perry/tui Box(children) — TS shape is `Box([child1, child2, ...])`
-    // or bare `Box()`. Mirrors the perry/ui VStack pattern: create the
-    // Box handle, then iterate the children array calling
-    // `js_perry_tui_box_add_child(parent, child)` per element. Bare
-    // `Box()` falls through to the regular dispatch table below
-    // (lowers to a plain `js_perry_tui_box` call with no children).
-    // (#358 Phase 1.)
+    // perry/tui Box — TS shapes:
+    //   Box()                                — empty container
+    //   Box([child, …])                      — children array (Phase 1)
+    //   Box({ flexDirection, gap, … }, [child, …])  — style + children (Phase 3)
+    //   Box({ flexDirection, gap, … })       — style, no children
+    //
+    // Detect which by examining args[0]: an array → children-only;
+    // an object/object-shape → style; followed by an array → children.
+    // Mirrors the perry/ui VStack pattern: create handle, optionally
+    // emit per-style-field setter calls, then iterate the children
+    // array calling add_child per element. Bare `Box()` falls through
+    // to the regular PERRY_UI_TABLE dispatch (just emits js_perry_tui_box).
+    // (#358 Phases 1 + 3.)
     if module == "perry/tui" && method == "Box" && object.is_none() && !args.is_empty() {
         ctx.pending_declares
             .push(("js_perry_tui_box".to_string(), DOUBLE, vec![]));
@@ -93,7 +214,31 @@ pub(crate) fn lower_native_method_call(
         let parent_slot = ctx.func.alloca_entry(DOUBLE);
         ctx.block().store(DOUBLE, &parent_d, &parent_slot);
 
-        if let Some(children_expr) = args.first() {
+        // Determine which arg is the style-options object and which
+        // is the children array. The classification is structural —
+        // arrays go to children, object-literals go to style.
+        let mut style_arg: Option<&Expr> = None;
+        let mut children_arg: Option<&Expr> = None;
+        for arg in args.iter() {
+            match arg {
+                Expr::Array(_) | Expr::ArraySpread(_) => children_arg = Some(arg),
+                _ => {
+                    if style_arg.is_none() {
+                        style_arg = Some(arg);
+                    }
+                }
+            }
+        }
+
+        // Emit per-field style setter calls if a style object was
+        // recognized. Each known field maps to one js_perry_tui_box_set_*
+        // FFI; unknown fields are silently dropped (forward-compat
+        // for future style props).
+        if let Some(style) = style_arg {
+            apply_box_style(ctx, &parent_slot, style)?;
+        }
+
+        if let Some(children_expr) = children_arg {
             let elements_owned: Option<Vec<Expr>> = match children_expr {
                 Expr::Array(elems) => Some(elems.clone()),
                 _ => None,

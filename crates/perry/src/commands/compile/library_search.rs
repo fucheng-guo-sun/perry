@@ -639,9 +639,7 @@ pub(super) fn collect_library_candidates(name: &str, target: Option<&str>) -> Ve
                 // both and uses this suffix to disambiguate.
                 let class_and_sim = match target {
                     Some("ios") | Some("ios-widget") => Some(("_ios", false)),
-                    Some("ios-simulator") | Some("ios-widget-simulator") => {
-                        Some(("_ios", true))
-                    }
+                    Some("ios-simulator") | Some("ios-widget-simulator") => Some(("_ios", true)),
                     Some("visionos") => Some(("_visionos", false)),
                     Some("visionos-simulator") => Some(("_visionos", true)),
                     Some("watchos") => Some(("_watchos", false)),

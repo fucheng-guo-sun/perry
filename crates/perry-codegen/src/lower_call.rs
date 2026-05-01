@@ -7062,6 +7062,75 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         args: &[],
         ret: NR_VOID,
     },
+    // perry/tui Phase 3 — Box style setters. The codegen at
+    // lower_call/native.rs intercepts `Box(opts, children)` and emits
+    // these explicitly per style field; they're not normally called
+    // directly from user code but are listed here so the dispatch
+    // table also handles direct hand-emission cases (e.g. a future
+    // `box.setFlexDirection(...)` imperative API).
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetFlexDirection",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_flex_direction",
+        args: &[NA_PTR, NA_STR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetJustifyContent",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_justify_content",
+        args: &[NA_PTR, NA_STR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetAlignItems",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_align_items",
+        args: &[NA_PTR, NA_STR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetGap",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_gap",
+        args: &[NA_PTR, NA_F64],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetPadding",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_padding",
+        args: &[NA_PTR, NA_F64],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetWidth",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_width",
+        args: &[NA_PTR, NA_F64],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "boxSetHeight",
+        class_filter: None,
+        runtime: "js_perry_tui_box_set_height",
+        args: &[NA_PTR, NA_F64],
+        ret: NR_VOID,
+    },
     // ========== readline (#347 Phase 1) ==========
     // createInterface(opts) returns a Handle (i64, NaN-boxed POINTER).
     // Instance methods take that Handle as the first arg via has_receiver.

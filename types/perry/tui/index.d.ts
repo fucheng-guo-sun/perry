@@ -29,12 +29,38 @@ declare module "perry/tui" {
     export function Text(content: string): Widget;
 
     /**
-     * Vertical stack of children. (Real flexbox layout — Taffy with
-     * flexDirection / justifyContent / alignItems / flexGrow — lands
-     * in Phase 3 of #358; for now Box is always a vertical stack.)
+     * Style options for a Box. Maps to Taffy's flexbox solver — the
+     * v0.3 surface (#358 Phase 3) supports flexDirection /
+     * justifyContent / alignItems, integer-cell gap and uniform
+     * padding, and explicit width / height. flex-grow / flex-shrink /
+     * flex-basis / per-side padding land in Phase 3.5.
+     */
+    export interface BoxStyle {
+        flexDirection?: "row" | "column";
+        justifyContent?:
+            | "start"
+            | "center"
+            | "end"
+            | "flex-end"
+            | "space-between"
+            | "space-around";
+        alignItems?: "start" | "center" | "end" | "flex-end" | "stretch";
+        gap?: number;
+        padding?: number;
+        width?: number;
+        height?: number;
+    }
+
+    /**
+     * Container with optional flexbox style and children. Box defaults
+     * to `flexDirection: "column"`, gap=0, padding=0 — matches the
+     * v0.1 vertical-stack behavior so existing code keeps working
+     * without supplying a style.
      */
     export function Box(): Widget;
     export function Box(children: Widget[]): Widget;
+    export function Box(style: BoxStyle): Widget;
+    export function Box(style: BoxStyle, children: Widget[]): Widget;
 
     /**
      * Paint one frame of `root` to stdout and return. Diffs against
