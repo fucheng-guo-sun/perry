@@ -5910,19 +5910,90 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 }
             }
 
-            // Fallback: stub behavior. Lower everything for side effects,
-            // return undefined-equivalent. This keeps the program compiling
-            // for unsupported spread shapes while still being obviously
-            // wrong if executed.
-            let _ = lower_expr(ctx, callee)?;
-            for a in args {
-                match a {
-                    CallArg::Expr(e) | CallArg::Spread(e) => {
-                        let _ = lower_expr(ctx, e)?;
+            // Closure callee path: `cb(reg0, reg1, ..., ...spread)` where
+            // `cb` is a closure value (not a known FuncRef). We lower the
+            // callee to its NaN-boxed value, marshal regular args into a
+            // function-entry-allocated stack buffer, fold spread sources
+            // into a single array (concat when multiple), then call
+            // `js_closure_call_apply_with_spread`. This is what makes
+            // patterns like `archetype.forEachWithComponents(types, cb)`
+            // → `cb(entity, ...components)` actually invoke the user
+            // callback (issue #412).
+            //
+            // The signature must match `runtime_decls.rs`:
+            //   fn(closure_box: f64, regs_ptr: ptr, reg_count: i64,
+            //      spread_arr_handle: i64) -> f64
+            let cb_box = lower_expr(ctx, callee)?;
+
+            // Marshal regular args into a stack buffer (or null/0 if none).
+            let (regs_ptr, regs_len) = if regular_count == 0 {
+                ("null".to_string(), "0".to_string())
+            } else {
+                let buf_reg = ctx.func.alloca_entry_array(DOUBLE, regular_count);
+                let mut idx = 0usize;
+                for a in args {
+                    if let CallArg::Expr(e) = a {
+                        let v = lower_expr(ctx, e)?;
+                        let slot = ctx
+                            .block()
+                            .gep(DOUBLE, &buf_reg, &[(I64, &format!("{}", idx))]);
+                        ctx.block().store(DOUBLE, &v, &slot);
+                        idx += 1;
                     }
                 }
-            }
-            Ok(double_literal(0.0))
+                let ptr_reg = ctx.block().next_reg();
+                ctx.block().emit_raw(format!(
+                    "{} = getelementptr [{} x double], ptr {}, i64 0, i64 0",
+                    ptr_reg, regular_count, buf_reg
+                ));
+                (ptr_reg, regular_count.to_string())
+            };
+
+            // Marshal spread sources. 0 → "0" handle; 1 → unbox the one
+            // array; multiple → concat onto a fresh array.
+            let spread_handle = if spread_count == 0 {
+                "0".to_string()
+            } else if spread_count == 1 {
+                let spread_expr = args
+                    .iter()
+                    .find_map(|a| match a {
+                        CallArg::Spread(e) => Some(e),
+                        _ => None,
+                    })
+                    .expect("spread_count == 1 guarantees one Spread");
+                let arr_box = lower_expr(ctx, spread_expr)?;
+                let blk = ctx.block();
+                unbox_to_i64(blk, &arr_box)
+            } else {
+                // Concat all spread sources into a fresh array.
+                let acc = ctx.block().call(I64, "js_array_alloc", &[(I32, "0")]);
+                let mut acc_handle = acc;
+                for a in args {
+                    if let CallArg::Spread(e) = a {
+                        let part_box = lower_expr(ctx, e)?;
+                        let blk = ctx.block();
+                        let part_handle = unbox_to_i64(blk, &part_box);
+                        acc_handle = ctx.block().call(
+                            I64,
+                            "js_array_concat",
+                            &[(I64, &acc_handle), (I64, &part_handle)],
+                        );
+                    }
+                }
+                acc_handle
+            };
+
+            let result = ctx.block().call(
+                DOUBLE,
+                "js_closure_call_apply_with_spread",
+                &[
+                    (DOUBLE, &cb_box),
+                    (crate::types::PTR, &regs_ptr),
+                    (I64, &regs_len),
+                    (I64, &spread_handle),
+                ],
+            );
+            Ok(result)
         }
 
         // -------- Math.fround --------

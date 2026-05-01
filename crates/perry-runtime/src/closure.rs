@@ -1512,6 +1512,79 @@ pub unsafe extern "C" fn js_closure_call_array(
     }
 }
 
+/// Closure call with regular + spread args: `cb(reg0, reg1, ..., ...spread_arr)`.
+///
+/// Codegen lowers `closure(...args)` (or `closure(a, b, ...rest)`) at the
+/// CallSpread arm by collecting regular arg slots into a stack buffer,
+/// unboxing the spread source to an array handle, and calling this helper.
+/// We concatenate `regular_args[0..regular_count]` with the array's
+/// elements into a scratch buffer, then dispatch through
+/// `js_closure_call_array`.
+///
+/// `closure_box` is a NaN-boxed closure value (the same shape that
+/// `lower_expr` produces for a closure-typed expression). A null/undefined
+/// box returns TAG_UNDEFINED.
+#[no_mangle]
+pub unsafe extern "C" fn js_closure_call_apply_with_spread(
+    closure_box: f64,
+    regular_args: *const f64,
+    regular_count: i64,
+    spread_arr_handle: i64,
+) -> f64 {
+    use crate::array::ArrayHeader;
+
+    let bits = closure_box.to_bits();
+    let closure_ptr = (bits & 0x0000_FFFF_FFFF_FFFF) as *const ClosureHeader;
+    if closure_ptr.is_null() {
+        return f64::from_bits(crate::value::TAG_UNDEFINED);
+    }
+
+    let reg_n = if regular_count < 0 { 0 } else { regular_count as usize };
+
+    let arr = spread_arr_handle as *const ArrayHeader;
+    let (spread_n, spread_data): (usize, *const f64) = if arr.is_null() {
+        (0, std::ptr::null())
+    } else {
+        let len = (*arr).length as usize;
+        let data = (arr as *const u8).add(std::mem::size_of::<ArrayHeader>()) as *const f64;
+        (len, data)
+    };
+
+    let total = reg_n + spread_n;
+
+    // Small fast path: stack buffer for up to 16 args (matches js_closure_call16).
+    let mut stack_buf: [f64; 16] = [0.0; 16];
+    let mut heap_buf: Vec<f64>;
+    let buf_ptr: *const f64 = if total <= 16 {
+        if !regular_args.is_null() && reg_n > 0 {
+            std::ptr::copy_nonoverlapping(regular_args, stack_buf.as_mut_ptr(), reg_n);
+        }
+        if !spread_data.is_null() && spread_n > 0 {
+            std::ptr::copy_nonoverlapping(
+                spread_data,
+                stack_buf.as_mut_ptr().add(reg_n),
+                spread_n,
+            );
+        }
+        stack_buf.as_ptr()
+    } else {
+        heap_buf = vec![0.0; total];
+        if !regular_args.is_null() && reg_n > 0 {
+            std::ptr::copy_nonoverlapping(regular_args, heap_buf.as_mut_ptr(), reg_n);
+        }
+        if !spread_data.is_null() && spread_n > 0 {
+            std::ptr::copy_nonoverlapping(
+                spread_data,
+                heap_buf.as_mut_ptr().add(reg_n),
+                spread_n,
+            );
+        }
+        heap_buf.as_ptr()
+    };
+
+    js_closure_call_array(closure_ptr as i64, buf_ptr, total as i64)
+}
+
 // V8 interop no-op stubs. Real implementations are in perry-jsruntime/src/interop.rs.
 // These stubs ensure symbols are always available even when perry-jsruntime is not linked
 // (iOS, Android, standalone builds). When perry-jsruntime IS linked, its strong symbols
