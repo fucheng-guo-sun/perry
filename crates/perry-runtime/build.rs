@@ -143,10 +143,60 @@ fn main() {
                     row.runtime, args, ty, default
                 )
                 .unwrap(),
-                None => writeln!(out, "pub extern \"C\" fn {}({}) {{}}", row.runtime, args).unwrap(),
+                None => {
+                    writeln!(out, "pub extern \"C\" fn {}({}) {{}}", row.runtime, args).unwrap()
+                }
             }
             count += 1;
         }
+    }
+
+    // Direct-call FFI symbols that bypass the dispatch tables — codegen
+    // emits these for the simple constructor shapes (`VStack(items)`,
+    // `HStack(items)`, `Button(label, onPress)`) in
+    // `crates/perry-codegen/src/lower_call/native.rs`. They aren't in
+    // PERRY_UI_TABLE so the table walk above misses them; we list them
+    // explicitly here. Keep in sync with the hardcoded callsites in
+    // lower_call/native.rs — `grep 'perry_ui_.*_create' lower_call/native.rs`.
+    let direct_call_stubs: &[(&str, &[ArgKind], ReturnKind)] = &[
+        (
+            "perry_ui_vstack_create",
+            &[ArgKind::F64],
+            ReturnKind::Widget,
+        ),
+        (
+            "perry_ui_hstack_create",
+            &[ArgKind::F64],
+            ReturnKind::Widget,
+        ),
+        (
+            "perry_ui_button_create",
+            &[ArgKind::Str, ArgKind::Closure],
+            ReturnKind::Widget,
+        ),
+    ];
+    for (name, args, ret) in direct_call_stubs {
+        if !seen.insert(name) {
+            continue;
+        }
+        let args_str: String = args
+            .iter()
+            .enumerate()
+            .map(|(i, k)| format!("_a{}: {}", i, arg_kind_rust_type(*k)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (ret_ty, default) = return_kind(*ret);
+        writeln!(out, "#[no_mangle]").unwrap();
+        match ret_ty {
+            Some(ty) => writeln!(
+                out,
+                "pub extern \"C\" fn {}({}) -> {} {{ {} }}",
+                name, args_str, ty, default
+            )
+            .unwrap(),
+            None => writeln!(out, "pub extern \"C\" fn {}({}) {{}}", name, args_str).unwrap(),
+        }
+        count += 1;
     }
 
     writeln!(out, "\n// {} stub(s) generated.", count).unwrap();

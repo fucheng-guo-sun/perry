@@ -1094,6 +1094,13 @@ pub(super) fn build_and_run_link(
         // in DevEco/hdc the same way ArkTS console.log does), and by the
         // arkts_callbacks bridge for diagnostic register/invoke traces.
         cmd.arg("-lhilog_ndk.z");
+        // `libtime_service_ndk.so` provides OH_TimeService_GetTimeZone,
+        // referenced by the `iana-time-zone` crate (pulled in transitively
+        // by `chrono` etc.) when it detects an OHOS target. The OHOS
+        // dynamic loader rejects libentry.so at app launch if this isn't
+        // listed in DT_NEEDED. Note: no `.z.` in the soname, unlike the
+        // ace_napi / hilog_ndk libs above.
+        cmd.arg("-ltime_service_ndk");
     } else if is_android {
         // Android system libraries
         cmd.arg("-Wl,--allow-multiple-definition")
