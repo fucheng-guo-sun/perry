@@ -10097,6 +10097,74 @@ fn lower_object_literal(ctx: &mut FnCtx<'_>, props: &[(String, Expr)]) -> Result
     let zero_str = "0".to_string();
     let n_str = field_count.to_string();
 
+    // Fast path: no closure-with-`this` props. Use the shape-cache allocator
+    // and write fields by INDEX — this skips the per-field linear key-search
+    // done by `js_object_set_field_by_name`. Cuts ~10ns per field on the hot
+    // path (and saves the keys_array realloc when `getDetailedIdType`-style
+    // returns are evaluated 10k×/round). Closure-with-`this` props still
+    // need the by-name path because `this_patches` populates them post-build
+    // via `js_closure_set_capture_f64`, which assumes the key is already in
+    // keys_array — fine here since the shape allocator pre-populates it.
+    let any_method_closure = props.iter().any(|(_, v)| {
+        matches!(
+            v,
+            Expr::Closure {
+                captures_this: true,
+                ..
+            }
+        )
+    });
+
+    if !any_method_closure && field_count > 0 {
+        // Build packed keys "k1\0k2\0…" interned in the StringPool (shared
+        // across all literals with the same key set + order).
+        let mut packed_keys = String::new();
+        for (k, _) in props {
+            packed_keys.push_str(k);
+            packed_keys.push('\0');
+        }
+        let keys_idx = ctx.strings.intern(&packed_keys);
+        let keys_entry = ctx.strings.entry(keys_idx);
+        let keys_global = format!("@{}", keys_entry.bytes_global);
+        let keys_len_str = keys_entry.byte_len.to_string();
+
+        // Stable shape_id derived from the packed-keys bytes. SHAPE_INLINE_CACHE
+        // is a 256-slot direct-mapped array; collisions fall through to the
+        // overflow HashMap, so any deterministic non-zero u32 works. FNV-1a
+        // is fast, dependency-free, and well-distributed across small inputs.
+        let mut shape_id: u32 = 0x811c9dc5;
+        for b in packed_keys.as_bytes() {
+            shape_id ^= *b as u32;
+            shape_id = shape_id.wrapping_mul(0x01000193);
+        }
+        if shape_id == 0 {
+            // shape_cache_get treats shape_id == 0 as "empty slot"; bump to 1.
+            shape_id = 1;
+        }
+        let shape_id_str = shape_id.to_string();
+
+        let obj_handle = ctx.block().call(
+            I64,
+            "js_object_alloc_with_shape",
+            &[
+                (I32, &shape_id_str),
+                (I32, &n_str),
+                (PTR, &keys_global),
+                (I32, &keys_len_str),
+            ],
+        );
+
+        for (i, (_, value_expr)) in props.iter().enumerate() {
+            let v = lower_expr(ctx, value_expr)?;
+            let idx_str = i.to_string();
+            ctx.block().call_void(
+                "js_object_set_field",
+                &[(I64, &obj_handle), (I32, &idx_str), (DOUBLE, &v)],
+            );
+        }
+        return Ok(nanbox_pointer_inline(ctx.block(), &obj_handle));
+    }
+
     let obj_handle = ctx
         .block()
         .call(I64, "js_object_alloc", &[(I32, &zero_str), (I32, &n_str)]);

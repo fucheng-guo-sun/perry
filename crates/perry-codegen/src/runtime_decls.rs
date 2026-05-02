@@ -1171,6 +1171,18 @@ pub fn declare_phase_b_arrays(module: &mut LlModule) {
 /// `js_object_alloc(0, N)` is the fallback for dynamic cases.
 pub fn declare_phase_b_objects(module: &mut LlModule) {
     module.declare_function("js_object_alloc", I64, &[I32, I32]);
+    // Shape-cache-aware variant: pre-populates keys_array via SHAPE_INLINE_CACHE,
+    // so subsequent field stores can use index-based set_field (skipping the
+    // per-call linear key-search done by js_object_set_field_by_name).
+    module.declare_function(
+        "js_object_alloc_with_shape",
+        I64,
+        &[I32, I32, PTR, I32],
+    );
+    // Index-based field setter (no key lookup). Hot-path target for object
+    // literals with statically-known keys; the i-th field directly maps to
+    // the i-th packed-keys entry above.
+    module.declare_function("js_object_set_field", VOID, &[I64, I32, DOUBLE]);
     module.declare_function("js_object_set_field_by_name", VOID, &[I64, I64, DOUBLE]);
     module.declare_function("js_object_get_field_by_name_f64", DOUBLE, &[I64, I64]);
     module.declare_function("js_object_get_field_ic_miss", DOUBLE, &[I64, I64, PTR]);
