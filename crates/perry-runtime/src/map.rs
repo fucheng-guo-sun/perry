@@ -23,6 +23,31 @@ fn register_map(ptr: *mut MapHeader) {
 }
 
 pub fn is_registered_map(addr: usize) -> bool {
+    // Fast pre-filter: gc_malloc'd Maps carry `GcHeader.obj_type ==
+    // GC_TYPE_MAP` at `addr - GC_HEADER_SIZE`. A single i8 load + cmp
+    // short-circuits the non-Map path (the common case across the
+    // typed-dispatch chain `if is_registered_map { ... } else if
+    // is_registered_set { ... } ...`) without paying the
+    // `HashSet<usize>::contains` SipHash. The HashSet check still runs
+    // on byte-matches to defend against:
+    //   1. False-positive aliasing — a non-gc_malloc allocation (Set is
+    //      raw-alloc'd, BufferHeader for small buffers via a slab) whose
+    //      preceding byte happens to read as 8.
+    //   2. Stale post-sweep ptrs — drop_map_index removes from
+    //      MAP_REGISTRY; the GcHeader byte may persist until the slot
+    //      is reused.
+    // Profile (samply, perf-comprehensive): ~5.7% inclusive samples
+    // were attributed to is_registered_map's HashSet lookup before
+    // this fast path landed.
+    if addr < 0x1000 + crate::gc::GC_HEADER_SIZE {
+        return false;
+    }
+    unsafe {
+        let header = (addr - crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;
+        if (*header).obj_type != crate::gc::GC_TYPE_MAP {
+            return false;
+        }
+    }
     MAP_REGISTRY.with(|r| r.borrow().contains(&addr))
 }
 
