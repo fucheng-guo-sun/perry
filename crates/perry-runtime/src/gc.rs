@@ -1933,17 +1933,27 @@ fn mark_block_persisting_arena_objects(valid_ptrs: &ValidPointerSet) {
         let persist_low = general_n.saturating_sub(BLOCK_PERSIST_WINDOW);
         let mut block_has_live: Vec<bool> = vec![false; n_blocks];
 
-        // Pass 1: compute which blocks have any reachable (marked/pinned) object.
-        crate::arena::arena_walk_objects_with_block_index(|header_ptr, block_idx| {
-            let header = header_ptr as *mut GcHeader;
-            unsafe {
-                if (*header).gc_flags & (GC_FLAG_MARKED | GC_FLAG_PINNED) != 0
-                    && block_idx < block_has_live.len()
-                {
-                    block_has_live[block_idx] = true;
+        // Pass 1: compute which blocks have any reachable (marked/pinned)
+        // object. Restricted to the same recent young-arena window pass 2
+        // uses — pass 1 only existed to populate the filter pass 2 reads,
+        // and longlived/old/non-recent blocks would never enter pass 2's
+        // mark loop anyway. With ~1.6M objects per cycle in
+        // perf-comprehensive and only the last 5 general blocks within the
+        // window, this collapses pass 1 from a full arena walk to a
+        // handful-of-blocks walk.
+        crate::arena::arena_walk_objects_filtered(
+            |block_idx| block_idx >= persist_low && block_idx < general_n,
+            |header_ptr, block_idx| {
+                let header = header_ptr as *mut GcHeader;
+                unsafe {
+                    if (*header).gc_flags & (GC_FLAG_MARKED | GC_FLAG_PINNED) != 0
+                        && block_idx < block_has_live.len()
+                    {
+                        block_has_live[block_idx] = true;
+                    }
                 }
-            }
-        });
+            },
+        );
 
         // Pass 2: mark any unmarked arena object in a live block and enqueue.
         // Block-level pre-filter skips the object loop for dead blocks —
