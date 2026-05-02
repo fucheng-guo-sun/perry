@@ -384,7 +384,23 @@ pub(crate) fn compute_auto_captures(
     body: &[perry_hir::Stmt],
     explicit: &[u32],
 ) -> Vec<u32> {
-    let mut out: Vec<u32> = explicit.to_vec();
+    // Exclude module globals from the explicit captures list. perry-hir
+    // sometimes lists block-scoped top-level lets (those whose
+    // `inside_block_scope > 0`) in `Closure.captures` — the HIR-side
+    // `module_level_ids` filter only catches the strict module-top
+    // case. If such a var was later globalized (referenced from any
+    // function/closure body, see codegen.rs:1029), capturing it would
+    // store the global's f64 VALUE in the capture slot — not a box
+    // pointer. The closure body, which sees `boxed_vars.contains(id)`,
+    // would then deref that f64 as a box pointer (0x0 → "invalid box
+    // pointer 0x0" warning, count stays 0). Symmetric with the
+    // auto-detected branch below: closures auto-load module globals
+    // directly through `@perry_global_*`, no capture slot needed.
+    let mut out: Vec<u32> = explicit
+        .iter()
+        .copied()
+        .filter(|id| !ctx.module_globals.contains_key(id))
+        .collect();
     let mut referenced: std::collections::HashSet<u32> = std::collections::HashSet::new();
     crate::collectors::collect_ref_ids_in_stmts(body, &mut referenced);
     let mut inner_lets: std::collections::HashSet<u32> = std::collections::HashSet::new();

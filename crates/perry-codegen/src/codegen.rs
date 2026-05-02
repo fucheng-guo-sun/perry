@@ -2438,7 +2438,18 @@ fn compile_closure(
     // — they MUST agree on the slot indices, otherwise the body reads
     // captures from the wrong slots. Sorting the auto-detected ids
     // gives deterministic indexing across both call sites.
-    let mut auto_captures: Vec<u32> = captures.clone();
+    //
+    // Filter module globals out of the explicit captures list — same
+    // reason as in `compute_auto_captures` (closures auto-load module
+    // globals through `@perry_global_*`). Without this, the body and
+    // creation sites disagree on capture indices and a globalized
+    // block-scoped let captured by a closure ends up with a
+    // value-instead-of-box-pointer in its capture slot.
+    let mut auto_captures: Vec<u32> = captures
+        .iter()
+        .copied()
+        .filter(|id| !module_globals.contains_key(id))
+        .collect();
     {
         let mut referenced: std::collections::HashSet<u32> = std::collections::HashSet::new();
         collect_ref_ids_in_stmts(body, &mut referenced);
