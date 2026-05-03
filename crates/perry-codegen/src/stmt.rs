@@ -1451,6 +1451,20 @@ fn expr_preserves_array_length(e: &perry_hir::Expr, arr_id: u32, bounded_idx_id:
         Expr::PropertyGet { object, .. } => walk(object),
         Expr::PropertySet { object, value, .. } => walk(object) && walk(value),
         Expr::IndexGet { object, index } => walk(object) && walk(index),
+        // Buffer / Uint8Array reads + writes preserve the underlying array
+        // length — Buffer.alloc allocates a fixed-capacity blob, and the
+        // GEP-based fast path (`Expr::Uint8ArrayGet`/`Set`,
+        // `Expr::BufferIndexGet`/`Set`) doesn't extend it. Without these
+        // arms the default `_ => false` arm rejects bodies that touch
+        // a Buffer, blocking the `i < dst.length` peephole on
+        // `for (let i = 0; i < dst.length; i++) dst[i]` patterns —
+        // image_convolution's FNV-1a checksum loop is the canonical
+        // example, ~24M iterations through `fcmp olt double` instead of
+        // `icmp slt i32`.
+        Expr::Uint8ArrayGet { array, index } => walk(array) && walk(index),
+        Expr::Uint8ArraySet { array, index, value } => walk(array) && walk(index) && walk(value),
+        Expr::BufferIndexGet { buffer, index } => walk(buffer) && walk(index),
+        Expr::BufferIndexSet { buffer, index, value } => walk(buffer) && walk(index) && walk(value),
         Expr::Array(elements) => elements.iter().all(&walk),
         Expr::ArraySpread(elements) => elements.iter().all(|el| match el {
             ArrayElement::Expr(e) | ArrayElement::Spread(e) => walk(e),
