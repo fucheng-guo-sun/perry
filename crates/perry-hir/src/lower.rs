@@ -6791,6 +6791,30 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
             // Convert to: obj == null ? undefined : obj.prop
             match &*opt_chain.base {
                 ast::OptChainBase::Member(member) => {
+                    // Issue #449: `new.target?.<prop>` folds to a literal at
+                    // lowering time — same shape as the direct
+                    // `new.target.<prop>` fold in `expr_member::lower_member`,
+                    // applied here BEFORE `lower_expr(&member.obj)` would
+                    // otherwise route MetaProp(NewTarget) through the
+                    // broken Object-literal synthesis path. Inside a
+                    // constructor `new.target` is non-null/non-undefined,
+                    // so the optional chain just resolves the property;
+                    // outside a constructor it's undefined and the chain
+                    // short-circuits.
+                    if let ast::Expr::MetaProp(mp) = member.obj.as_ref() {
+                        if matches!(mp.kind, ast::MetaPropKind::NewTarget) {
+                            if let ast::MemberProp::Ident(prop_ident) = &member.prop {
+                                let prop_name = prop_ident.sym.as_ref();
+                                if let Some(class_name) = ctx.in_constructor_class.clone() {
+                                    return Ok(match prop_name {
+                                        "name" => Expr::String(class_name),
+                                        _ => Expr::Undefined,
+                                    });
+                                }
+                                return Ok(Expr::Undefined);
+                            }
+                        }
+                    }
                     // obj?.prop -> obj == null ? undefined : obj.prop
                     let obj_expr = lower_expr(ctx, &member.obj)?;
 

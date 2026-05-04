@@ -43,6 +43,40 @@ pub(super) fn lower_member(ctx: &mut LoweringContext, member: &ast::MemberExpr) 
                 });
             }
         }
+        // Issue #449: `new.target.<prop>` folds directly to a literal at
+        // lowering time. The bare `MetaProp(NewTarget)` lowering in
+        // `expr_misc::lower_meta_prop` returns an Object literal whose
+        // string field reads back as the raw u64 handle bits (rendering
+        // as `2e-323` / `NaN`) when constructed inside a class
+        // constructor — same module-globals NaN-boxing bug class as
+        // #444's `import.meta` Object. Folding the most common access
+        // patterns here sidesteps it entirely. Inside a constructor,
+        // `.name` is the class name string; outside, the whole
+        // expression evaluates to `undefined.<prop>` which would throw
+        // — but `new.target` outside a constructor is `undefined`, so
+        // we lower the access to `Undefined` and let downstream
+        // optional-chain rewrites (`new.target?.name`) handle the
+        // null-guard correctly.
+        if matches!(mp.kind, ast::MetaPropKind::NewTarget) {
+            if let ast::MemberProp::Ident(prop_ident) = &member.prop {
+                let prop_name = prop_ident.sym.as_ref();
+                if let Some(class_name) = ctx.in_constructor_class.clone() {
+                    return Ok(match prop_name {
+                        "name" => Expr::String(class_name),
+                        // Other props on a class reference (`prototype`,
+                        // arbitrary) — undefined is the safe fallback;
+                        // adding `prototype` would need a real class
+                        // reference, not in scope for #449.
+                        _ => Expr::Undefined,
+                    });
+                }
+                // Outside a constructor: `new.target` is undefined and
+                // `undefined.<prop>` throws TypeError. We model the
+                // observable result as Undefined (matches Node when
+                // wrapped in `new.target?.<prop>` short-circuiting).
+                return Ok(Expr::Undefined);
+            }
+        }
     }
 
     // process.std{in,out,err}.{isTTY,columns,rows} — direct extern-call
