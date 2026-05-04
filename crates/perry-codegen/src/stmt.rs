@@ -32,18 +32,34 @@ pub(crate) fn lower_stmts(ctx: &mut FnCtx<'_>, stmts: &[Stmt]) -> Result<()> {
         // entry — without the pre-computed data ptr we'd have to derive
         // it inline, which costs the same as the scalar Uint8ArrayGet
         // and gives up the win.
-        if let Some(reduction) = crate::expr::try_match_channel_reduction(
-            stmts,
-            i,
-            ctx.integer_locals,
-        ) {
-            if ctx.buffer_data_slots.contains_key(&reduction.array_id) {
-                crate::expr::lower_channel_reduction(ctx, &reduction)?;
-                i += reduction.acc_ids.len();
-                if ctx.block().is_terminated() {
-                    break;
+        // Skip the manual `<4 x i32>` channel reduction in functions whose
+        // body was expanded by `perry_transform::unroll_static_loops`.
+        // After the unroll, `KERNEL[ky+2][kx+2]` constant-folds to integer
+        // literals and LLVM has enough info to (a) replace mul-by-1 with
+        // no-op, (b) replace mul-by-power-of-2 with a shift, (c) choose
+        // its own vectorization shape across the 25-chunk unrolled body.
+        // Forcing `<4 x i32>` per chunk pre-commits to a vectorization
+        // that fights all three. Image_convolution measured 350-360 ms
+        // with manual SIMD vs 310-320 ms without (post-unroll) — a -50 ms
+        // savings on the canonical workload.
+        //
+        // Pre-unroll (no constant-foldable k), the manual reduction is
+        // still a 10 ms win (817c4b56) so we keep it as the default
+        // fallback for non-unrolled functions.
+        if !ctx.was_unrolled {
+            if let Some(reduction) = crate::expr::try_match_channel_reduction(
+                stmts,
+                i,
+                ctx.integer_locals,
+            ) {
+                if ctx.buffer_data_slots.contains_key(&reduction.array_id) {
+                    crate::expr::lower_channel_reduction(ctx, &reduction)?;
+                    i += reduction.acc_ids.len();
+                    if ctx.block().is_terminated() {
+                        break;
+                    }
+                    continue;
                 }
-                continue;
             }
         }
         lower_stmt(ctx, &stmts[i])?;

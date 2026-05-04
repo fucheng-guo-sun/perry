@@ -935,6 +935,7 @@ fn inline_calls_in_expr(
         captures: Vec::new(),
         decorators: Vec::new(),
         was_plain_async: false,
+        was_unrolled: false,
     };
     let mut inlined = inline_one_call(&synth_func, &args, next_local, &remap_local_ids_in_stmts);
     let return_remapped = match inlined.last() {
@@ -6947,6 +6948,7 @@ mod tests {
             exported_functions: vec![],
             widgets: vec![],
             uses_fetch: false,
+            init_was_unrolled: false,
             extern_funcs: vec![],
         }
     }

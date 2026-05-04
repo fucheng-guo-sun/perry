@@ -566,6 +566,16 @@ pub(super) fn collect_modules(
             &extra_class_fields,
             &extra_anon_classes,
         );
+        // Static-trip-count for-loop unroll. Runs AFTER the inliner so any
+        // inlined function bodies' loops also get unrolled. Runs BEFORE the
+        // async/generator transforms — those transforms pre-emptively rewrite
+        // control flow into state-machine shapes that the unroll match would
+        // no longer recognize. Doing it pre-async keeps the analysis simple.
+        // image_convolution's 5x5 blur kernel: outer ky and inner kx both
+        // become 25 fully-unrolled stmts with `KERNEL[ky+2][kx+2]` collapsed
+        // to compile-time integer literals — see crates/perry-transform/
+        // src/unroll.rs.
+        perry_transform::unroll_static_loops(&mut hir_module);
         transform_async_to_generator(&mut hir_module);
         transform_generators(&mut hir_module);
     }

@@ -540,6 +540,19 @@ pub(crate) struct FnCtx<'a> {
     pub clamp3_functions: &'a std::collections::HashSet<u32>,
     pub clamp_u8_functions: &'a std::collections::HashSet<u32>,
 
+    /// True if `perry_transform::unroll_static_loops` expanded any
+    /// static-trip-count for-loop in the function this FnCtx is lowering
+    /// (or in `module.init` for the module-init lowering). Read by the
+    /// channel-vector SIMD reduction gate in `lower_stmts` to decide
+    /// whether to skip the manual `<4 x i32>` reduction in favour of
+    /// LLVM's auto-vectorizer + constant-folding. The unroll exposes the
+    /// kernel coefficients as compile-time literals; the manual SIMD
+    /// pre-commits to a `<4 x i32>` shape that fights LLVM's freedom to
+    /// pick mul-by-shift / mul-by-1-elimination across the unrolled
+    /// body. See `image_convolution`'s blur kernel: post-unroll without
+    /// manual SIMD = 310-320 ms vs with manual SIMD = 350-360 ms.
+    pub was_unrolled: bool,
+
     /// (Issue #51) Counter for per-site inline cache globals.
     pub ic_site_counter: u32,
 

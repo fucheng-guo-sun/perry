@@ -11,6 +11,7 @@ pub mod closure;
 pub mod generator;
 pub mod i18n;
 pub mod inline;
+pub mod unroll;
 
 // Re-export main transformation functions
 pub use async_to_generator::transform_async_to_generator;
@@ -21,3 +22,4 @@ pub use inline::{
     gather_cross_module_anon_classes, gather_cross_module_methods,
     gather_cross_module_methods_with_extern_imports, inline_functions, MethodCandidate,
 };
+pub use unroll::unroll_static_loops;

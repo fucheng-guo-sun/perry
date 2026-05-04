@@ -891,6 +891,7 @@ impl LoweringContext {
             is_async: false,
             is_generator: false,
             was_plain_async: false,
+            was_unrolled: false,
             is_exported: false,
             captures: Vec::new(),
             decorators: Vec::new(),

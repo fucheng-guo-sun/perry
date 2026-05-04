@@ -293,6 +293,13 @@ pub struct Module {
     /// External FFI function declarations (name, param_types, return_type)
     /// Populated from `declare function` statements with no body.
     pub extern_funcs: Vec<(String, Vec<Type>, Type)>,
+    /// Set to `true` by `perry_transform::unroll_static_loops` when any
+    /// for-loop in `init` got unrolled. Mirrors `Function::was_unrolled`
+    /// for top-level statements (which don't belong to a Function).
+    /// Image_convolution puts its blur kernel directly at module init,
+    /// not inside a function, so the codegen-side channel-vector SIMD
+    /// gate consults this flag for module.init lowering.
+    pub init_was_unrolled: bool,
 }
 
 /// A widget extension declaration (WidgetKit on iOS/watchOS, Glance on Android, Tiles on Wear OS)
@@ -729,6 +736,18 @@ pub struct Function {
     /// resulting iterator in an async-step driver so the function returns
     /// a Promise that respects spec microtask ordering.
     pub was_plain_async: bool,
+    /// True if `perry_transform::unroll_static_loops` expanded any
+    /// static-trip-count `for` loops in this function's body. Codegen
+    /// reads this flag to decide whether to skip the manual `<4 x i32>`
+    /// channel-vector reduction (which fights LLVM's freedom to choose
+    /// vectorization shape across the unrolled body — the canonical
+    /// case is image_convolution's 5×5 blur kernel where post-unroll
+    /// `KERNEL[ky+2][kx+2]` constant-folds to integer literals and
+    /// LLVM picks a better mul-by-shift shape than the pre-committed
+    /// vector form). Default `false`. Pre-existing functions with no
+    /// unrollable loops keep the manual SIMD path active for their
+    /// (still-vectorizable) bodies.
+    pub was_unrolled: bool,
 }
 
 /// A function parameter
@@ -2285,6 +2304,7 @@ impl Module {
             widgets: Vec::new(),
             uses_fetch: false,
             extern_funcs: Vec::new(),
+            init_was_unrolled: false,
         }
     }
 }
