@@ -384,6 +384,49 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
 
     // User function call via FuncRef.
     if let Expr::FuncRef(fid) = callee {
+        // (Issue #436 plan #1) Clamp-pattern fast path: when the callee
+        // is a function recognized as `clampIdx(v, lo, hi)` or
+        // `clampU8(v)` and we're being lowered in an f64-required
+        // context, emit `@llvm.smin.i32` / `@llvm.smax.i32` directly +
+        // `sitofp` to double, mirroring the i32 path in
+        // `lower_expr_as_i32`. The HIR inliner is configured to leave
+        // these calls intact (`is_clamp3`/`is_clamp_u8` short-circuit
+        // `is_inlinable`) so this path fires at every call site and the
+        // `dowhile/break` shape that blocked LLVM's auto-vectorizer
+        // never appears in the IR.
+        if ctx.clamp3_functions.contains(fid) && args.len() == 3 {
+            let v = crate::expr::lower_expr_as_i32(ctx, &args[0])?;
+            let lo = crate::expr::lower_expr_as_i32(ctx, &args[1])?;
+            let hi = crate::expr::lower_expr_as_i32(ctx, &args[2])?;
+            let blk = ctx.block();
+            let r1 = blk.fresh_reg();
+            blk.emit_raw(format!(
+                "{} = call i32 @llvm.smax.i32(i32 {}, i32 {})",
+                r1, v, lo
+            ));
+            let r2 = blk.fresh_reg();
+            blk.emit_raw(format!(
+                "{} = call i32 @llvm.smin.i32(i32 {}, i32 {})",
+                r2, r1, hi
+            ));
+            return Ok(blk.sitofp(I32, &r2, DOUBLE));
+        }
+        if ctx.clamp_u8_functions.contains(fid) && args.len() == 1 {
+            let v = crate::expr::lower_expr_as_i32(ctx, &args[0])?;
+            let blk = ctx.block();
+            let r1 = blk.fresh_reg();
+            blk.emit_raw(format!(
+                "{} = call i32 @llvm.smax.i32(i32 {}, i32 0)",
+                r1, v
+            ));
+            let r2 = blk.fresh_reg();
+            blk.emit_raw(format!(
+                "{} = call i32 @llvm.smin.i32(i32 {}, i32 255)",
+                r2, r1
+            ));
+            return Ok(blk.sitofp(I32, &r2, DOUBLE));
+        }
+
         let Some(fname) = ctx.func_names.get(fid).cloned() else {
             for a in args {
                 let _ = lower_expr(ctx, a)?;
@@ -5420,6 +5463,51 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         runtime: "js_net_socket_connect",
         args: &[NA_F64, NA_STR],
         ret: NR_PTR,
+    },
+    // Factory alias: `net.connect(port, host)` is the spec'd alias for
+    // `net.createConnection(port, host)`. Pre-issue-#422 only the
+    // `createConnection` form was wired; `net.connect(...)` fell through
+    // to the receiver-less unknown-method path which returns
+    // TAG_UNDEFINED, so user code reading `typeof net.connect(...)`
+    // saw `"undefined"` (issue #422 reproducer 3).
+    NativeModSig {
+        module: "net",
+        has_receiver: false,
+        method: "connect",
+        class_filter: None,
+        runtime: "js_net_socket_connect",
+        args: &[NA_F64, NA_STR],
+        ret: NR_PTR,
+    },
+    // Constructor: `new net.Socket()` allocates an unconnected socket
+    // handle whose TCP connection is deferred until `sock.connect(port,
+    // host)` runs. The HIR's `lower_new` arm rewrites `new net.Socket()`
+    // (Member callee) to a receiver-less `Expr::NativeMethodCall` so it
+    // reaches this dispatch entry; the matching let-stmt registration in
+    // `lower.rs` tags the binding as a `("net", "Socket")` native instance
+    // so subsequent `sock.connect/.write/.on/.end/.destroy` calls find
+    // the class-filtered entries below (issue #422 reproducer 1 + 2).
+    NativeModSig {
+        module: "net",
+        has_receiver: false,
+        method: "Socket",
+        class_filter: None,
+        runtime: "js_net_socket_alloc",
+        args: &[],
+        ret: NR_PTR,
+    },
+    // Instance method: `sock.connect(port, host)` initiates the deferred
+    // TCP connection on a `new net.Socket()`-allocated handle. Twin of
+    // the `createConnection` factory above — both end up in the same
+    // tokio task body via `run_socket_task`.
+    NativeModSig {
+        module: "net",
+        has_receiver: true,
+        method: "connect",
+        class_filter: Some("Socket"),
+        runtime: "js_net_socket_method_connect",
+        args: &[NA_F64, NA_STR],
+        ret: NR_VOID,
     },
     NativeModSig {
         module: "net",

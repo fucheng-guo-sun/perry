@@ -2174,6 +2174,20 @@ fn compile_function(
     // index subtree. Pure accumulators skip the Let-site i32 shadow so the body
     // stays a single-f64-alloca chain that LLVM's autovectorizer can widen.
     let index_used_locals = crate::collectors::collect_index_used_locals(&f.body);
+    // Issue #436: locals whose every write has a strictly-i32-bounded rhs
+    // (bitwise / `|0` / `>>>0` / Buffer-byte / MathImul / returns_int call,
+    // but NOT bare Add/Sub/Mul of int-stable). Used at the Let-site i32
+    // gate alongside `index_used_locals` so accumulators like image_conv's
+    // FNV-1a `h` (writes `(h^dst[i])|0` and `imul32(h,K)`) get the i32
+    // fast path even without index use, while #435's overflow-prone
+    // `sum += compute(i)` accumulators stay out (the bare Add is
+    // explicitly excluded).
+    let strictly_i32_bounded_locals = crate::collectors::collect_strictly_i32_bounded_locals(
+        &f.body,
+        &integer_locals,
+        &cross_module.flat_const_arrays.keys().copied().collect(),
+        &clamp_fn_ids,
+    );
 
     // Pre-walk: which `let x = new Class(...)` locals never escape?
     let non_escaping_news =
@@ -2232,6 +2246,7 @@ fn compile_function(
         bounded_index_pairs: Vec::new(),
         i32_counter_slots: HashMap::new(),
         index_used_locals: &index_used_locals,
+        strictly_i32_bounded_locals: &strictly_i32_bounded_locals,
         i18n: &cross_module.i18n,
         local_class_aliases: HashMap::new(),
         local_id_to_name: HashMap::new(),
@@ -2529,6 +2544,12 @@ fn compile_closure(
         &clamp_fn_ids,
     );
     let index_used_locals = crate::collectors::collect_index_used_locals(body);
+    let strictly_i32_bounded_locals = crate::collectors::collect_strictly_i32_bounded_locals(
+        body,
+        &integer_locals,
+        &cross_module.flat_const_arrays.keys().copied().collect(),
+        &clamp_fn_ids,
+    );
 
     let non_escaping_news = crate::collectors::collect_non_escaping_news(
         body,
@@ -2597,6 +2618,7 @@ fn compile_closure(
         bounded_index_pairs: Vec::new(),
         i32_counter_slots: HashMap::new(),
         index_used_locals: &index_used_locals,
+        strictly_i32_bounded_locals: &strictly_i32_bounded_locals,
         i18n: &cross_module.i18n,
         local_class_aliases: HashMap::new(),
         local_id_to_name: HashMap::new(),
@@ -2743,6 +2765,12 @@ fn compile_method(
         &clamp_fn_ids,
     );
     let index_used_locals = crate::collectors::collect_index_used_locals(&method.body);
+    let strictly_i32_bounded_locals = crate::collectors::collect_strictly_i32_bounded_locals(
+        &method.body,
+        &integer_locals,
+        &cross_module.flat_const_arrays.keys().copied().collect(),
+        &clamp_fn_ids,
+    );
 
     let non_escaping_news = crate::collectors::collect_non_escaping_news(
         &method.body,
@@ -2807,6 +2835,7 @@ fn compile_method(
         bounded_index_pairs: Vec::new(),
         i32_counter_slots: HashMap::new(),
         index_used_locals: &index_used_locals,
+        strictly_i32_bounded_locals: &strictly_i32_bounded_locals,
         i18n: &cross_module.i18n,
         local_class_aliases: HashMap::new(),
         local_id_to_name: HashMap::new(),
@@ -3023,6 +3052,13 @@ fn compile_module_entry(
             &clamp_fn_ids,
         );
         let main_index_used_locals = crate::collectors::collect_index_used_locals(&hir.init);
+        let main_strictly_i32_bounded_locals =
+            crate::collectors::collect_strictly_i32_bounded_locals(
+                &hir.init,
+                &main_integer_locals,
+                &cross_module.flat_const_arrays.keys().copied().collect(),
+                &clamp_fn_ids,
+            );
         let main_non_escaping_news = crate::collectors::collect_non_escaping_news(
             &hir.init,
             &main_boxed_vars,
@@ -3088,6 +3124,7 @@ fn compile_module_entry(
             bounded_index_pairs: Vec::new(),
             i32_counter_slots: HashMap::new(),
             index_used_locals: &main_index_used_locals,
+            strictly_i32_bounded_locals: &main_strictly_i32_bounded_locals,
             i18n: &cross_module.i18n,
             local_class_aliases: HashMap::new(),
             local_id_to_name: HashMap::new(),
@@ -3263,6 +3300,13 @@ fn compile_module_entry(
             &clamp_fn_ids,
         );
         let init_index_used_locals = crate::collectors::collect_index_used_locals(&hir.init);
+        let init_strictly_i32_bounded_locals =
+            crate::collectors::collect_strictly_i32_bounded_locals(
+                &hir.init,
+                &init_integer_locals,
+                &cross_module.flat_const_arrays.keys().copied().collect(),
+                &clamp_fn_ids,
+            );
         let init_non_escaping_news = crate::collectors::collect_non_escaping_news(
             &hir.init,
             &init_boxed_vars,
@@ -3326,6 +3370,7 @@ fn compile_module_entry(
             bounded_index_pairs: Vec::new(),
             i32_counter_slots: HashMap::new(),
             index_used_locals: &init_index_used_locals,
+            strictly_i32_bounded_locals: &init_strictly_i32_bounded_locals,
             i18n: &cross_module.i18n,
             local_class_aliases: HashMap::new(),
             local_id_to_name: HashMap::new(),
@@ -3726,6 +3771,12 @@ fn compile_static_method(
         &clamp_fn_ids,
     );
     let index_used_locals = crate::collectors::collect_index_used_locals(&f.body);
+    let strictly_i32_bounded_locals = crate::collectors::collect_strictly_i32_bounded_locals(
+        &f.body,
+        &integer_locals,
+        &cross_module.flat_const_arrays.keys().copied().collect(),
+        &clamp_fn_ids,
+    );
 
     let static_boxed_vars = module_boxed_vars.clone();
     let non_escaping_news = crate::collectors::collect_non_escaping_news(
@@ -3792,6 +3843,7 @@ fn compile_static_method(
         bounded_index_pairs: Vec::new(),
         i32_counter_slots: HashMap::new(),
         index_used_locals: &index_used_locals,
+        strictly_i32_bounded_locals: &strictly_i32_bounded_locals,
         i18n: &cross_module.i18n,
         local_class_aliases: HashMap::new(),
         local_id_to_name: HashMap::new(),

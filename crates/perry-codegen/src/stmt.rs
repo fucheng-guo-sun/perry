@@ -532,8 +532,16 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
             // `>>> 0` is intentionally not seeded into integer_locals
             // (see collect_integer_let_ids), so SEED never ends up
             // in this code path.
+            // (Issue #436) Allow the i32 fast path when the local is
+            // either index-used (existing #435 path) OR
+            // strictly-i32-bounded by every write (new path that
+            // recovers the FNV-1a `h` accumulator and similar
+            // explicit-i32-coerce shapes without reintroducing #435's
+            // accumulator overflow).
+            let i32_safe_local = ctx.index_used_locals.contains(id)
+                || ctx.strictly_i32_bounded_locals.contains(id);
             let needs_i32_slot = ctx.integer_locals.contains(id)
-                && ctx.index_used_locals.contains(id)
+                && i32_safe_local
                 && init_in_i32_range
                 && !ctx.boxed_vars.contains(id)
                 && !ctx.module_globals.contains_key(id)

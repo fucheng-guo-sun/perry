@@ -224,6 +224,22 @@ pub fn inline_functions(
         if detect_math_imul_polyfill(f) {
             imul_polyfill_ids.insert(f.id);
         }
+        // (Issue #436 plan #1) Clamp-pattern functions (`if (v<lo)
+        // return lo; if (v>hi) return hi; return v;` and the 1-arg
+        // `clampU8` variant) are deliberately NOT inlined here. The
+        // codegen recognizes them by id and emits a branchless
+        // `@llvm.smin.i32` / `@llvm.smax.i32` chain at every call site
+        // (`crates/perry-codegen/src/expr.rs::lower_expr_as_i32` for
+        // i32-required contexts, plus the f64-context arm in
+        // `lower_call.rs::lower_call`). Inlining replaces the
+        // `Expr::Call { callee: FuncRef(clamp_fn_id) }` shape with a
+        // `do { ... } while (false)` block carrying `if/break` rewrites
+        // of the original `return`s — IR shape that LLVM's auto-vec
+        // refuses to lift. Skipping the inline keeps the recognizable
+        // pattern intact for codegen.
+        if is_clamp3(f) || is_clamp_u8(f) {
+            continue;
+        }
         if is_inlinable(f) {
             func_candidates.insert(f.id, f.clone());
         }
@@ -3267,6 +3283,132 @@ fn substitute_locals_in_stmts(
             _ => {}
         }
     }
+}
+
+// ── Clamp-pattern detection (Issue #436 plan #1) ──────────────────────────
+//
+// These detectors mirror the ones in `perry-codegen/src/collectors.rs`
+// (`detect_clamp3` / `detect_clamp_u8`). Duplicated rather than shared via
+// `perry-hir` because perry-transform and perry-codegen are sibling crates;
+// the patterns are tiny and purely syntactic, so drift is low-risk.
+//
+// Matched bodies are excluded from the inlinable-functions set so the
+// `Expr::Call { callee: FuncRef(clamp_fn_id) }` shape survives at every
+// call site. Codegen's `lower_expr_as_i32` and the f64-context arm in
+// `lower_call.rs` then emit `@llvm.smin.i32` / `@llvm.smax.i32` inline,
+// producing IR that LLVM's auto-vectorizer can lift.
+
+/// `function clamp3(v, lo, hi) { if (v < lo) return lo; if (v > hi) return hi; return v; }`
+fn is_clamp3(f: &Function) -> bool {
+    if f.is_async || f.is_generator || f.params.len() != 3 || f.body.len() != 3 {
+        return false;
+    }
+    let (v_id, lo_id, hi_id) = (f.params[0].id, f.params[1].id, f.params[2].id);
+    let Stmt::If {
+        condition:
+            Expr::Compare {
+                op: perry_hir::CompareOp::Lt,
+                left,
+                right,
+            },
+        then_branch,
+        else_branch: None,
+    } = &f.body[0]
+    else {
+        return false;
+    };
+    if !matches!(left.as_ref(), Expr::LocalGet(id) if *id == v_id) {
+        return false;
+    }
+    if !matches!(right.as_ref(), Expr::LocalGet(id) if *id == lo_id) {
+        return false;
+    }
+    if then_branch.len() != 1
+        || !matches!(&then_branch[0], Stmt::Return(Some(Expr::LocalGet(id))) if *id == lo_id)
+    {
+        return false;
+    }
+    let Stmt::If {
+        condition:
+            Expr::Compare {
+                op: perry_hir::CompareOp::Gt,
+                left,
+                right,
+            },
+        then_branch,
+        else_branch: None,
+    } = &f.body[1]
+    else {
+        return false;
+    };
+    if !matches!(left.as_ref(), Expr::LocalGet(id) if *id == v_id) {
+        return false;
+    }
+    if !matches!(right.as_ref(), Expr::LocalGet(id) if *id == hi_id) {
+        return false;
+    }
+    if then_branch.len() != 1
+        || !matches!(&then_branch[0], Stmt::Return(Some(Expr::LocalGet(id))) if *id == hi_id)
+    {
+        return false;
+    }
+    matches!(&f.body[2], Stmt::Return(Some(Expr::LocalGet(id))) if *id == v_id)
+}
+
+/// `function clampU8(v) { if (v < 0) return 0; if (v > 255) return 255; return v|0; }`
+fn is_clamp_u8(f: &Function) -> bool {
+    if f.is_async || f.is_generator || f.params.len() != 1 || f.body.len() != 3 {
+        return false;
+    }
+    let v_id = f.params[0].id;
+    let Stmt::If {
+        condition:
+            Expr::Compare {
+                op: perry_hir::CompareOp::Lt,
+                left,
+                right,
+            },
+        then_branch,
+        else_branch: None,
+    } = &f.body[0]
+    else {
+        return false;
+    };
+    if !matches!(left.as_ref(), Expr::LocalGet(id) if *id == v_id) {
+        return false;
+    }
+    if !matches!(right.as_ref(), Expr::Integer(0)) {
+        return false;
+    }
+    if !matches!(
+        then_branch.as_slice(),
+        [Stmt::Return(Some(Expr::Integer(0)))]
+    ) {
+        return false;
+    }
+    let Stmt::If {
+        condition:
+            Expr::Compare {
+                op: perry_hir::CompareOp::Gt,
+                left,
+                right,
+            },
+        then_branch,
+        else_branch: None,
+    } = &f.body[1]
+    else {
+        return false;
+    };
+    if !matches!(left.as_ref(), Expr::LocalGet(id) if *id == v_id) {
+        return false;
+    }
+    if !matches!(right.as_ref(), Expr::Integer(255)) {
+        return false;
+    }
+    matches!(
+        then_branch.as_slice(),
+        [Stmt::Return(Some(Expr::Integer(255)))]
+    )
 }
 
 // ── Math.imul polyfill detection ──────────────────────────────────────────

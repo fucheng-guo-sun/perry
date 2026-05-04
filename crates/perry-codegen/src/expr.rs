@@ -433,6 +433,24 @@ pub(crate) struct FnCtx<'a> {
     /// loop-preservation barrier from issue #74 in place.
     pub index_used_locals: &'a std::collections::HashSet<u32>,
 
+    /// (Issue #436) Locals where every write (Stmt::Let init, LocalSet,
+    /// Update) has a strictly-i32-bounded rhs per
+    /// `is_strictly_i32_bounded_expr`. Excludes the dangerous
+    /// Add/Sub/Mul-of-int-stable arm (the #435 accumulator-overflow
+    /// shape) but includes pure bitwise ops (`a & b`, `a ^ b`, `a >> n`),
+    /// the explicit i32 coerces (`expr | 0`, `expr >>> 0`), Buffer-byte
+    /// loads, MathImul, Update (i++/i--), and calls to clamp /
+    /// returns_integer functions.
+    ///
+    /// Used at the Let-site `needs_i32_slot` gate alongside
+    /// `index_used_locals`: a local qualifies for the i32 fast path if
+    /// it's transitively-index-used OR strictly-i32-bounded. Image_conv's
+    /// FNV-1a `h` accumulator is the latter case — its writes are
+    /// `(h ^ dst[i]) | 0` (explicit coerce) and `imul32(h, K)`
+    /// (returns_integer call), both strict, so `h` stays on i32 even
+    /// though it's never used as an array index.
+    pub strictly_i32_bounded_locals: &'a std::collections::HashSet<u32>,
+
     /// Compile-time i18n resolution context. When `Some`, the
     /// `Expr::I18nString` lowering looks up the translation for the
     /// default locale at compile time and emits the resolved string

@@ -1916,6 +1916,423 @@ fn is_int32_producing_expr(
     }
 }
 
+/// (Issue #436) Strict variant of `is_int32_producing_expr` that REJECTS
+/// the `Add | Sub | Mul` of int-stable arm — the exact pattern that #435
+/// flagged as overflow-unsafe for accumulators (`sum += compute(i)` over
+/// 50M iterations grows past i32). Everything else accepted by the
+/// non-strict version remains accepted: pure bitwise ops (always i32 by
+/// JS spec), the `expr | 0` / `expr >>> 0` ToInt32 idioms, Buffer-byte
+/// loads (0..255), `MathImul`, calls to clamp/returns_integer functions
+/// (the function's body guarantees i32 output), `Update` (i++/i-- — bitwise
+/// mod-2^32 wrap is i32-stable), and flat-const-array IndexGet (small
+/// literal table lookup).
+///
+/// A local is considered "strictly-i32-bounded by writes" if every write
+/// to it (Stmt::Let init, LocalSet, Update) has a rhs satisfying this
+/// strict check. Image_convolution's FNV-1a `h` accumulator (every write
+/// is `(h ^ dst[i]) | 0` or `imul32(h, K)`) qualifies; #435's `sum +=
+/// compute(i)` (write rhs is bare `Add`) does not.
+fn is_strictly_i32_bounded_expr(
+    e: &perry_hir::Expr,
+    known_int_locals: &HashSet<u32>,
+    flat_const_ids: &HashSet<u32>,
+    flat_row_alias_ids: &HashSet<u32>,
+    clamp_fn_ids: &HashSet<u32>,
+) -> bool {
+    use perry_hir::{BinaryOp, Expr};
+    match e {
+        Expr::Integer(_) => true,
+        Expr::Update { .. } => true,
+        // `expr | 0` / `expr >>> 0` ToInt32/ToUint32 idioms — explicit i32
+        // coercion, hard-bounded.
+        Expr::Binary { op, right, .. }
+            if matches!(op, BinaryOp::BitOr | BinaryOp::UShr)
+                && matches!(right.as_ref(), Expr::Integer(0)) =>
+        {
+            true
+        }
+        // Pure bitwise — always i32 per JS spec.
+        Expr::Binary { op, .. } => matches!(
+            op,
+            BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr
+                | BinaryOp::UShr
+        ),
+        Expr::Call { callee, .. } => {
+            if let Expr::FuncRef(fid) = callee.as_ref() {
+                clamp_fn_ids.contains(fid)
+            } else {
+                false
+            }
+        }
+        Expr::LocalGet(id) => known_int_locals.contains(id),
+        Expr::Uint8ArrayGet { .. } | Expr::BufferIndexGet { .. } => true,
+        Expr::MathImul(_, _) => true,
+        Expr::IndexGet { object, .. } => match object.as_ref() {
+            Expr::IndexGet { object: inner, .. } => {
+                matches!(inner.as_ref(), Expr::LocalGet(id) if flat_const_ids.contains(id))
+            }
+            Expr::LocalGet(id) => flat_row_alias_ids.contains(id),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// (Issue #436) Compute the set of locals where every write (including
+/// the `Stmt::Let` init) has a strictly-i32-bounded rhs per
+/// `is_strictly_i32_bounded_expr`. These locals are correctness-safe to
+/// put on the i32 fast path even when they're not used as an array index
+/// — the bounded writes guarantee the value fits in i32 by construction
+/// rather than mathematical induction over loop iterations.
+///
+/// Used to extend the Let-site `needs_i32_slot` gate beyond
+/// `index_used_locals`. Image_convolution's FNV-1a `h` accumulator is the
+/// motivating shape: writes are `(h ^ dst[i]) | 0` (explicit `| 0` coerce)
+/// and `imul32(h, K)` (returns_integer call) — both strict — so `h`
+/// qualifies even though it's never used as an index. #435's `sum`,
+/// `prod`, etc. write through bare `Add | Sub | Mul` and stay out.
+pub(crate) fn collect_strictly_i32_bounded_locals(
+    stmts: &[perry_hir::Stmt],
+    integer_locals: &HashSet<u32>,
+    flat_const_ids: &HashSet<u32>,
+    clamp_fn_ids: &HashSet<u32>,
+) -> HashSet<u32> {
+    let mut flat_row_alias_ids: HashSet<u32> = HashSet::new();
+    collect_flat_row_aliases(stmts, flat_const_ids, &mut flat_row_alias_ids);
+
+    // Per-id state: (saw_any_write, all_writes_strict_so_far).
+    let mut saw_any: HashSet<u32> = HashSet::new();
+    let mut disqualified: HashSet<u32> = HashSet::new();
+    walk_writes_for_strict(
+        stmts,
+        integer_locals,
+        flat_const_ids,
+        &flat_row_alias_ids,
+        clamp_fn_ids,
+        &mut saw_any,
+        &mut disqualified,
+    );
+    saw_any
+        .into_iter()
+        .filter(|id| !disqualified.contains(id))
+        .collect()
+}
+
+fn walk_writes_for_strict(
+    stmts: &[perry_hir::Stmt],
+    integer_locals: &HashSet<u32>,
+    flat_const_ids: &HashSet<u32>,
+    flat_row_alias_ids: &HashSet<u32>,
+    clamp_fn_ids: &HashSet<u32>,
+    saw_any: &mut HashSet<u32>,
+    disqualified: &mut HashSet<u32>,
+) {
+    use perry_hir::Stmt;
+    for s in stmts {
+        match s {
+            Stmt::Let {
+                id,
+                init: Some(init),
+                ..
+            } => {
+                saw_any.insert(*id);
+                if !is_strictly_i32_bounded_expr(
+                    init,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                ) {
+                    disqualified.insert(*id);
+                }
+                walk_writes_in_expr_for_strict(
+                    init,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+            }
+            Stmt::Let { init: None, .. } => {}
+            Stmt::Expr(e) | Stmt::Throw(e) => {
+                walk_writes_in_expr_for_strict(
+                    e,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+            }
+            Stmt::Return(opt) => {
+                if let Some(e) = opt {
+                    walk_writes_in_expr_for_strict(
+                        e,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                walk_writes_in_expr_for_strict(
+                    condition,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+                walk_writes_for_strict(
+                    then_branch,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+                if let Some(eb) = else_branch {
+                    walk_writes_for_strict(
+                        eb,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+            }
+            Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
+                walk_writes_in_expr_for_strict(
+                    condition,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+                walk_writes_for_strict(
+                    body,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body,
+            } => {
+                if let Some(init_stmt) = init {
+                    walk_writes_for_strict(
+                        std::slice::from_ref(init_stmt),
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+                if let Some(cond) = condition {
+                    walk_writes_in_expr_for_strict(
+                        cond,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+                if let Some(upd) = update {
+                    walk_writes_in_expr_for_strict(
+                        upd,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+                walk_writes_for_strict(
+                    body,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                walk_writes_for_strict(
+                    body,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+                if let Some(c) = catch {
+                    walk_writes_for_strict(
+                        &c.body,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+                if let Some(f) = finally {
+                    walk_writes_for_strict(
+                        f,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+            }
+            Stmt::Switch {
+                discriminant,
+                cases,
+            } => {
+                walk_writes_in_expr_for_strict(
+                    discriminant,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+                for c in cases {
+                    if let Some(t) = &c.test {
+                        walk_writes_in_expr_for_strict(
+                            t,
+                            integer_locals,
+                            flat_const_ids,
+                            flat_row_alias_ids,
+                            clamp_fn_ids,
+                            saw_any,
+                            disqualified,
+                        );
+                    }
+                    walk_writes_for_strict(
+                        &c.body,
+                        integer_locals,
+                        flat_const_ids,
+                        flat_row_alias_ids,
+                        clamp_fn_ids,
+                        saw_any,
+                        disqualified,
+                    );
+                }
+            }
+            Stmt::Labeled { body, .. } => {
+                walk_writes_for_strict(
+                    std::slice::from_ref(body.as_ref()),
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn walk_writes_in_expr_for_strict(
+    e: &perry_hir::Expr,
+    integer_locals: &HashSet<u32>,
+    flat_const_ids: &HashSet<u32>,
+    flat_row_alias_ids: &HashSet<u32>,
+    clamp_fn_ids: &HashSet<u32>,
+    saw_any: &mut HashSet<u32>,
+    disqualified: &mut HashSet<u32>,
+) {
+    use perry_hir::Expr;
+    match e {
+        Expr::LocalSet(id, value) => {
+            saw_any.insert(*id);
+            if !is_strictly_i32_bounded_expr(
+                value,
+                integer_locals,
+                flat_const_ids,
+                flat_row_alias_ids,
+                clamp_fn_ids,
+            ) {
+                disqualified.insert(*id);
+            }
+            walk_writes_in_expr_for_strict(
+                value,
+                integer_locals,
+                flat_const_ids,
+                flat_row_alias_ids,
+                clamp_fn_ids,
+                saw_any,
+                disqualified,
+            );
+        }
+        Expr::Update { id, .. } => {
+            // Update (i++/i--) is always strictly i32-bounded — it's a
+            // bitwise mod-2^32 wrap operation in JS semantics. Mark as
+            // a write but don't disqualify.
+            saw_any.insert(*id);
+        }
+        _ => {
+            // Recurse via the centralized walker so any future Expr
+            // variant carrying a `LocalSet` or `Update` is visited.
+            perry_hir::walker::walk_expr_children(e, &mut |child| {
+                walk_writes_in_expr_for_strict(
+                    child,
+                    integer_locals,
+                    flat_const_ids,
+                    flat_row_alias_ids,
+                    clamp_fn_ids,
+                    saw_any,
+                    disqualified,
+                );
+            });
+        }
+    }
+}
+
 fn is_flat_const_indexget(
     e: &perry_hir::Expr,
     flat_const_ids: &HashSet<u32>,
