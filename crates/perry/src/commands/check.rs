@@ -52,6 +52,16 @@ pub struct CheckArgs {
     /// Include medium-confidence fixes (inferred types)
     #[arg(long)]
     pub fix_unsafe: bool,
+
+    /// Compile target the check is being run for (`harmonyos`,
+    /// `ios`, `android`, …). When set, imports of `perry/ui` /
+    /// `perry/system` / `perry/updater` symbols that the runtime
+    /// stubs out for that target produce a `NoOpStub` warning so
+    /// the user finds out before running the binary (#464).
+    /// Defaults to native host — the stub scan is skipped because
+    /// host UI crates own those symbols with real impls.
+    #[arg(long)]
+    pub target: Option<String>,
 }
 
 /// Collect all TypeScript files in a directory
@@ -213,6 +223,18 @@ pub fn run(args: CheckArgs, format: OutputFormat, use_color: bool, verbose: u8) 
         // Extract imports from AST even before lowering (for dependency checking)
         if args.check_deps {
             extract_imports_from_ast(&parse_result.module, &canonical, &mut dep_resolver);
+        }
+
+        // Stub scan (#464): warn on imports of `perry/ui` /
+        // `perry/system` / `perry/updater` symbols that the runtime
+        // stubs out for the requested target. Skipped when no target
+        // is specified — the host UI crate owns those symbols.
+        if target_stubs_out_symbols(args.target.as_deref()) {
+            scan_imports_for_stubs(
+                &parse_result.module,
+                parse_result.file_id,
+                &mut all_diagnostics,
+            );
         }
 
         // Scan source for dynamic patterns (eval, new Function, etc.)
@@ -545,6 +567,83 @@ fn extract_requires_from_stmt(
 ) {
     // For now, we focus on ES module imports
     // require() support can be added later if needed
+}
+
+/// Returns true when the requested compile target stubs out
+/// `perry/ui` / `perry/system` / `perry/updater` symbols at runtime —
+/// currently only harmonyos. This is what gates the static stub scan
+/// (#464); other targets resolve those modules to real platform UI
+/// crates so a warning would be a false positive.
+fn target_stubs_out_symbols(target: Option<&str>) -> bool {
+    matches!(target, Some("harmonyos") | Some("harmonyos-simulator"))
+}
+
+/// Walk a parsed module's named imports against `STUB_MANIFEST` and
+/// emit a `NoOpStub` warning for each one that maps to a stubbed
+/// symbol on the requested target.
+fn scan_imports_for_stubs(
+    module: &perry_parser::swc_ecma_ast::Module,
+    file_id: perry_diagnostics::FileId,
+    diagnostics: &mut Diagnostics,
+) {
+    use perry_parser::swc_ecma_ast::{ImportSpecifier, ModuleDecl, ModuleExportName, ModuleItem};
+    use perry_runtime::stub_diag::STUB_MANIFEST;
+
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(ModuleDecl::Import(import)) = item else {
+            continue;
+        };
+        let source = match import.src.value.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        // Only `perry/ui` / `perry/system` / `perry/updater` imports
+        // can resolve to stubbed symbols. Cheap pre-filter avoids
+        // walking the manifest for every import.
+        if !matches!(source, "perry/ui" | "perry/system" | "perry/updater") {
+            continue;
+        }
+
+        for spec in &import.specifiers {
+            let (local_name, span) = match spec {
+                ImportSpecifier::Named(named) => {
+                    let imported_name = match &named.imported {
+                        Some(ModuleExportName::Ident(id)) => id.sym.as_str(),
+                        Some(ModuleExportName::Str(s)) => s.value.as_str().unwrap_or(""),
+                        None => named.local.sym.as_str(),
+                    };
+                    (imported_name.to_string(), named.span)
+                }
+                // `import * as X` and `import X` (default) bring the
+                // whole module — we don't know which symbols the user
+                // actually calls, so skip rather than warn for every
+                // entry in the module's stub list.
+                ImportSpecifier::Namespace(_) | ImportSpecifier::Default(_) => continue,
+            };
+
+            for entry in STUB_MANIFEST {
+                if entry.module != source {
+                    continue;
+                }
+                if entry.ts_name != Some(local_name.as_str()) {
+                    continue;
+                }
+                let issue_tag = entry
+                    .issue
+                    .map(|t| format!(" (tracking: {})", t))
+                    .unwrap_or_default();
+                let msg = format!(
+                    "`{}` from `{}` is a no-op stub on this target — {}{}",
+                    local_name, source, entry.reason, issue_tag,
+                );
+                let diag = Diagnostic::warning(DiagnosticCode::NoOpStub, msg)
+                    .with_span(Span::new(file_id, span.lo.0, span.hi.0))
+                    .build();
+                diagnostics.push(diag);
+                break;
+            }
+        }
+    }
 }
 
 /// Convert a CompatibilityIssue to a Diagnostic

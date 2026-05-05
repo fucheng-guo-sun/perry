@@ -97,6 +97,9 @@ pub enum DiagnosticCode {
     UndefinedFunction,
     /// Unresolved import
     UnresolvedImport,
+    /// Reference to a no-op stub symbol — code links and runs but
+    /// the call silently does nothing on the chosen target (#464).
+    NoOpStub,
 
     // Internal errors (I001-I099)
     /// Internal compiler error
@@ -144,6 +147,7 @@ impl DiagnosticCode {
             Self::UndefinedVariable => "R001",
             Self::UndefinedFunction => "R002",
             Self::UnresolvedImport => "R003",
+            Self::NoOpStub => "R004",
 
             // Internal errors
             Self::InternalError => "I001",
@@ -181,7 +185,8 @@ impl DiagnosticCode {
             | Self::DynamicImport
             | Self::ImplicitCoercion
             | Self::LooseEquality
-            | Self::NonDeterministicCode => Severity::Warning,
+            | Self::NonDeterministicCode
+            | Self::NoOpStub => Severity::Warning,
 
             // Hints
             Self::MissingTypeAnnotation => Severity::Hint,
