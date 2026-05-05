@@ -4,6 +4,7 @@ members = [
     "crates/perry",
     "crates/perry-parser",
     "crates/perry-types",
+    "crates/perry-api-manifest",
     "crates/perry-hir",
     "crates/perry-transform",
     "crates/perry-codegen",
@@ -40,6 +41,7 @@ default-members = [
     "crates/perry",
     "crates/perry-parser",
     "crates/perry-types",
+    "crates/perry-api-manifest",
     "crates/perry-hir",
     "crates/perry-transform",
     "crates/perry-codegen",
@@ -115,7 +117,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.525"
+version = "0.5.526"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
@@ -174,6 +176,7 @@ zip = "2"
 # Internal crates
 perry-parser = { path = "crates/perry-parser" }
 perry-types = { path = "crates/perry-types" }
+perry-api-manifest = { path = "crates/perry-api-manifest" }
 perry-hir = { path = "crates/perry-hir" }
 perry-transform = { path = "crates/perry-transform" }
 perry-codegen = { path = "crates/perry-codegen" }
