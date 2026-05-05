@@ -73,6 +73,9 @@ pub use buffer::{alloc_buffer, read_buffer_bytes, BufferHeader};
 mod json;
 pub use json::json_stringify;
 
+mod event_pump;
+pub use event_pump::notify_main_thread;
+
 use perry_runtime::js_string_from_bytes;
 pub use perry_runtime::StringHeader;
 
