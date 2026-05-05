@@ -149,22 +149,40 @@ pub fn alloc_string(s: &str) -> JsString {
 /// }
 /// ```
 pub fn read_string(handle: JsString) -> Option<&'static str> {
+    let bytes = read_bytes(handle)?;
+    std::str::from_utf8(bytes).ok()
+}
+
+/// Read a `JsString` as a borrowed `&[u8]` — does not require
+/// valid UTF-8. Used by binary-data wrappers (zlib, crypto buffer
+/// ops, …) that store arbitrary bytes inside a `StringHeader` but
+/// can't go through [`read_string`]'s UTF-8 validation.
+///
+/// Returns `None` on a null handle. The borrow lives as long as
+/// the runtime guarantees the string remains alive — same lifetime
+/// rules as [`read_string`].
+pub fn read_bytes(handle: JsString) -> Option<&'static [u8]> {
     if handle.is_null() {
         return None;
     }
-    // SAFETY: `from_raw`'s safety contract requires `handle.0` to point
-    // to a valid `StringHeader`. The header layout (utf16_len, byte_len,
-    // capacity, refcount, flags, then `byte_len` bytes of UTF-8 data) is
-    // documented in `perry-runtime/src/string.rs`. We bound the slice
-    // length by the stored `byte_len` so we never read past the
-    // allocation.
+    // SAFETY: `from_raw`'s contract requires `handle.0` to point
+    // to a valid `StringHeader`. We bound the slice length by the
+    // stored `byte_len` so we never read past the allocation.
     unsafe {
         let header = &*handle.0;
         let len = header.byte_len as usize;
         let data_ptr = (handle.0 as *const u8).add(std::mem::size_of::<StringHeader>());
-        let bytes = std::slice::from_raw_parts(data_ptr, len);
-        std::str::from_utf8(bytes).ok()
+        Some(std::slice::from_raw_parts(data_ptr, len))
     }
+}
+
+/// Allocate a runtime string from raw bytes — bypasses the UTF-8
+/// validation [`alloc_string`] does implicitly. Use for compressed
+/// payloads, crypto digests, and other binary-as-string outputs
+/// that perry-stdlib's existing wrappers carry as `*mut StringHeader`.
+pub fn alloc_bytes(bytes: &[u8]) -> JsString {
+    let ptr = js_string_from_bytes(bytes.as_ptr(), bytes.len() as u32);
+    JsString(ptr)
 }
 
 // `StringHeader` is re-exported at the top of this module. External

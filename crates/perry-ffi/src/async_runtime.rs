@@ -131,6 +131,21 @@ impl JsPromise {
         unsafe { perry_ffi_promise_resolve_bits(self.0, TAG_NULL) };
     }
 
+    /// Resolve with an arbitrary [`crate::JsValue`]. Used for
+    /// resolutions that don't fit the string/bool/number shortcuts
+    /// — e.g. async wrappers returning binary data via
+    /// [`crate::alloc_bytes`] + [`crate::JsValue::from_string_ptr`],
+    /// or returning objects / arrays.
+    pub fn resolve(self, value: crate::JsValue) {
+        unsafe { perry_ffi_promise_resolve_bits(self.0, value.bits()) };
+    }
+
+    /// Reject with an arbitrary [`crate::JsValue`]. Mirror of
+    /// [`Self::resolve`].
+    pub fn reject(self, value: crate::JsValue) {
+        unsafe { perry_ffi_promise_reject_bits(self.0, value.bits()) };
+    }
+
     /// Reject with an error message string. The wrapper layer
     /// produces an Error-shaped JSValue downstream; here we just
     /// pass the raw message bits.
