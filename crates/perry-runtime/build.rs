@@ -154,10 +154,13 @@ fn main() {
     // Direct-call FFI symbols that bypass the dispatch tables — codegen
     // emits these for the simple constructor shapes (`VStack(items)`,
     // `HStack(items)`, `Button(label, onPress)`) in
-    // `crates/perry-codegen/src/lower_call/native.rs`. They aren't in
-    // PERRY_UI_TABLE so the table walk above misses them; we list them
-    // explicitly here. Keep in sync with the hardcoded callsites in
-    // lower_call/native.rs — `grep 'perry_ui_.*_create' lower_call/native.rs`.
+    // `crates/perry-codegen/src/lower_call/native.rs`, and for the
+    // trigger-shape-switched `notificationSchedule({trigger:{type,...}})`
+    // in `crates/perry-codegen/src/lower_call.rs::lower_notification_schedule`.
+    // They aren't in any PERRY_*_TABLE so the table walk above misses
+    // them; we list them explicitly here. Keep in sync with the
+    // hardcoded callsites — `grep -h '"perry_(ui|system|updater)_' \
+    // crates/perry-codegen/src/**/*.rs | sort -u`.
     let direct_call_stubs: &[(&str, &[ArgKind], ReturnKind)] = &[
         (
             "perry_ui_vstack_create",
@@ -173,6 +176,39 @@ fn main() {
             "perry_ui_button_create",
             &[ArgKind::Str, ArgKind::Closure],
             ReturnKind::Widget,
+        ),
+        // notificationSchedule(...) — three trigger variants, dispatched
+        // at compile time on `trigger.type`. Args are (id, title, body)
+        // string ptrs as I64 then trigger-specific f64 fields. None of
+        // these appear in PERRY_SYSTEM_TABLE (the table only carries the
+        // simpler `notificationSend` shape).
+        (
+            "perry_system_notification_schedule_interval",
+            &[
+                ArgKind::Str,
+                ArgKind::Str,
+                ArgKind::Str,
+                ArgKind::F64,
+                ArgKind::F64,
+            ],
+            ReturnKind::Void,
+        ),
+        (
+            "perry_system_notification_schedule_calendar",
+            &[ArgKind::Str, ArgKind::Str, ArgKind::Str, ArgKind::F64],
+            ReturnKind::Void,
+        ),
+        (
+            "perry_system_notification_schedule_location",
+            &[
+                ArgKind::Str,
+                ArgKind::Str,
+                ArgKind::Str,
+                ArgKind::F64,
+                ArgKind::F64,
+                ArgKind::F64,
+            ],
+            ReturnKind::Void,
         ),
     ];
     for (name, args, ret) in direct_call_stubs {

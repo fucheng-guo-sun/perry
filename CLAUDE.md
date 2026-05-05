@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Perry is a native TypeScript compiler written in Rust that compiles TypeScript source code directly to native executables. It uses SWC for TypeScript parsing and LLVM for code generation.
 
-**Current Version:** 0.5.512
+**Current Version:** 0.5.513
 
 
 ## TypeScript Parity Status
@@ -153,6 +153,7 @@ First-resolved directory cached in `compile_package_dirs`; subsequent imports re
 
 Keep entries to 1-2 lines max. Full details in CHANGELOG.md.
 
+- **v0.5.513** — Closes #399 (round 2): the v0.5.477 fix walked the four `perry-dispatch` tables but missed three direct-call FFI symbols emitted by `lower_notification_schedule` in `crates/perry-codegen/src/lower_call.rs:3025-3097` — `perry_system_notification_schedule_{interval,calendar,location}` are added to `pending_declares` directly (not via dispatch lookup), so the `cfg(feature = "ohos-napi")` table walk in `crates/perry-runtime/build.rs` couldn't see them. Fix: extend the existing `direct_call_stubs` array (which already carries `perry_ui_{vstack,hstack,button}_create` for the same reason) with the three trigger variants and their `(I64, I64, I64, F64…)` signatures. Generated stub count goes 220 → 223; `notificationSchedule({ trigger: { type: "interval"|"calendar"|"location", … } })` from any harmonyos TS code now link-resolves to a no-op instead of failing OHOS dynamic-loader relocation.
 - **v0.5.512** — Closes #396 + #397 + #398: macOS Homebrew bottle now bundles tvOS / visionOS / watchOS cross-libs (device + simulator) alongside the existing iOS pair. `release-packages.yml` installs nightly + rust-src on the macOS legs and runs `cargo +nightly build -Z build-std=core,std,panic_abort` against `aarch64-apple-{tvos,visionos}` / `arm64_32-apple-watchos` plus their `-sim` triples; staging copies device libs as `libperry_{runtime,stdlib,ui_<plat>}.a` and sim variants with a `_sim` suffix. No code changes — `library_search.rs::apple_class_lib_name` already maps every `--target` to the right variant (covered by `handles_other_class_suffixes`).
 - **v0.5.511** — release-CI gate fix (round 2): add `test_edge_closures` to the `compile-smoke` job's inline `SKIP_TESTS` list in `.github/workflows/test.yml`. The compile-smoke job has its own skip mechanism separate from `parity`'s `known_failures.json`; adding to one without the other left the smoke gate failing on #456 (LLVM `@perry_global_*` collision).
 - **v0.5.510** — release-CI gate fixes: `cargo fmt --all` to clear pre-existing rustfmt drift in `unroll.rs` / `inline.rs` / `expr.rs` / etc. (lint job was failing on v0.5.502+); add #456 (test_edge_closures LLVM global name collision) + #457 (test_gap_generators genWithReturn drift) to `test-parity/known_failures.json` so the parity gate passes. Both pre-existing — issues filed for follow-up. Unblocks v0.5.509 release publish (which had been gated on Tests).
