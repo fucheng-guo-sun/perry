@@ -233,9 +233,9 @@ pub mod sharp;
 pub use sharp::*;
 
 // === HTML Parsing ===
-#[cfg(feature = "html-parser")]
+#[cfg(feature = "bundled-cheerio")]
 pub mod cheerio;
-#[cfg(feature = "html-parser")]
+#[cfg(feature = "bundled-cheerio")]
 pub use cheerio::*;
 
 // === Scheduler ===

@@ -136,3 +136,8 @@ tracking = "#466"
 crate = "perry-ext-moment"
 lib = "perry_ext_moment"
 tracking = "#466"
+
+[bindings.cheerio]
+crate = "perry-ext-cheerio"
+lib = "perry_ext_cheerio"
+tracking = "#466"

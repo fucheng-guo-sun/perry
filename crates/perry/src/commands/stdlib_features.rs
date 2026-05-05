@@ -84,7 +84,10 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         "sharp" => &["image"],
 
         // ── HTML parsing (cheerio / scraper) ──────────────────────────
-        "cheerio" => &["html-parser"],
+        // `html-parser` umbrella retained for backwards-compat;
+        // per-binding gate is `bundled-cheerio` (v0.5.550) so the
+        // well-known flip can route to perry-ext-cheerio.
+        "cheerio" => &["bundled-cheerio"],
 
         // ── Scheduler (cron) ──────────────────────────────────────────
         "cron" | "node-cron" => &["scheduler"],

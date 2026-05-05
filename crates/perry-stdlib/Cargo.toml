@@ -108,8 +108,11 @@ email = ["dep:lettre", "async-runtime"]
 # Image processing (sharp)
 image = ["dep:image"]
 
-# HTML parsing (cheerio)
-html-parser = ["dep:scraper"]
+# HTML parsing (cheerio) — `html-parser` umbrella stays for
+# backwards-compat; v0.5.550's well-known flip toggles
+# `bundled-cheerio` instead.
+html-parser = ["bundled-cheerio"]
+bundled-cheerio = ["dep:scraper"]
 
 # Scheduler (cron)
 scheduler = ["dep:cron", "dep:tokio-cron-scheduler", "async-runtime"]
