@@ -26,6 +26,7 @@ members = [
     "crates/perry-ext-tursodb",
     "crates/perry-ext-iroh",
     "crates/perry-ext-axios",
+    "crates/perry-ext-events",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -79,6 +80,7 @@ default-members = [
     "crates/perry-ext-tursodb",
     "crates/perry-ext-iroh",
     "crates/perry-ext-axios",
+    "crates/perry-ext-events",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -149,7 +151,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.545"
+version = "0.5.546"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
@@ -230,6 +232,7 @@ perry-ext-exponential-backoff = { path = "crates/perry-ext-exponential-backoff" 
 perry-ext-tursodb = { path = "crates/perry-ext-tursodb" }
 perry-ext-iroh = { path = "crates/perry-ext-iroh" }
 perry-ext-axios = { path = "crates/perry-ext-axios" }
+perry-ext-events = { path = "crates/perry-ext-events" }
 perry-stdlib = { path = "crates/perry-stdlib" }
 perry-diagnostics = { path = "crates/perry-diagnostics" }
 perry-jsruntime = { path = "crates/perry-jsruntime" }

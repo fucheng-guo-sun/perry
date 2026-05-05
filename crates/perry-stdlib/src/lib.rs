@@ -39,6 +39,9 @@ pub mod decimal;
 // the well-known path.
 #[cfg(feature = "bundled-dotenv")]
 pub mod dotenv;
+// events feature-gated as of v0.5.546 so the well-known flip
+// can route to perry-ext-events.
+#[cfg(feature = "bundled-events")]
 pub mod events;
 // exponential_backoff feature-gated as of v0.5.542 so the
 // well-known flip can route to perry-ext-exponential-backoff.
@@ -66,6 +69,7 @@ pub use dayjs::*;
 pub use decimal::*;
 #[cfg(feature = "bundled-dotenv")]
 pub use dotenv::*;
+#[cfg(feature = "bundled-events")]
 pub use events::*;
 #[cfg(feature = "bundled-exponential-backoff")]
 pub use exponential_backoff::*;

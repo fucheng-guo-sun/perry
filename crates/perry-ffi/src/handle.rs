@@ -134,6 +134,56 @@ pub fn handle_exists(handle: Handle) -> bool {
     HANDLES.contains_key(&handle)
 }
 
+/// Visit every registered handle whose stored type matches `T`,
+/// invoking `f(&value)` for each.
+///
+/// Used by GC root scanners that need to keep user closures alive
+/// — e.g. `EventEmitter` listeners stored inside an
+/// `EventEmitterHandle`. Without this, a malloc-triggered GC
+/// between `.on(...)` and `.emit(...)` would sweep the closure
+/// (issue #35 pattern in perry-stdlib).
+///
+/// Pair with [`gc_register_root_scanner`] (re-exported from
+/// `perry_runtime::gc`) to wire the scanner into perry's GC.
+pub fn iter_handles_of<T, F>(mut f: F)
+where
+    T: 'static + Send + Sync,
+    F: FnMut(&T),
+{
+    for entry in HANDLES.iter() {
+        if let Some(v) = entry.value().downcast_ref::<T>() {
+            f(v);
+        }
+    }
+}
+
+/// Register a GC root scanner with perry's runtime. The scanner
+/// is called during every GC mark phase; it should call its `mark`
+/// callback with each NaN-boxed JsValue that should be kept alive.
+///
+/// Convenience re-export over `perry_runtime::gc::gc_register_root_scanner`.
+/// Wrapper authors typically combine this with [`iter_handles_of`]:
+///
+/// ```ignore
+/// use perry_ffi::{gc_register_root_scanner, iter_handles_of, nanbox_string_bits};
+///
+/// fn scan_my_roots(mark: &mut dyn FnMut(f64)) {
+///     iter_handles_of::<MyHandle, _>(|h| {
+///         for closure_ptr in &h.callbacks {
+///             // POINTER_TAG over the closure pointer.
+///             let nanboxed = f64::from_bits(0x7FFD_0000_0000_0000 | (*closure_ptr as u64 & 0x0000_FFFF_FFFF_FFFF));
+///             mark(nanboxed);
+///         }
+///     });
+/// }
+///
+/// // Register once on first wrapper-method invocation.
+/// gc_register_root_scanner(scan_my_roots);
+/// ```
+pub fn gc_register_root_scanner(scanner: fn(&mut dyn FnMut(f64))) {
+    perry_runtime::gc::gc_register_root_scanner(scanner);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

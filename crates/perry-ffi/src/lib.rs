@@ -49,8 +49,9 @@ pub use async_runtime::{nanbox_string_bits, spawn_blocking, JsPromise, Promise};
 
 mod handle;
 pub use handle::{
-    drop_handle, get_handle, get_handle_mut, handle_exists, register_handle, take_handle,
-    with_handle, with_handle_mut, Handle, INVALID_HANDLE,
+    drop_handle, gc_register_root_scanner, get_handle, get_handle_mut, handle_exists,
+    iter_handles_of, register_handle, take_handle, with_handle, with_handle_mut, Handle,
+    INVALID_HANDLE,
 };
 
 mod jsvalue;

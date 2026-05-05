@@ -106,3 +106,8 @@ tracking = "#425"
 crate = "perry-ext-axios"
 lib = "perry_ext_axios"
 tracking = "#466"
+
+[bindings.events]
+crate = "perry-ext-events"
+lib = "perry_ext_events"
+tracking = "#466"
