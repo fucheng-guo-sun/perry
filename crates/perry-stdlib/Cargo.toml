@@ -13,7 +13,7 @@ crate-type = ["rlib", "staticlib"]
 default = ["full"]
 
 # Full stdlib - everything included
-full = ["http-server", "http-client", "database", "crypto", "compression", "email", "websocket", "image", "scheduler", "ids", "html-parser", "rate-limit", "validation", "net", "tls", "bundled-dotenv", "bundled-slugify"]
+full = ["http-server", "http-client", "database", "crypto", "compression", "email", "websocket", "image", "scheduler", "ids", "html-parser", "rate-limit", "validation", "net", "tls", "bundled-dotenv", "bundled-slugify", "bundled-lru-cache"]
 
 # Minimal core - just what's needed for basic programs
 core = []
@@ -31,6 +31,12 @@ bundled-dotenv = []
 # `default = ["full"]`; the well-known flip strips this when
 # `import 'slugify'` resolves to perry-ext-slugify instead.
 bundled-slugify = []
+
+# In-tree implementation of `lru-cache`. Default-on through
+# `default = ["full"]`; flipped to perry-ext-lru-cache by the
+# well-known table (#466 Phase 4). Pulls the `lru` crate dep so
+# both halves of the gate move in lockstep.
+bundled-lru-cache = ["dep:lru"]
 
 # HTTP server (hyper-based native framework)
 # Note: dashmap is now always-on (used by core handle registry), no longer listed here.
@@ -206,8 +212,10 @@ regex = { version = "1.10", optional = true }
 uuid = { version = "1.11", features = ["v4", "v1", "v7"], optional = true }
 nanoid = { version = "0.4", optional = true }
 
-# LRU Cache
-lru = "0.16"
+# LRU Cache — optional from v0.5.539 so the well-known flip can
+# strip the perry-stdlib copy when `import 'lru-cache'` resolves
+# to perry-ext-lru-cache instead.
+lru = { version = "0.16", optional = true }
 
 # CLI parsing (Commander)
 clap = { version = "4.4", features = ["derive"] }

@@ -71,3 +71,8 @@ tracking = "#466"
 crate = "perry-ext-validator"
 lib = "perry_ext_validator"
 tracking = "#466"
+
+[bindings.lru-cache]
+crate = "perry-ext-lru-cache"
+lib = "perry_ext_lru_cache"
+tracking = "#466"

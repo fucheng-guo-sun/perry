@@ -110,6 +110,9 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         // Default-on via `default = ["full"]` keeps existing
         // `import 'slugify'` calls byte-identical.
         "slugify" => &["bundled-slugify"],
+        // lru-cache: feature-gated v0.5.539; well-known flip
+        // routes to perry-ext-lru-cache.
+        "lru-cache" => &["bundled-lru-cache"],
         // dotenv was always-on through v0.5.532; gated behind
         // `bundled-dotenv` from v0.5.533 onwards so the well-known
         // bindings flip (#466 Phase 4 step 2) can swap perry-stdlib's

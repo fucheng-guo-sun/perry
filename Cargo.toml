@@ -19,6 +19,7 @@ members = [
     "crates/perry-ext-argon2",
     "crates/perry-ext-jsonwebtoken",
     "crates/perry-ext-validator",
+    "crates/perry-ext-lru-cache",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -65,6 +66,7 @@ default-members = [
     "crates/perry-ext-argon2",
     "crates/perry-ext-jsonwebtoken",
     "crates/perry-ext-validator",
+    "crates/perry-ext-lru-cache",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -135,7 +137,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.538"
+version = "0.5.539"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
@@ -209,6 +211,7 @@ perry-ext-bcrypt = { path = "crates/perry-ext-bcrypt" }
 perry-ext-argon2 = { path = "crates/perry-ext-argon2" }
 perry-ext-jsonwebtoken = { path = "crates/perry-ext-jsonwebtoken" }
 perry-ext-validator = { path = "crates/perry-ext-validator" }
+perry-ext-lru-cache = { path = "crates/perry-ext-lru-cache" }
 perry-stdlib = { path = "crates/perry-stdlib" }
 perry-diagnostics = { path = "crates/perry-diagnostics" }
 perry-jsruntime = { path = "crates/perry-jsruntime" }

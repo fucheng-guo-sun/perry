@@ -47,6 +47,12 @@
 mod async_runtime;
 pub use async_runtime::{nanbox_string_bits, spawn_blocking, JsPromise, Promise};
 
+mod handle;
+pub use handle::{
+    drop_handle, get_handle, get_handle_mut, handle_exists, register_handle, take_handle,
+    with_handle, with_handle_mut, Handle, INVALID_HANDLE,
+};
+
 use perry_runtime::js_string_from_bytes;
 pub use perry_runtime::StringHeader;
 

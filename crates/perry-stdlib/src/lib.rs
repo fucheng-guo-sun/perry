@@ -42,6 +42,9 @@ pub mod dotenv;
 pub mod events;
 pub mod exponential_backoff;
 pub mod lodash;
+// lru_cache is feature-gated as of v0.5.539 so the well-known
+// flip can route `import 'lru-cache'` to perry-ext-lru-cache.
+#[cfg(feature = "bundled-lru-cache")]
 pub mod lru_cache;
 pub mod moment;
 pub mod readline;
@@ -63,6 +66,7 @@ pub use dotenv::*;
 pub use events::*;
 pub use exponential_backoff::*;
 pub use lodash::*;
+#[cfg(feature = "bundled-lru-cache")]
 pub use lru_cache::*;
 pub use moment::*;
 pub use readline::*;
