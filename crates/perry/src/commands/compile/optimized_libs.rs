@@ -88,11 +88,16 @@ pub(super) fn build_optimized_libs(
     // external wrapper instead of the perry-stdlib copy, with no
     // duplicate-symbol risk.
     //
-    // Gated behind `PERRY_USE_WELL_KNOWN=1` for this introductory
-    // PR — the default path stays byte-identical until the
-    // dotenv-via-perry-ext-dotenv route is proven across CI. The
-    // env-var gate is removed in a follow-up commit.
-    let use_well_known = std::env::var_os("PERRY_USE_WELL_KNOWN").is_some();
+    // **Default-on as of v0.5.573** — Phase 5 dogfood completed in
+    // v0.5.572 (34 perry-ext-* wrappers covering every previously
+    // in-tree binding). The env-var gate (`PERRY_USE_WELL_KNOWN=1`)
+    // that gated the introductory cycle is now inverted:
+    // `PERRY_DISABLE_WELL_KNOWN=1` reverts to perry-stdlib's
+    // copies for bisection. If a bundled `.a` is missing on disk,
+    // each entry falls back to the perry-stdlib copy individually
+    // (logged with `well-known: skipping` when verbose), so a
+    // partially-built workspace still produces a working binary.
+    let use_well_known = std::env::var_os("PERRY_DISABLE_WELL_KNOWN").is_none();
     let mut well_known_libs: Vec<PathBuf> = Vec::new();
     if use_well_known {
         for module in &ctx.native_module_imports {
