@@ -21,6 +21,7 @@
 
 - [Porting Packages (experimental)](packages/porting.md)
 - [Writing Native Bindings (perry-ffi)](native-libraries/abi.md)
+- [Native Library Manifest (spec v1)](native-libraries/manifest-v1.md)
 
 # Multi-Threading
 

@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.perryts.com/native-libraries/manifest.schema.json",
+  "title": "Perry native-library manifest (v1)",
+  "description": "Validates the `perry.nativeLibrary` field in a package.json that exports Rust-backed FFI bindings to Perry. See docs/src/native-libraries/manifest-v1.md for prose.",
+  "type": "object",
+  "properties": {
+    "perry": {
+      "type": "object",
+      "properties": {
+        "nativeLibrary": { "$ref": "#/$defs/nativeLibrary" }
+      }
+    }
+  },
+  "$defs": {
+    "nativeLibrary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["functions"],
+      "properties": {
+        "abiVersion": {
+          "type": "string",
+          "description": "Semver range of perry-ffi this wrapper was built against. Required from v0.6.0; warning-only in v0.5.x.",
+          "examples": ["0.5", "0.5.3", "^0.5"]
+        },
+        "functions": {
+          "type": "array",
+          "description": "FFI function declarations exported by the wrapper's staticlib.",
+          "items": { "$ref": "#/$defs/functionDecl" }
+        },
+        "targets": {
+          "type": "object",
+          "description": "Per-target build configuration.",
+          "additionalProperties": { "$ref": "#/$defs/targetConfig" },
+          "properties": {
+            "macos":     { "$ref": "#/$defs/targetConfig" },
+            "ios":       { "$ref": "#/$defs/targetConfig" },
+            "linux":     { "$ref": "#/$defs/targetConfig" },
+            "windows":   { "$ref": "#/$defs/targetConfig" },
+            "android":   { "$ref": "#/$defs/targetConfig" },
+            "web":       { "$ref": "#/$defs/targetConfig" },
+            "harmonyos": { "$ref": "#/$defs/targetConfig" },
+            "tvos":      { "$ref": "#/$defs/targetConfig" },
+            "watchos":   { "$ref": "#/$defs/targetConfig" },
+            "visionos":  { "$ref": "#/$defs/targetConfig" }
+          }
+        }
+      }
+    },
+    "functionDecl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "params", "returns"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "C-style symbol name. Convention: `js_<package>_<function>`."
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["string", "number", "i32", "i64", "bool", "ptr"]
+          }
+        },
+        "returns": {
+          "type": "string",
+          "enum": ["string", "ptr", "i64_str", "i64", "number", "void"]
+        }
+      }
+    },
+    "targetConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "crate": {
+          "type": "string",
+          "description": "Path (relative to package.json) to the Cargo crate that produces the staticlib."
+        },
+        "lib": {
+          "type": "string",
+          "description": "Library name (without `lib` prefix or `.a` extension)."
+        },
+        "frameworks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Apple-only frameworks (-framework <name>)."
+        },
+        "libs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "System libraries (-l<name>)."
+        },
+        "pkgConfig": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "swift_sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "metal_sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "prebuilt": {
+          "type": "string",
+          "description": "Path to a pre-built .a archive. When set, Perry skips `cargo build`."
+        }
+      }
+    }
+  }
+}

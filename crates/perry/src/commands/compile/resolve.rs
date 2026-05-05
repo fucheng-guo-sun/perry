@@ -117,6 +117,18 @@ pub(super) fn parse_native_library_manifest(
 
     let native_lib = pkg.get("perry")?.get("nativeLibrary")?;
 
+    // Issue #466 Phase 2: read the `abiVersion` field that wrappers
+    // declare to assert which `perry-ffi` ABI they were built
+    // against. Strict enforcement (refuse to load on mismatch)
+    // happens in `validate_abi_version` after the manifest is
+    // assembled — keeping the parse loose here means we still
+    // produce a structured error pointing at the package, instead
+    // of silently dropping the manifest.
+    let abi_version = native_lib
+        .get("abiVersion")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     // Parse functions.
     //
     // Valid `returns` values (codegen dispatch in lower_call.rs):
@@ -225,9 +237,140 @@ pub(super) fn parse_native_library_manifest(
     Some(NativeLibraryManifest {
         module: module_name.to_string(),
         package_dir: package_dir.to_path_buf(),
+        abi_version,
         functions,
         target_config,
     })
+}
+
+/// The ABI version the bundled `perry-ffi` ships. External wrappers
+/// declare an `abiVersion` semver range that must include this exact
+/// version to be allowed to load. Tracked alongside the workspace
+/// version — `perry-ffi` ships in lockstep with `perry` itself for
+/// the v0.5.x cycle.
+pub const PERRY_FFI_ABI_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Validate a wrapper's declared `abiVersion` against the bundled
+/// `perry-ffi` version (#466 Phase 2).
+///
+/// Behavior on this branch (v0.5.x cycle):
+/// - `None` (no field) → warning to stderr, compilation continues.
+/// - Valid range that includes the bundled version → silent OK.
+/// - Valid range that excludes the bundled version → error result.
+/// - Unparseable string → error result.
+///
+/// From v0.6.0 the `None` arm flips to an error too.
+pub(super) fn validate_abi_version(manifest: &NativeLibraryManifest) -> Result<(), String> {
+    use semver::{Version, VersionReq};
+
+    let bundled = Version::parse(PERRY_FFI_ABI_VERSION).map_err(|e| {
+        format!(
+            "internal error: bundled perry-ffi version `{}` is not valid semver: {}",
+            PERRY_FFI_ABI_VERSION, e
+        )
+    })?;
+
+    let Some(declared) = manifest.abi_version.as_deref() else {
+        eprintln!(
+            "[perry] warning: native library `{}` does not declare \
+             `perry.nativeLibrary.abiVersion`. Add it to package.json \
+             to assert ABI compatibility — see \
+             docs/native-libraries/manifest-v1.md. (v0.5.x cycle: \
+             missing field is allowed; from v0.6.0 it will be a hard error.)",
+            manifest.module
+        );
+        return Ok(());
+    };
+
+    // Accept bare-major (`"0.5"`) and bare-minor (`"0.5.3"`) by
+    // pre-pending a caret if the user didn't supply an operator.
+    // Same pragma cargo's manifest parser uses for `^x.y.z` defaults.
+    let req_str = if declared
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        format!("^{}", declared)
+    } else {
+        declared.to_string()
+    };
+
+    let req = VersionReq::parse(&req_str).map_err(|e| {
+        format!(
+            "native library `{}` declares an unparseable `abiVersion: \"{}\"`: {}",
+            manifest.module, declared, e
+        )
+    })?;
+
+    if req.matches(&bundled) {
+        Ok(())
+    } else {
+        Err(format!(
+            "native library `{}` declares perry-ffi ABI \"{}\" but this Perry \
+             build ships perry-ffi {}. Update the package or use a Perry \
+             release whose perry-ffi version matches the declared range.",
+            manifest.module, declared, PERRY_FFI_ABI_VERSION
+        ))
+    }
+}
+
+#[cfg(test)]
+mod abi_validation_tests {
+    use super::*;
+
+    fn manifest_with_abi(abi: Option<&str>) -> NativeLibraryManifest {
+        NativeLibraryManifest {
+            module: "test".to_string(),
+            package_dir: PathBuf::new(),
+            abi_version: abi.map(String::from),
+            functions: vec![],
+            target_config: None,
+        }
+    }
+
+    #[test]
+    fn missing_abi_version_warns_but_passes() {
+        let m = manifest_with_abi(None);
+        assert!(validate_abi_version(&m).is_ok());
+    }
+
+    #[test]
+    fn matching_caret_range_passes() {
+        // The bundled version is whatever this build is compiled
+        // against — by definition the same major.minor as itself.
+        let v = PERRY_FFI_ABI_VERSION;
+        let major_minor = v
+            .splitn(3, '.')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(".");
+        let m = manifest_with_abi(Some(&major_minor));
+        assert!(
+            validate_abi_version(&m).is_ok(),
+            "wrapper declaring `{}` should validate against bundled `{}`",
+            major_minor,
+            v
+        );
+    }
+
+    #[test]
+    fn future_major_fails() {
+        // `^99.0` rejects every actual perry-ffi version that ships
+        // this decade. Use `^99` so we don't need to bump the test
+        // when the runtime hits a multi-digit minor.
+        let m = manifest_with_abi(Some("99"));
+        let err = validate_abi_version(&m).expect_err("99 must reject current ABI");
+        assert!(err.contains("perry-ffi"), "got: {}", err);
+        assert!(err.contains("test"), "got: {}", err);
+    }
+
+    #[test]
+    fn unparseable_abi_version_returns_error() {
+        let m = manifest_with_abi(Some("not a version"));
+        let err = validate_abi_version(&m).expect_err("garbage must reject");
+        assert!(err.contains("unparseable"), "got: {}", err);
+    }
 }
 
 /// Packages that Perry provides built-in native extensions for.

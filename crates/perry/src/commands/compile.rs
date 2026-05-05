@@ -388,6 +388,13 @@ pub struct NativeLibraryManifest {
     pub module: String,
     /// Resolved package directory path
     pub package_dir: PathBuf,
+    /// `perry.nativeLibrary.abiVersion` — semver range the wrapper
+    /// declares it was built against. Validated against the bundled
+    /// `perry-ffi`'s version (#466 Phase 2). `None` is permitted
+    /// during the v0.5.x cycle but emits a warning; from v0.6.0 it
+    /// becomes a hard resolution error. See
+    /// `docs/src/native-libraries/manifest-v1.md`.
+    pub abi_version: Option<String>,
     /// FFI function declarations
     pub functions: Vec<NativeFunctionDecl>,
     /// Target-specific build configuration
