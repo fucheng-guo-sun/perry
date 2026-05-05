@@ -263,9 +263,9 @@ pub extern "C" fn js_cron_timer_has_pending() -> i32 {
 }
 
 // === Rate Limiting ===
-#[cfg(feature = "rate-limit")]
+#[cfg(feature = "bundled-ratelimit")]
 pub mod ratelimit;
-#[cfg(feature = "rate-limit")]
+#[cfg(feature = "bundled-ratelimit")]
 pub use ratelimit::*;
 
 // === Validation ===

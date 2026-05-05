@@ -146,3 +146,8 @@ tracking = "#466"
 crate = "perry-ext-sharp"
 lib = "perry_ext_sharp"
 tracking = "#466"
+
+[bindings."rate-limiter-flexible"]
+crate = "perry-ext-ratelimit"
+lib = "perry_ext_ratelimit"
+tracking = "#466"

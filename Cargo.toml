@@ -32,6 +32,7 @@ members = [
     "crates/perry-ext-moment",
     "crates/perry-ext-cheerio",
     "crates/perry-ext-sharp",
+    "crates/perry-ext-ratelimit",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -91,6 +92,7 @@ default-members = [
     "crates/perry-ext-moment",
     "crates/perry-ext-cheerio",
     "crates/perry-ext-sharp",
+    "crates/perry-ext-ratelimit",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -161,7 +163,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.551"
+version = "0.5.552"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
@@ -248,6 +250,7 @@ perry-ext-dayjs = { path = "crates/perry-ext-dayjs" }
 perry-ext-moment = { path = "crates/perry-ext-moment" }
 perry-ext-cheerio = { path = "crates/perry-ext-cheerio" }
 perry-ext-sharp = { path = "crates/perry-ext-sharp" }
+perry-ext-ratelimit = { path = "crates/perry-ext-ratelimit" }
 perry-stdlib = { path = "crates/perry-stdlib" }
 perry-diagnostics = { path = "crates/perry-diagnostics" }
 perry-jsruntime = { path = "crates/perry-jsruntime" }

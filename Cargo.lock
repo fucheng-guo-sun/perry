@@ -6008,6 +6008,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "perry-ext-ratelimit"
+version = "0.5.551"
+dependencies = [
+ "governor",
+ "perry-ffi",
+]
+
+[[package]]
 name = "perry-ext-sharp"
 version = "0.5.551"
 dependencies = [

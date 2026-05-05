@@ -120,8 +120,10 @@ bundled-cheerio = ["dep:scraper"]
 # Scheduler (cron)
 scheduler = ["dep:cron", "dep:tokio-cron-scheduler", "async-runtime"]
 
-# Rate limiting
-rate-limit = ["dep:governor", "async-runtime"]
+# Rate limiting — `rate-limit` umbrella stays for backwards-compat;
+# v0.5.552's well-known flip toggles `bundled-ratelimit` instead.
+rate-limit = ["bundled-ratelimit"]
+bundled-ratelimit = ["dep:governor", "async-runtime"]
 
 # Validation — `validation` umbrella stays for backwards-compat;
 # v0.5.538's well-known flip toggles `bundled-validator` instead.
