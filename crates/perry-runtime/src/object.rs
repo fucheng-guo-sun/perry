@@ -4668,6 +4668,32 @@ pub unsafe fn dispatch_buffer_method(
             crate::buffer::js_buffer_write_biguint64_le(buf_f64, arg_or_zero(0), arg_i32(1));
             (arg_i32(1) + 8) as f64
         }
+        // Variable byteLength forms (Node-spec: byteLength 1..=6).
+        // ObjectId / BSON drivers rely on these for the 3-byte counter.
+        "readUIntBE" | "readUintBE" => {
+            crate::buffer::js_buffer_read_uint_be(buf_f64, arg_i32(0), arg_i32(1))
+        }
+        "readUIntLE" | "readUintLE" => {
+            crate::buffer::js_buffer_read_uint_le(buf_f64, arg_i32(0), arg_i32(1))
+        }
+        "readIntBE" => crate::buffer::js_buffer_read_int_be(buf_f64, arg_i32(0), arg_i32(1)),
+        "readIntLE" => crate::buffer::js_buffer_read_int_le(buf_f64, arg_i32(0), arg_i32(1)),
+        "writeUIntBE" | "writeUintBE" => {
+            crate::buffer::js_buffer_write_uint_be(buf_f64, arg_or_zero(0), arg_i32(1), arg_i32(2));
+            (arg_i32(1) + arg_i32(2)) as f64
+        }
+        "writeUIntLE" | "writeUintLE" => {
+            crate::buffer::js_buffer_write_uint_le(buf_f64, arg_or_zero(0), arg_i32(1), arg_i32(2));
+            (arg_i32(1) + arg_i32(2)) as f64
+        }
+        "writeIntBE" => {
+            crate::buffer::js_buffer_write_int_be(buf_f64, arg_or_zero(0), arg_i32(1), arg_i32(2));
+            (arg_i32(1) + arg_i32(2)) as f64
+        }
+        "writeIntLE" => {
+            crate::buffer::js_buffer_write_int_le(buf_f64, arg_or_zero(0), arg_i32(1), arg_i32(2));
+            (arg_i32(1) + arg_i32(2)) as f64
+        }
         _ => f64::from_bits(crate::value::TAG_UNDEFINED),
     }
 }
