@@ -131,3 +131,8 @@ tracking = "#466"
 crate = "perry-ext-dayjs"
 lib = "perry_ext_dayjs"
 tracking = "#466"
+
+[bindings.moment]
+crate = "perry-ext-moment"
+lib = "perry_ext_moment"
+tracking = "#466"

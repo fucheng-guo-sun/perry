@@ -13,7 +13,7 @@ crate-type = ["rlib", "staticlib"]
 default = ["full"]
 
 # Full stdlib - everything included
-full = ["http-server", "http-client", "database", "crypto", "compression", "email", "websocket", "image", "scheduler", "ids", "html-parser", "rate-limit", "validation", "net", "tls", "bundled-dotenv", "bundled-slugify", "bundled-lru-cache", "bundled-exponential-backoff", "bundled-events", "bundled-decimal", "bundled-dayjs"]
+full = ["http-server", "http-client", "database", "crypto", "compression", "email", "websocket", "image", "scheduler", "ids", "html-parser", "rate-limit", "validation", "net", "tls", "bundled-dotenv", "bundled-slugify", "bundled-lru-cache", "bundled-exponential-backoff", "bundled-events", "bundled-decimal", "bundled-dayjs", "bundled-moment"]
 
 # Minimal core - just what's needed for basic programs
 core = []
@@ -53,6 +53,11 @@ bundled-decimal = ["dep:rust_decimal"]
 # compiled in. Default-on through `full`; the well-known flip
 # strips it when `import 'dayjs'` resolves to perry-ext-dayjs.
 bundled-dayjs = []
+
+# moment — same gating contract as bundled-dayjs (chrono is
+# always-on). Default-on through `full`; flipped to perry-ext-moment
+# by the well-known table.
+bundled-moment = []
 
 # HTTP server (hyper-based native framework)
 # Note: dashmap is now always-on (used by core handle registry), no longer listed here.

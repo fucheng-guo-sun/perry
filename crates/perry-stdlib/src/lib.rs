@@ -55,11 +55,15 @@ pub mod events;
 #[cfg(feature = "bundled-exponential-backoff")]
 pub mod exponential_backoff;
 pub mod lodash;
+// moment — feature-gated as of v0.5.549 so the well-known flip can
+// route `import 'moment'` to perry-ext-moment without duplicate
+// `_js_moment_*` symbols at link.
+#[cfg(feature = "bundled-moment")]
+pub mod moment;
 // lru_cache is feature-gated as of v0.5.539 so the well-known
 // flip can route `import 'lru-cache'` to perry-ext-lru-cache.
 #[cfg(feature = "bundled-lru-cache")]
 pub mod lru_cache;
-pub mod moment;
 pub mod readline;
 // slugify is feature-gated as of v0.5.536 so the well-known bindings
 // flip can route `import 'slugify'` to perry-ext-slugify cleanly.
@@ -85,6 +89,7 @@ pub use exponential_backoff::*;
 pub use lodash::*;
 #[cfg(feature = "bundled-lru-cache")]
 pub use lru_cache::*;
+#[cfg(feature = "bundled-moment")]
 pub use moment::*;
 pub use readline::*;
 #[cfg(feature = "bundled-slugify")]
