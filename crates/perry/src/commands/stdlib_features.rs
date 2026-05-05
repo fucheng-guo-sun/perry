@@ -101,7 +101,10 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         "cheerio" => &["bundled-cheerio"],
 
         // ── Scheduler (cron) ──────────────────────────────────────────
-        "cron" | "node-cron" => &["scheduler"],
+        // `scheduler` umbrella retained for backwards-compat;
+        // per-binding gate is `bundled-cron` (v0.5.564) so the
+        // well-known flip can route to perry-ext-cron.
+        "cron" | "node-cron" => &["bundled-cron"],
 
         // ── Validation (validator.js) ─────────────────────────────────
         // `validation` umbrella retained for backwards-compat;

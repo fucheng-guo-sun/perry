@@ -164,6 +164,16 @@ crate = "perry-ext-ethers"
 lib = "perry_ext_ethers"
 tracking = "#466"
 
+[bindings.cron]
+crate = "perry-ext-cron"
+lib = "perry_ext_cron"
+tracking = "#466"
+
+[bindings."node-cron"]
+crate = "perry-ext-cron"
+lib = "perry_ext_cron"
+tracking = "#466"
+
 [bindings.nodemailer]
 crate = "perry-ext-nodemailer"
 lib = "perry_ext_nodemailer"

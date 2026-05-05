@@ -248,9 +248,9 @@ pub mod cheerio;
 pub use cheerio::*;
 
 // === Scheduler ===
-#[cfg(feature = "scheduler")]
+#[cfg(feature = "bundled-cron")]
 pub mod cron;
-#[cfg(feature = "scheduler")]
+#[cfg(feature = "bundled-cron")]
 pub use cron::*;
 
 // Unconditional cron timer stubs — always present so the CLI event loop in

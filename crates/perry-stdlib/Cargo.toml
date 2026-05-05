@@ -129,8 +129,11 @@ bundled-sharp = ["dep:image"]
 html-parser = ["bundled-cheerio"]
 bundled-cheerio = ["dep:scraper"]
 
-# Scheduler (cron)
-scheduler = ["dep:cron", "dep:tokio-cron-scheduler", "async-runtime"]
+# Scheduler (cron) — `scheduler` umbrella retained for
+# backwards-compat; v0.5.564's well-known flip toggles
+# `bundled-cron` instead.
+scheduler = ["bundled-cron"]
+bundled-cron = ["dep:cron", "dep:tokio-cron-scheduler", "async-runtime"]
 
 # Rate limiting — `rate-limit` umbrella stays for backwards-compat;
 # v0.5.552's well-known flip toggles `bundled-ratelimit` instead.

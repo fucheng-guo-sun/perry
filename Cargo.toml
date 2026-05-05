@@ -34,6 +34,7 @@ members = [
     "crates/perry-ext-commander",
     "crates/perry-ext-ethers",
     "crates/perry-ext-nodemailer",
+    "crates/perry-ext-cron",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -95,6 +96,7 @@ default-members = [
     "crates/perry-ext-commander",
     "crates/perry-ext-ethers",
     "crates/perry-ext-nodemailer",
+    "crates/perry-ext-cron",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -165,7 +167,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.563"
+version = "0.5.564"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
@@ -254,6 +256,7 @@ perry-ext-ratelimit = { path = "crates/perry-ext-ratelimit" }
 perry-ext-commander = { path = "crates/perry-ext-commander" }
 perry-ext-ethers = { path = "crates/perry-ext-ethers" }
 perry-ext-nodemailer = { path = "crates/perry-ext-nodemailer" }
+perry-ext-cron = { path = "crates/perry-ext-cron" }
 perry-stdlib = { path = "crates/perry-stdlib" }
 perry-diagnostics = { path = "crates/perry-diagnostics" }
 perry-jsruntime = { path = "crates/perry-jsruntime" }
