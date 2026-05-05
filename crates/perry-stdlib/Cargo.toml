@@ -68,7 +68,12 @@ bundled-commander = []
 # Note: dashmap is now always-on (used by core handle registry), no longer listed here.
 http-server = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:bytes", "async-runtime"]
 
-# HTTP client (node-fetch, axios)
+# HTTP client (node-fetch, axios) — single umbrella for both. The
+# well-known flip strips this when the user imports either module
+# (both perry-ext-fetch and perry-ext-axios cover the symbol surface
+# under the umbrella). Per-binding splits could land later if a
+# program needs e.g. axios-only without fetch, but in practice they
+# share the reqwest dep so splitting saves no binary size.
 http-client = ["dep:reqwest", "async-runtime"]
 
 # WebSocket
@@ -97,7 +102,10 @@ database-sqlite = ["dep:rusqlite"]
 # v0.5.565's well-known flip toggles `bundled-ioredis` instead.
 database-redis = ["bundled-ioredis"]
 bundled-ioredis = ["dep:redis", "async-runtime"]
-database-mongodb = ["dep:mongodb", "dep:bson", "dep:futures-util", "async-runtime"]
+# `database-mongodb` umbrella retained for backwards-compat;
+# v0.5.568's well-known flip toggles `bundled-mongodb` instead.
+database-mongodb = ["bundled-mongodb"]
+bundled-mongodb = ["dep:mongodb", "dep:bson", "dep:futures-util", "async-runtime"]
 
 # Crypto (sha256, md5, bcrypt, jwt, etc.)
 # Implies `async-runtime` because bcrypt/jwt/argon2 hashing offloads to

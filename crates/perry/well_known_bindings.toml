@@ -203,3 +203,18 @@ tracking = "#466"
 crate = "perry-ext-nodemailer"
 lib = "perry_ext_nodemailer"
 tracking = "#466"
+
+[bindings.mongodb]
+crate = "perry-ext-mongodb"
+lib = "perry_ext_mongodb"
+tracking = "#466"
+
+[bindings."node-fetch"]
+crate = "perry-ext-fetch"
+lib = "perry_ext_fetch"
+tracking = "#466"
+
+[bindings.fetch]
+crate = "perry-ext-fetch"
+lib = "perry_ext_fetch"
+tracking = "#466"

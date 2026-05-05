@@ -153,6 +153,7 @@ pub(super) fn build_optimized_libs(
                         | "bundled-ioredis"
                         | "bundled-pg"
                         | "bundled-mysql2"
+                        | "bundled-mongodb"
                 )
             }) {
                 features.insert("async-runtime");

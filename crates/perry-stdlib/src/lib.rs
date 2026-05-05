@@ -178,9 +178,9 @@ pub mod ioredis;
 #[cfg(feature = "bundled-ioredis")]
 pub use ioredis::*;
 
-#[cfg(feature = "database-mongodb")]
+#[cfg(feature = "bundled-mongodb")]
 pub mod mongodb;
-#[cfg(feature = "database-mongodb")]
+#[cfg(feature = "bundled-mongodb")]
 pub use mongodb::*;
 
 // === Crypto ===

@@ -63,7 +63,10 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         // per-binding gate is `bundled-ioredis` (v0.5.565) so the
         // well-known flip can route to perry-ext-ioredis.
         "ioredis" | "redis" => &["bundled-ioredis"],
-        "mongodb" => &["database-mongodb"],
+        // `database-mongodb` umbrella retained for backwards-compat;
+        // per-binding gate is `bundled-mongodb` (v0.5.568) so the
+        // well-known flip can route to perry-ext-mongodb.
+        "mongodb" => &["bundled-mongodb"],
 
         // ── Crypto ────────────────────────────────────────────────────
         // bcrypt split off into its own `bundled-bcrypt` feature in
