@@ -234,6 +234,32 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         | ("path", "posix")
                                         | ("path", "win32")
                                 );
+                                // Unimplemented-API gate (#463) for the chained
+                                // `mod.X.Y()` case. The lower_member gate fires
+                                // for `mod.X` standalone but not when this arm
+                                // short-circuits the chain into a single
+                                // `NativeMethodCall` without recursing through
+                                // lower_member. Without this, `crypto.subtle.encrypt(...)`
+                                // built cleanly and silently returned undefined.
+                                let allow_unimplemented =
+                                    std::env::var_os("PERRY_ALLOW_UNIMPLEMENTED").is_some();
+                                if !is_sub_namespace
+                                    && !allow_unimplemented
+                                    && perry_api_manifest::module_has_any_entries(module_name)
+                                    && perry_api_manifest::module_has_symbol(
+                                        module_name,
+                                        &class_name,
+                                    )
+                                    .is_none()
+                                {
+                                    crate::lower_bail!(
+                                        outer_member.span,
+                                        "`{}.{}` is not implemented in Perry — see `perry --print-api-manifest` for the supported surface, \
+                                         or set `PERRY_ALLOW_UNIMPLEMENTED=1` to ignore. (#463)",
+                                        module_name,
+                                        class_name,
+                                    );
+                                }
                                 if !is_sub_namespace {
                                     if let ast::MemberProp::Ident(method_ident) = &outer_member.prop
                                     {
