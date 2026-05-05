@@ -24,6 +24,7 @@ mod parse_cache;
 mod resolve;
 mod strip_dedup;
 mod targets;
+mod well_known;
 use collect_modules::collect_modules;
 pub use library_search::find_library;
 use library_search::{

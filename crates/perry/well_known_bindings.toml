@@ -1,0 +1,38 @@
+# Well-known native bindings registry (#466 Phase 4).
+#
+# Maps bare npm package names that Perry natively supports to the
+# bundled wrapper crate that ships with the compiler. When a user
+# writes `import { config } from 'dotenv'` and there's no
+# `node_modules/dotenv/` on disk, this table is what Perry consults
+# to find the implementation.
+#
+# Resolution precedence (see docs/src/native-libraries/manifest-v1.md):
+#   1. node_modules/<name>/  with  perry.nativeLibrary  →  use it
+#   2. node_modules/<name>/  without manifest           →  V8 fallback
+#   3. well_known_bindings.toml (this file)             →  bundled crate
+#   4. nothing matches                                  →  resolution error
+#
+# Adding an entry here:
+#   - the `crate` value is the workspace member crate name (e.g.
+#     `perry-ext-dotenv`); Perry derives the staticlib path as
+#     `target/release/lib<crate-name-with-dashes-underscored>.a`.
+#   - the wrapper crate must export the same `js_<package>_*`
+#     symbols that perry-stdlib's existing implementation does, so
+#     codegen-side dispatch keeps working unchanged.
+#   - users can override an entry by installing their own wrapper
+#     in `node_modules/<name>/` — that always wins.
+#
+# Migration order tracks #466 Phase 5 (smallest first). Each entry
+# is gated on the bundled crate actually existing in the workspace
+# — wrappers that haven't been ported yet have no entry.
+
+[bindings.dotenv]
+crate = "perry-ext-dotenv"
+# Library file name without the `lib` prefix or `.a` extension.
+# Cargo derives this from the crate name by replacing `-` with `_`,
+# but stating it explicitly here is documentation for humans
+# inspecting the table.
+lib = "perry_ext_dotenv"
+# Tracking issue for the migration; surfaced in error messages
+# when the bundled .a is missing at link time.
+tracking = "#466"
