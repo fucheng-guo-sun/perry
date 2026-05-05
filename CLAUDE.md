@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Perry is a native TypeScript compiler written in Rust that compiles TypeScript source code directly to native executables. It uses SWC for TypeScript parsing and LLVM for code generation.
 
-**Current Version:** 0.5.521
+**Current Version:** 0.5.522
 
 
 ## TypeScript Parity Status
@@ -153,6 +153,7 @@ First-resolved directory cached in `compile_package_dirs`; subsequent imports re
 
 One-liners only — full detail in CHANGELOG.md.
 
+- **v0.5.522** — Closes #467: sanitize scoped package.json names (`@scope/pkg` → `scope-pkg`) before they flow into the linker's `-o` arg or default bundle ID — ld64 was treating the leading `@` as a response-file directive.
 - **v0.5.521** — Closes #457: skip inlining of generator functions in `is_inlinable` — the inliner was erasing `yield` semantics and collapsing `gen()` to its terminating `return` value.
 - **v0.5.520** — Closes #456: unroll pass aliased LocalIds + FuncIds across cloned iterations, producing duplicate `@perry_global_*` definitions and collapsing per-iteration closures into one body.
 - **v0.5.519** — Dependabot security cleanup: `jsonwebtoken` 9.3 → 10.3, `lru` 0.12 → 0.16, `validator` 0.18 → 0.20, drop `atty` for `std::io::IsTerminal`.
