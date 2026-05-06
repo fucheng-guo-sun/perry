@@ -2166,6 +2166,17 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
         // `js_native_call_method` detects them via `is_registered_buffer` and
         // routes through `dispatch_buffer_method` which handles the full
         // Node-style numeric read/write/swap/indexOf method family.
+        //
+        // Issue #510: also skip `NativeModuleRef` receivers (e.g. unknown
+        // `fs.*` / `crypto.*` calls that fall through their dedicated arms).
+        // `NativeModuleRef` lowers to literal `0.0`, which the runtime
+        // catch-all would treat as a primitive (`number`) and throw on. The
+        // pre-#510 behavior was a silent NULL_OBJECT_BYTES fallback —
+        // matching that here keeps "unsupported native module method" cases
+        // returning undefined instead of throwing. (Throwing would be more
+        // helpful but requires per-module unimplemented-API detection at the
+        // codegen site, tracked as part of the unimplemented-API plan in
+        // #463.)
         let class_name_opt = receiver_class_name(ctx, object);
         let is_buffer_class = matches!(
             class_name_opt.as_deref(),
@@ -2192,6 +2203,7 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
             .as_ref()
             .is_some_and(|n| !ctx.classes.contains_key(n));
         let skip_native = matches!(object.as_ref(), Expr::GlobalGet(_))
+            || matches!(object.as_ref(), Expr::NativeModuleRef(_))
             || (class_name_opt.is_some() && !is_buffer_class && !class_unknown_to_codegen);
         if !skip_native {
             // Issue #92 fast path: intrinsify Buffer numeric reads

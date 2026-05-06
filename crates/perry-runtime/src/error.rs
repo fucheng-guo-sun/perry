@@ -258,3 +258,54 @@ pub extern "C" fn js_throw_type_error_property_access(
     );
     std::process::exit(1);
 }
+
+/// Issue #510: calling a method on a primitive whose name doesn't
+/// resolve on the auto-boxed prototype must throw `TypeError: <expr>
+/// is not a function` per spec. Two call sites:
+///
+///   1. `crates/perry-codegen/src/lower_string_method.rs`'s
+///      unknown-method catch-all — when the receiver's static type
+///      narrows to `String` (any-typed local refined from a string
+///      initializer) and the method name isn't in the hand-handled
+///      set. Pre-fix the catch-all silently returned the receiver,
+///      so `s.lengt()` evaluated to `s` and execution continued.
+///
+///   2. `crates/perry-runtime/src/object.rs::js_native_call_method`
+///      catch-all — when the receiver is a non-string primitive
+///      (number / int32 / bool / bigint) and dispatch is exhausted.
+///      Pre-fix the catch-all returned `NULL_OBJECT_BYTES` and
+///      execution continued.
+///
+/// `receiver_kind_*` carries a short label (`"string"` / `"number"` /
+/// `"boolean"` / `"bigint"`) used for the diagnostic; pass null/0
+/// to omit it. `prop_name_*` carries the called method name.
+#[no_mangle]
+pub extern "C" fn js_throw_type_error_not_a_function(
+    receiver_kind_ptr: *const u8,
+    receiver_kind_len: usize,
+    prop_name_ptr: *const u8,
+    prop_name_len: usize,
+) -> ! {
+    let kind = if receiver_kind_ptr.is_null() || receiver_kind_len == 0 {
+        ""
+    } else {
+        unsafe {
+            let bytes = std::slice::from_raw_parts(receiver_kind_ptr, receiver_kind_len);
+            std::str::from_utf8(bytes).unwrap_or("")
+        }
+    };
+    let prop = if prop_name_ptr.is_null() || prop_name_len == 0 {
+        ""
+    } else {
+        unsafe {
+            let bytes = std::slice::from_raw_parts(prop_name_ptr, prop_name_len);
+            std::str::from_utf8(bytes).unwrap_or("")
+        }
+    };
+    if kind.is_empty() {
+        eprintln!("TypeError: {} is not a function", prop);
+    } else {
+        eprintln!("TypeError: ({}).{} is not a function", kind, prop);
+    }
+    std::process::exit(1);
+}

@@ -12,7 +12,7 @@ use crate::expr::{
     FnCtx,
 };
 use crate::type_analysis::is_string_expr;
-use crate::types::{DOUBLE, I1, I32, I64};
+use crate::types::{DOUBLE, I1, I32, I64, PTR};
 
 /// Lower `s.method(args…)` for a string-typed receiver. Currently
 /// supported methods: `indexOf` (1 or 2 args), `slice`, `substring`,
@@ -644,14 +644,53 @@ pub(crate) fn lower_string_method(
             let handle = blk.call(I64, "js_jsvalue_to_string", &[(DOUBLE, &recv_box)]);
             Ok(nanbox_string_inline(blk, &handle))
         }
-        // Best-effort fallback: lower args for side effects, return
-        // the receiver string. Compile succeeds; runtime gets the
-        // pre-method-call value.
+        // Issue #510: an unknown method on a string-typed receiver
+        // (e.g. `s.lengt()` — typo of `length`) was previously
+        // silently lowered to `Ok(recv_box)`, which evaluated the
+        // call to the receiver itself and let execution continue.
+        // That masked typos as no-ops and matched neither Node nor
+        // the spec.
+        //
+        // Match Node: emit a TypeError abort via
+        // `js_throw_type_error_not_a_function("string", "<prop>")`,
+        // followed by `unreachable` (the helper is `-> !`). The
+        // arguments to the unknown method are still lowered for
+        // side effects, in case any of them have observable
+        // effects on completed evaluation order.
         _ => {
             for a in args {
                 let _ = lower_expr(ctx, a)?;
             }
-            Ok(recv_box)
+            // Intern the receiver-kind label and the property name
+            // into the string pool so we can pass byte ptr + length
+            // to the runtime helper (same shape #462 uses for
+            // `js_throw_type_error_property_access`).
+            let kind_idx = ctx.strings.intern("string");
+            let kind_entry = ctx.strings.entry(kind_idx);
+            let kind_bytes_global = format!("@{}", kind_entry.bytes_global);
+            let kind_len_str = kind_entry.byte_len.to_string();
+            let prop_idx = ctx.strings.intern(property);
+            let prop_entry = ctx.strings.entry(prop_idx);
+            let prop_bytes_global = format!("@{}", prop_entry.bytes_global);
+            let prop_len_str = prop_entry.byte_len.to_string();
+            let blk = ctx.block();
+            blk.call_void(
+                "js_throw_type_error_not_a_function",
+                &[
+                    (PTR, &kind_bytes_global),
+                    (I64, &kind_len_str),
+                    (PTR, &prop_bytes_global),
+                    (I64, &prop_len_str),
+                ],
+            );
+            blk.unreachable();
+            // The block is now terminated; downstream lowering
+            // expects a value register to phi against. Return a
+            // placeholder undefined — `unreachable` above means
+            // this is never read at runtime.
+            Ok(crate::nanbox::double_literal(f64::from_bits(
+                crate::nanbox::TAG_UNDEFINED,
+            )))
         }
     }
 }

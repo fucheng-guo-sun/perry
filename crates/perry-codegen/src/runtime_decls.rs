@@ -317,6 +317,15 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
         VOID,
         &[I32, PTR, I64],
     );
+    // Issue #510: thrown by `lower_string_method`'s unknown-method
+    // catch-all for primitive (string-typed) receivers. Args:
+    // (kind_ptr, kind_len, prop_ptr, prop_len). Helper diverges
+    // (`-> !`); declared as void-return for LLVM purposes.
+    module.declare_function(
+        "js_throw_type_error_not_a_function",
+        VOID,
+        &[PTR, I64, PTR, I64],
+    );
     module.declare_function("js_map_set", I64, &[I64, DOUBLE, DOUBLE]);
     module.declare_function("js_map_get", DOUBLE, &[I64, DOUBLE]);
     module.declare_function("js_map_has", I32, &[I64, DOUBLE]);
@@ -395,6 +404,11 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_string_trim_start", I64, &[I64]);
     module.declare_function("js_string_trim_end", I64, &[I64]);
     module.declare_function("js_string_char_at", I64, &[I64, I32]);
+    // Issue #514: tag-aware dynamic index dispatch — routes `obj[idx]` to
+    // `js_string_char_at` / `js_array_get_f64` / `js_object_get_field_by_name_f64`
+    // based on the receiver's NaN-box tag at runtime. Used by IndexGet's
+    // fallback path when codegen can't statically prove the receiver type.
+    module.declare_function("js_dyn_index_get", DOUBLE, &[DOUBLE, DOUBLE]);
     module.declare_function("js_string_to_char_array", I64, &[I64]);
     module.declare_function("js_string_repeat", I64, &[I64, I32]);
     module.declare_function("js_string_replace_string", I64, &[I64, I64, I64]);

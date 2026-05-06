@@ -3982,6 +3982,64 @@ pub unsafe extern "C" fn js_native_call_method(
         return f64::from_bits(0x7FF8_0000_0000_0001); // undefined
     }
 
+    // Issue #514 followup: string method dispatch on any-typed receivers.
+    // When `(s: any).at(-1)` / `.slice(1)` / etc. lower through the
+    // dispatch tower and `s` actually holds a string, we need to route
+    // to the matching `js_string_*` runtime helper. Without this, the
+    // primitive-method TypeError catch-all (issue #510 fix below) fires
+    // for every legitimate string method call on a `(s: any)` parameter,
+    // breaking hono's `mergePath` template-literal logic that mixes
+    // `s?.[0]` (handled by `js_dyn_index_get`, issue #514) with
+    // `s?.at(-1)` and `s?.slice(1)`. Static call sites for typed string
+    // receivers continue to use the inline `js_string_*` paths in
+    // `lower_string_method.rs`; this dispatch only catches fallthroughs
+    // where codegen couldn't statically prove the type.
+    if jsval.is_string() || jsval.is_short_string() {
+        let s_ptr =
+            crate::value::js_get_string_pointer_unified(object) as *const crate::StringHeader;
+        if !s_ptr.is_null() {
+            let arg_i32 = |i: usize| -> i32 {
+                if i < args_len && !args_ptr.is_null() {
+                    let v = unsafe { *args_ptr.add(i) };
+                    if v.is_nan() || v.is_infinite() {
+                        0
+                    } else {
+                        v as i32
+                    }
+                } else {
+                    0
+                }
+            };
+            match method_name {
+                "at" => {
+                    return crate::string::js_string_at(s_ptr, arg_i32(0));
+                }
+                "charAt" => {
+                    let result = crate::string::js_string_char_at(s_ptr, arg_i32(0));
+                    if result.is_null() {
+                        return f64::from_bits(JSValue::undefined().bits());
+                    }
+                    return f64::from_bits(JSValue::string_ptr(result).bits());
+                }
+                "charCodeAt" => {
+                    return crate::string::js_string_char_code_at(s_ptr, arg_i32(0));
+                }
+                "slice" => {
+                    let start = if args_len >= 1 { arg_i32(0) } else { 0 };
+                    let len_i32 = unsafe { (*s_ptr).byte_len } as i32;
+                    let end = if args_len >= 2 { arg_i32(1) } else { len_i32 };
+                    let result = crate::string::js_string_slice(s_ptr, start, end);
+                    if result.is_null() {
+                        return f64::from_bits(JSValue::undefined().bits());
+                    }
+                    return f64::from_bits(JSValue::string_ptr(result).bits());
+                }
+                "toString" | "valueOf" => return object,
+                _ => {} // not a handled string method — fall through to TypeError catch-all
+            }
+        }
+    }
+
     // Check if this is a handle-based object (small integer, not a real heap pointer)
     // Handles are used by Fastify, ioredis, and other native modules that store
     // objects in a registry and use integer IDs to reference them.
@@ -4564,6 +4622,51 @@ pub unsafe extern "C" fn js_native_call_method(
                 }
             }
         }
+    }
+
+    // Issue #510: throw `TypeError: <expr> is not a function` when
+    // the receiver is a non-string primitive (number / int32 / bool /
+    // bigint) and dispatch above didn't fire. Node auto-boxes
+    // primitives via Number/Boolean/BigInt prototypes; when the
+    // prototype lookup yields undefined, the call site throws.
+    // Without primitive auto-boxing, Perry must surface the same
+    // diagnostic at dispatch time — silently returning the
+    // null-object sentinel (the historical fall-through below) lets
+    // typo'd method calls run as no-ops, masking real bugs.
+    //
+    // Strings don't reach this catch-all in the typical case —
+    // codegen's `lower_string_method` intercepts string-typed
+    // receivers and throws there directly (matching ABI). The string
+    // arm is left in here for the rare path where a string flows
+    // through dynamic dispatch (e.g. raw NaN-boxed receiver from a
+    // Map.get() result the user typed as `any`).
+    //
+    // Real-object receivers keep the `NULL_OBJECT_BYTES`
+    // fall-through. Many existing call paths use this dispatcher as
+    // a generic shortcut and rely on the silent null-object return
+    // for unknown methods; tightening that is tracked separately.
+    // `undefined` / `null` receivers are caught earlier — codegen's
+    // `PropertyGet` lowering throws on the property read
+    // (`js_throw_type_error_property_access`, issue #462) before the
+    // call site ever evaluates.
+    let primitive_kind: Option<&'static str> = if jsval.is_any_string() {
+        Some("string")
+    } else if jsval.is_int32() || jsval.is_number() {
+        Some("number")
+    } else if jsval.is_bool() {
+        Some("boolean")
+    } else if jsval.is_bigint() {
+        Some("bigint")
+    } else {
+        None
+    };
+    if let Some(kind) = primitive_kind {
+        crate::error::js_throw_type_error_not_a_function(
+            kind.as_ptr(),
+            kind.len(),
+            method_name.as_ptr(),
+            method_name.len(),
+        );
     }
 
     // Method not found — return a safe "null object" pointer instead of undefined.
