@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Perry is a native TypeScript compiler written in Rust that compiles TypeScript source code directly to native executables. It uses SWC for TypeScript parsing and LLVM for code generation.
 
-**Current Version:** 0.5.581
+**Current Version:** 0.5.582
 
 
 ## TypeScript Parity Status
@@ -152,6 +152,8 @@ First-resolved directory cached in `compile_package_dirs`; subsequent imports re
 ## Recent Changes
 
 One-liners only — full detail in CHANGELOG.md.
+
+- **v0.5.582** — Post-v0.5.581 release fix-forward: cargo fmt drift (52 files) reformatted in lockstep, and Cargo.lock synced to current workspace version. Lint job in `Tests` workflow rejected v0.5.581's tag with formatting check; this bump re-runs the gating workflows on a clean tree. Compile-smoke job's fastify integration test (`./scripts/run_fastify_tests.sh`) reveals a separate fastify reactor panic ("there is no reactor running") on hyper's accept loop — same LTO-strips-tokio-context shape that perry-ext-net hit in v0.5.578-580, but the `Handle::try_current` + `std::hint::black_box` workaround that worked for perry-ext-net DOESN'T work for fastify (hyper's larger surface gives LTO more to dead-strip). Tracked as a v0.6.0 followup; programs that import fastify will hit this panic at server-start time. Recommended workaround for fastify users today: use perry-stdlib's bundled fastify by setting `PERRY_DISABLE_WELL_KNOWN=1` env var on `perry compile`. Other tests in compile-smoke unaffected.
 
 - **v0.5.581** — Refs #421/#420 (issue #91 dispatch via HANDLE_METHOD_DISPATCH for perry-ext-net): the `Map.get` / struct-field / wrapper-function receivers where codegen lost the static type fall through to `js_native_call_method` → `dispatch_handle_method` → `is_net_socket_handle` → `dispatch_net_socket`. Both predicates were `#[cfg(feature = "net")]`-gated in perry-stdlib, so the well-known flip stripped them entirely. perry-ext-net's Map.get'd sockets silently dispatched to undefined (issue #91 regression). Fixes: (a) perry-ext-net exposes `js_ext_net_is_socket_handle(handle) -> i32` extern; (b) perry-stdlib's `dispatch_handle_method` flips the cfg gate from `feature = "net"` to `feature = "bundled-net"` (perry-stdlib's own implementation) and adds a parallel arm under `not(bundled-net) AND external-net-pump` that calls `js_ext_net_is_socket_handle` + a new `dispatch_external_net_socket` helper; (c) the helper declares `js_net_socket_write` / `_end` / `_destroy` / `_on` / `_method_connect` / `_upgrade_tls` extern "C" — perry-ext-net already provides these. Also strengthened the LTO black-box in perry-ext-net's `spawn_socket_runner` (eprintln-on-error + black_box on JoinHandle) since the v0.5.580 single black-box on `try_current()` regressed when binary size shifted from 3.4MB to 2.4MB. Net parity recovery: 5 fails → 1 fail (`test_net_min` / `test_net_socket` / `test_issue_422_socket_connect` / `test_sock_write_map` PASS; `test_net_upgrade_tls` still needs TLS test fixture server, environmental, not in scope).
 
