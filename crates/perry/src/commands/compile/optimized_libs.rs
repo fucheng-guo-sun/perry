@@ -99,31 +99,96 @@ pub(super) fn build_optimized_libs(
     // partially-built workspace still produces a working binary.
     let use_well_known = std::env::var_os("PERRY_DISABLE_WELL_KNOWN").is_none();
     let mut well_known_libs: Vec<PathBuf> = Vec::new();
+    // #507 — wrappers whose own crate-level `[dependencies]` pull tokio
+    // (TcpStream, hyper, reqwest, mongodb, sqlx, tokio-tungstenite,
+    // lettre, …) need to share a single tokio compilation with
+    // perry-stdlib's runtime. If they're built in a different
+    // target-dir than perry-stdlib (the workspace `target/release/`
+    // vs. the auto-optimize `target/perry-auto-<hash>/release/`), the
+    // mangled hash on `tokio::runtime::context::CONTEXT` differs
+    // between the two staticlibs — both end up in the final binary as
+    // distinct TLS variables. perry-stdlib's runtime sets one;
+    // `Handle::current()` from inside the wrapper reads the other
+    // (empty) one and panics with "there is no reactor running".
+    //
+    // Fix is to rebuild these crates IN the auto-optimize cargo
+    // invocation (`-p <crate>`), which forces a single tokio
+    // compilation. Both staticlibs then reference the same mangled
+    // CONTEXT symbol; the linker dedups; one TLS variable in the
+    // final binary; `Handle::current()` works.
+    //
+    // CPU-only wrappers (bcrypt, argon2, sharp, …) don't need this —
+    // they only use perry-ffi's `spawn_blocking` shim, which routes
+    // through perry-stdlib's tokio. Their workspace-built .a stays
+    // fine.
+    let mut tokio_using_bindings: Vec<(String, String, Option<String>)> = Vec::new();
     if use_well_known {
         for module in &ctx.native_module_imports {
             let Some(binding) = super::well_known::lookup_well_known(module) else {
                 continue;
             };
-            // Locate the bundled `.a`. Workspace root might be unset
-            // when perry runs from a release tarball — in that case
-            // the bundled `.a` is expected to live next to the
-            // perry binary itself; followups under #466 Phase 4
-            // teach `bundled_staticlib_path` about that layout.
+            // Workspace root is required for both the prebuilt-path
+            // probe AND for the rebuild-in-auto-optimize path.
             let workspace_root_opt = find_perry_workspace_root();
             let Some(workspace_root) = workspace_root_opt.as_ref() else {
                 continue;
             };
-            let Some(lib_path) = super::well_known::bundled_staticlib_path(workspace_root, binding)
-            else {
-                if matches!(format, OutputFormat::Text) && verbose > 0 {
-                    eprintln!(
-                        "  well-known: skipping `{}` — bundled `lib{}.a` not found \
-                         in target/release; falling back to perry-stdlib copy.",
-                        module, binding.lib
+            let needs_shared_tokio = binding_needs_shared_tokio(module);
+            // For CPU-only wrappers we can use the workspace-built
+            // copy directly. Skip the binding entirely if no .a
+            // exists on disk (partial build / release tarball
+            // missing the wrapper).
+            if !needs_shared_tokio {
+                let Some(lib_path) =
+                    super::well_known::bundled_staticlib_path(workspace_root, binding)
+                else {
+                    if matches!(format, OutputFormat::Text) && verbose > 0 {
+                        eprintln!(
+                            "  well-known: skipping `{}` — bundled `lib{}.a` not found \
+                             in target/release; falling back to perry-stdlib copy.",
+                            module, binding.lib
+                        );
+                    }
+                    continue;
+                };
+                if matches!(format, OutputFormat::Text) {
+                    println!(
+                        "  well-known: routing `{}` → {} ({})",
+                        module,
+                        lib_path.display(),
+                        binding.tracking.as_deref().unwrap_or("no tracking issue")
                     );
                 }
-                continue;
-            };
+                well_known_libs.push(lib_path);
+            } else {
+                // Tokio-using: defer path resolution until after the
+                // auto-optimize cargo build. Verify the source crate
+                // exists on disk first (so we can actually build it).
+                let crate_dir = workspace_root.join("crates").join(&binding.krate);
+                if !crate_dir.is_dir() {
+                    if matches!(format, OutputFormat::Text) && verbose > 0 {
+                        eprintln!(
+                            "  well-known: skipping `{}` — crate `{}` source not on disk; \
+                             falling back to perry-stdlib copy.",
+                            module, binding.krate
+                        );
+                    }
+                    continue;
+                }
+                if matches!(format, OutputFormat::Text) {
+                    println!(
+                        "  well-known: routing `{}` → rebuilding `{}` with shared tokio (#507) ({})",
+                        module,
+                        binding.krate,
+                        binding.tracking.as_deref().unwrap_or("no tracking issue")
+                    );
+                }
+                tokio_using_bindings.push((
+                    binding.krate.clone(),
+                    binding.lib.clone(),
+                    binding.tracking.clone(),
+                ));
+            }
             // Strip the perry-stdlib feature(s) this binding was
             // covering. `module_to_features` is the same table
             // `compute_required_features` consulted above, so we
@@ -172,15 +237,6 @@ pub(super) fn build_optimized_libs(
             if original_features.contains(&"bundled-net") {
                 features.insert("external-net-pump");
             }
-            if matches!(format, OutputFormat::Text) {
-                println!(
-                    "  well-known: routing `{}` → {} ({})",
-                    module,
-                    lib_path.display(),
-                    binding.tracking.as_deref().unwrap_or("no tracking issue")
-                );
-            }
-            well_known_libs.push(lib_path);
         }
     }
 
@@ -286,6 +342,15 @@ pub(super) fn build_optimized_libs(
         .arg("-p")
         .arg("perry-stdlib")
         .arg("--no-default-features");
+    // #507 — rebuild tokio-using ext crates in the same cargo
+    // invocation as perry-stdlib so cargo unifies tokio across them.
+    // Without this, each crate's tokio.rlib lives in a different
+    // target-dir with a different mangled hash, and perry-ext-*'s
+    // `Handle::current()` reads a different CONTEXT TLS variable
+    // than the one perry-stdlib's runtime entered.
+    for (krate, _lib, _tracking) in &tokio_using_bindings {
+        cargo_cmd.arg("-p").arg(krate);
+    }
     if is_tier3 {
         cargo_cmd.arg("-Zbuild-std=std,panic_abort");
     }
@@ -438,6 +503,54 @@ pub(super) fn build_optimized_libs(
                 meta.len() as f64 / (1024.0 * 1024.0)
             );
         }
+    }
+
+    // #507 — resolve the `.a` paths for each tokio-using ext crate
+    // we rebuilt above. They live next to perry-stdlib.a in the
+    // auto-optimize target-dir, with the SAME tokio compilation
+    // bundled in. The linker will dedup duplicate tokio symbols
+    // across the staticlibs because the mangled hashes match.
+    for (krate, lib, _tracking) in &tokio_using_bindings {
+        let lib_path = release_dir.join(format!("lib{}.a", lib));
+        if !lib_path.exists() {
+            // Fall back to the workspace `target/release/` copy. The
+            // linker will still produce a working binary for this
+            // wrapper if the user code path doesn't actually exercise
+            // the tokio CONTEXT — useful as a safety net rather than
+            // hard-failing.
+            let fallback = workspace_root
+                .join("target")
+                .join("release")
+                .join(format!("lib{}.a", lib));
+            if fallback.exists() {
+                if matches!(format, OutputFormat::Text) {
+                    eprintln!(
+                        "  well-known: rebuild produced no `lib{}.a` in {} — \
+                         using workspace fallback (CONTEXT panic risk on tokio I/O)",
+                        lib,
+                        release_dir.display()
+                    );
+                }
+                well_known_libs.push(fallback);
+            } else if matches!(format, OutputFormat::Text) {
+                eprintln!(
+                    "  well-known: rebuild produced no `lib{}.a` for `{}`; \
+                     skipping — link will likely fail with unresolved js_* symbols.",
+                    lib, krate
+                );
+            }
+            continue;
+        }
+        if matches!(format, OutputFormat::Text) {
+            if let Ok(meta) = std::fs::metadata(&lib_path) {
+                println!(
+                    "  auto-optimize: built {} ({:.1} MB)",
+                    lib_path.display(),
+                    meta.len() as f64 / (1024.0 * 1024.0)
+                );
+            }
+        }
+        well_known_libs.push(lib_path);
     }
 
     // Phase J: when PERRY_LLVM_BITCODE_LINK=1, also emit LLVM bitcode
@@ -607,5 +720,83 @@ pub(super) fn build_optimized_libs(
         stdlib_bc,
         extra_bc,
         well_known_libs,
+    }
+}
+
+/// True if this binding's wrapper crate has its own tokio dependency
+/// for I/O (TcpStream, hyper, reqwest, mongodb, sqlx, redis,
+/// tokio-tungstenite, lettre, …) and must therefore share a single
+/// tokio compilation with perry-stdlib's runtime.
+///
+/// Closes #507 — when these wrappers are built in a different
+/// target-dir than perry-stdlib, each gets its own private copy of
+/// tokio's `CONTEXT` thread-local. perry-stdlib's runtime sets one;
+/// the wrapper's `Handle::current()` reads the other (empty) one
+/// and panics with "there is no reactor running".
+///
+/// Wrappers that only use perry-ffi's `spawn_blocking` shim (bcrypt,
+/// argon2, sharp, …) route their async work through perry-stdlib's
+/// tokio and don't need this — their own crate has no tokio dep.
+fn binding_needs_shared_tokio(module: &str) -> bool {
+    matches!(
+        module,
+        // Raw TCP / TLS sockets
+        "net"
+        // WebSocket client/server
+        | "ws"
+        // HTTP / HTTPS via reqwest/hyper
+        | "http"
+        | "https"
+        // HTTP clients (reqwest, hyper)
+        | "axios"
+        | "node-fetch"
+        | "fetch"
+        // HTTP server (hyper)
+        | "fastify"
+        // Database drivers (mongodb, sqlx, redis)
+        | "mongodb"
+        | "pg"
+        | "mysql2"
+        | "mysql2/promise"
+        | "ioredis"
+        | "redis"
+        // Mail (lettre)
+        | "nodemailer"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Closes #507. The well-known flip's "shared tokio" allowlist
+    /// must match the set of perry-ext-* crates whose own
+    /// `Cargo.toml` pulls tokio. If a new wrapper is added that uses
+    /// tokio for I/O without being added here, programs importing it
+    /// will panic with "there is no reactor running" the first time
+    /// the wrapper calls `Handle::current()` on a tokio worker.
+    #[test]
+    fn net_needs_shared_tokio() {
+        assert!(binding_needs_shared_tokio("net"));
+    }
+
+    #[test]
+    fn cpu_only_wrappers_do_not_need_shared_tokio() {
+        // bcrypt / argon2 / sharp / dotenv all route through
+        // perry-stdlib's `spawn_blocking` shim; their own crate has
+        // no tokio dep, so there's no CONTEXT collision risk.
+        assert!(!binding_needs_shared_tokio("bcrypt"));
+        assert!(!binding_needs_shared_tokio("argon2"));
+        assert!(!binding_needs_shared_tokio("sharp"));
+        assert!(!binding_needs_shared_tokio("dotenv"));
+    }
+
+    #[test]
+    fn unknown_modules_default_to_workspace_path() {
+        // Defensive default: if a module isn't in the allowlist,
+        // treat it as CPU-only (existing v0.5.586 behavior).
+        assert!(!binding_needs_shared_tokio(
+            "definitely-not-a-real-package"
+        ));
     }
 }
