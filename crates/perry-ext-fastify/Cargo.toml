@@ -1,0 +1,19 @@
+[package]
+name = "perry-ext-fastify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native bindings for the npm `fastify` HTTP server framework — hyper-based router with Hono-style request/reply context. Uses only `perry-ffi`."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+perry-ffi.workspace = true
+hyper = { version = "1.4", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
+http-body-util = "0.1"
+bytes = "1.5"
+tokio = { workspace = true }
+serde_json = "1"
+lazy_static = "1.5"

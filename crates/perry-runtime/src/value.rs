@@ -7,17 +7,28 @@
 //!
 //! Layout (64 bits):
 //! - Regular f64 values (including NaN) are stored directly
-//! - Tagged values use a signaling NaN pattern: 0x7FF8... with tag in bits 48-50
+//! - Tagged values use a quiet NaN pattern (mantissa bit 51 set), with the
+//!   tag in the top 16 bits and the payload in the low 48 bits. Per IEEE
+//!   754 §6.2.1, a NaN is quiet iff mantissa bit 51 is set; every tag
+//!   prefix Perry uses (0x7FF8..=0x7FFF) has that bit set, so all tagged
+//!   values are qNaN. Quiet matters because arithmetic on qNaN propagates
+//!   silently (`undefined + 1 -> NaN`) whereas sNaN would trap the FPU.
 //!
 //! We use the top 16 bits for tagging:
-//! - 0x7FF8 + tag: special values
-//! - 0x7FF9: pointer
-//! - 0x7FFA: int32
-//! - 0x7FFB: reserved
-//! - Other: regular f64
+//! - 0x7FF9: short string (SSO, inline 5-byte payload)
+//! - 0x7FFA: bigint pointer
+//! - 0x7FFC + tag: singleton specials (undefined / null / true / false / hole)
+//! - 0x7FFD: object/array pointer (48-bit payload)
+//! - 0x7FFE: int32 (low 32 bits)
+//! - 0x7FFF: heap string pointer (48-bit payload)
+//! - Other: regular f64 (including canonical qNaN 0x7FF8_0000_0000_0000)
 
-/// Tag markers - we use 0x7FFC prefix to distinguish from IEEE NaN (0x7FF8)
-/// IEEE quiet NaN is 0x7FF8_0000_0000_0000, so we use 0x7FFC as our marker
+/// Tag-marker for the singleton specials (undefined / null / true / false /
+/// hole). 0x7FFC chosen so the first two mantissa bits are `11`: that keeps
+/// it inside the qNaN encoding space (mantissa bit 51 set) while staying
+/// distinct from the canonical qNaN 0x7FF8 the FPU produces from arithmetic
+/// like `0/0` — code that wants to tell "Perry tagged" from "real NaN" can
+/// gate on `top16 >= 0x7FFC` (see `JSValue::is_number` below).
 const TAG_MARKER: u64 = 0x7FFC_0000_0000_0000;
 
 /// Special singleton values

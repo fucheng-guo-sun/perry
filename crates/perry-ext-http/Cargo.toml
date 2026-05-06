@@ -1,0 +1,16 @@
+[package]
+name = "perry-ext-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native bindings for Node's `http` / `https` modules — callback-style ClientRequest / IncomingMessage. Uses only `perry-ffi`. Async via spawn_blocking + reqwest."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+perry-ffi.workspace = true
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "http2"], default-features = false }
+tokio = { workspace = true }
+serde_json = "1"
+lazy_static = "1.5"

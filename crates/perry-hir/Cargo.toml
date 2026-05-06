@@ -8,6 +8,7 @@ description = "High-level intermediate representation for Perry"
 [dependencies]
 perry-types.workspace = true
 perry-diagnostics.workspace = true
+perry-api-manifest.workspace = true
 swc_ecma_ast.workspace = true
 swc_common.workspace = true
 

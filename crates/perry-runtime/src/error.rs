@@ -221,3 +221,40 @@ pub extern "C" fn js_error_get_kind(error: *mut ErrorHeader) -> u32 {
         (*error).error_kind
     }
 }
+
+/// Issue #462: property access against `undefined` / `null` must throw
+/// `TypeError` per spec. Codegen emits a tag check before the IC fast
+/// path; on a TAG_UNDEFINED or TAG_NULL receiver, it calls this helper.
+/// Until generalized exception-throw machinery is in place, the helper
+/// prints a node-shaped diagnostic to stderr and aborts with a non-zero
+/// exit, matching the user-visible behavior of node's uncaught
+/// `TypeError`.
+///
+/// `receiver_is_null` distinguishes "Cannot read properties of null"
+/// from "Cannot read properties of undefined" (matches V8's wording).
+/// `prop_name_ptr` / `prop_name_len` carry the static property name.
+#[no_mangle]
+pub extern "C" fn js_throw_type_error_property_access(
+    receiver_is_null: u32,
+    prop_name_ptr: *const u8,
+    prop_name_len: usize,
+) -> ! {
+    let receiver = if receiver_is_null != 0 {
+        "null"
+    } else {
+        "undefined"
+    };
+    let prop = if prop_name_ptr.is_null() || prop_name_len == 0 {
+        ""
+    } else {
+        unsafe {
+            let bytes = std::slice::from_raw_parts(prop_name_ptr, prop_name_len);
+            std::str::from_utf8(bytes).unwrap_or("")
+        }
+    };
+    eprintln!(
+        "TypeError: Cannot read properties of {} (reading '{}')",
+        receiver, prop
+    );
+    std::process::exit(1);
+}

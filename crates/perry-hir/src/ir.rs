@@ -35,121 +35,14 @@ pub fn typed_array_kind_for_name(name: &str) -> Option<u8> {
 
 /// Known native module names that map to stdlib implementations.
 /// These are npm packages that have native Rust replacements.
-pub const NATIVE_MODULES: &[&str] = &[
-    "mysql2",
-    "mysql2/promise",
-    "pg",
-    "uuid",
-    "bcrypt",
-    // ioredis is now in NATIVE_MODULES — the prior workaround (class-name-only
-    // tracking in lower.rs:910) was needed when `import { Redis } from 'ioredis'`
-    // was expected to fall through to a JS interpreter, but Perry's native Rust
-    // ioredis impl is the canonical path and the JS fallback path no longer
-    // runs anything. Keeping it out of NATIVE_MODULES forced `requires_stdlib`
-    // to return false, which made `Linking (runtime-only)` skip the stdlib
-    // archive — every direct `js_ioredis_*` reference (e.g. from the new
-    // `lower_builtin_new` "Redis" branch below) link-failed with `Undefined
-    // symbols: _js_ioredis_new`. Listing it here lets the linker pull in
-    // perry-stdlib (gated on the `database-redis` feature via stdlib_features.rs).
-    "ioredis",
-    "axios",
-    "node-fetch",
-    "ws",
-    "zlib",
-    "crypto",
-    // Tier 3
-    "dotenv",
-    "dotenv/config", // Side-effect import that auto-calls dotenv.config()
-    "jsonwebtoken",
-    "nanoid",
-    "slugify",
-    "validator",
-    // ethers utility functions (formatUnits, parseUnits, getAddress, etc.) have native stubs.
-    // Contract/Provider are NOT implemented natively — use raw JSON-RPC fetch instead.
-    "ethers",
-    // Database native libraries
-    "mongodb",
-    "better-sqlite3",
-    // Job scheduler
-    "node-cron",
-    // Node.js built-ins
-    "http",
-    "https",
-    "events",
-    "os",
-    "buffer",
-    "child_process",
-    "net",
-    "tls",
-    "stream",
-    "fs",
-    "path",
-    "util",
-    "url",
-    // Utility libraries
-    "lru-cache",
-    "commander",
-    "decimal.js",
-    "bignumber.js",
-    "exponential-backoff",
-    // Lodash utility functions (named import form: import { chunk } from 'lodash')
-    "lodash",
-    // Date/time libraries
-    "dayjs",
-    "moment",
-    // Image processing
-    "sharp",
-    // HTML parsing
-    "cheerio",
-    // Job scheduling (npm 'cron' package; 'node-cron' is a separate alias below)
-    "cron",
-    // HTTP framework
-    "fastify",
-    // Node.js built-in modules
-    "async_hooks",
-    // readline — line-buffered + raw-mode stdin reader (#347).
-    // Lives in perry-stdlib (background reader thread + drain queue),
-    // so it requires_stdlib (not in RUNTIME_ONLY_MODULES).
-    "readline",
-    // tty (#347 Phase 3) — `tty.isatty(fd)`. Lives in perry-runtime, not
-    // stdlib (just a libc::isatty call), so it's also in
-    // RUNTIME_ONLY_MODULES below.
-    "tty",
-    // Closes #360 item #2: ink does both `import process from 'node:process'`
-    // (default import) and `import { cwd } from 'node:process'` (named import
-    // of process.cwd) across 8 build files. Without this entry, both shapes
-    // hit "Could not resolve import 'process' from <file>" and the destructured
-    // `cwd` call link-fails with `Undefined symbols: _cwd`. The `node:`
-    // prefix is already stripped by `is_native_module` before lookup, so this
-    // entry covers both `process` and `node:process`. Existing `process.X`
-    // global-access machinery in lower/expr_member.rs handles property reads
-    // on the imported binding the same as on the implicit global.
-    "process",
-    // Perry native TUI engine (#358) — cell-grid + double-buffer
-    // renderer. Lives in perry-runtime/src/tui (always linked); no
-    // stdlib needed, so it's also in RUNTIME_ONLY_MODULES below.
-    "perry/tui",
-    // Perry native UI
-    "perry/ui",
-    // Perry system APIs
-    "perry/system",
-    // Perry plugin system
-    "perry/plugin",
-    // Perry widget extensions (WidgetKit / Glance)
-    "perry/widget",
-    // Perry i18n
-    "perry/i18n",
-    // Node.js worker threads
-    "worker_threads",
-    // Perry threading primitives (parallelMap, spawn)
-    "perry/thread",
-    // Perry auto-updater (compareVersions, verifyHash, installUpdate, …)
-    "perry/updater",
-    // Perry streaming media playback (createPlayer, play, pause, seek, …)
-    "perry/media",
-    // SQLite
-    "better-sqlite3",
-];
+///
+/// Source of truth lives in `perry-api-manifest::NATIVE_MODULES`
+/// (#463 — the manifest is the unified source for compile-time
+/// unimplemented-API checks, codegen dispatch, and docs/.d.ts emit
+/// per #465). This re-export keeps existing
+/// `perry_hir::NATIVE_MODULES` callers working; new code should
+/// import from `perry_api_manifest` directly.
+pub const NATIVE_MODULES: &[&str] = perry_api_manifest::NATIVE_MODULES;
 
 /// Check if a module path refers to a native stdlib module
 pub fn is_native_module(path: &str) -> bool {
@@ -164,43 +57,17 @@ pub fn is_native_module_with_externals(path: &str, externals: &[String]) -> bool
     NATIVE_MODULES.contains(&normalized) || externals.iter().any(|ext| ext == normalized)
 }
 
-/// Modules that are handled by perry-runtime alone (no stdlib needed).
-/// These are Node.js builtins and perry-specific modules implemented in the runtime crate.
-const RUNTIME_ONLY_MODULES: &[&str] = &[
-    // `net` moved to perry-stdlib (event-driven async TCP) in A1/A1.5 —
-    // deliberately NOT in this list so `requires_stdlib("net")` returns true
-    // and the auto-optimizer enables the `net` feature on perry-stdlib.
-    "fs",
-    "path",
-    "os",
-    "buffer",
-    "child_process",
-    "stream",
-    "url",
-    "util",
-    // process surface (argv / env / stdout / stderr / cwd) lives in
-    // perry-runtime, not perry-stdlib — no need to pull stdlib in for an
-    // `import process from 'node:process'`-only program.
-    "process",
-    "perry/ui",
-    "perry/system",
-    "perry/widget",
-    "perry/i18n",
-    "perry/thread",
-    "perry/media",
-    "perry/tui",
-    // tty (#347 Phase 3) — isatty + columns/rows live in perry-runtime.
-    "tty",
-];
-
 /// Check if a native module import requires linking perry-stdlib.
 /// Returns false for modules that are handled entirely by perry-runtime.
+///
+/// `net` is intentionally absent from `RUNTIME_ONLY_MODULES` so this
+/// returns true for `import 'net'` — the auto-optimizer needs that to
+/// enable the `net` feature on perry-stdlib.
 pub fn requires_stdlib(module: &str) -> bool {
-    let normalized = module.strip_prefix("node:").unwrap_or(module);
-    if !is_native_module(normalized) {
+    if !is_native_module(module) {
         return false;
     }
-    !RUNTIME_ONLY_MODULES.contains(&normalized)
+    !perry_api_manifest::is_runtime_only_module(module)
 }
 
 /// The kind of module being imported, determining how it's executed

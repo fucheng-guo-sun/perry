@@ -33,6 +33,13 @@ pub struct OptimizedLibs {
     pub stdlib_bc: Option<PathBuf>,
     /// LLVM bitcode (`.bc`) for additional crates (UI, jsruntime, geisterhand).
     pub extra_bc: Vec<PathBuf>,
+    /// Extra `.a` archives to add to the link line — one per
+    /// well-known native binding (#466 Phase 4) that the compile
+    /// pipeline routed away from the perry-stdlib copy. Whenever an
+    /// entry is added here, the corresponding perry-stdlib feature
+    /// is *also* stripped from the rebuild so the link line stays
+    /// free of duplicate `_js_*` symbols.
+    pub well_known_libs: Vec<PathBuf>,
 }
 
 impl OptimizedLibs {
@@ -43,6 +50,7 @@ impl OptimizedLibs {
             runtime_bc: None,
             stdlib_bc: None,
             extra_bc: Vec::new(),
+            well_known_libs: Vec::new(),
         }
     }
 }
@@ -70,6 +78,112 @@ pub(super) fn build_optimized_libs(
         ctx.uses_fetch,
         ctx.uses_crypto_builtins,
     );
+
+    // #466 Phase 4 step 2: well-known bindings flip. For each
+    // imported module that has an entry in `well_known_bindings.toml`
+    // *and* whose bundled `.a` is on disk, drop the corresponding
+    // perry-stdlib feature so the rebuild stops emitting that
+    // module's symbols, then queue the bundled `.a` to be added to
+    // the link line. Net result: the program links against the
+    // external wrapper instead of the perry-stdlib copy, with no
+    // duplicate-symbol risk.
+    //
+    // **Default-on as of v0.5.573** — Phase 5 dogfood completed in
+    // v0.5.572 (34 perry-ext-* wrappers covering every previously
+    // in-tree binding). The env-var gate (`PERRY_USE_WELL_KNOWN=1`)
+    // that gated the introductory cycle is now inverted:
+    // `PERRY_DISABLE_WELL_KNOWN=1` reverts to perry-stdlib's
+    // copies for bisection. If a bundled `.a` is missing on disk,
+    // each entry falls back to the perry-stdlib copy individually
+    // (logged with `well-known: skipping` when verbose), so a
+    // partially-built workspace still produces a working binary.
+    let use_well_known = std::env::var_os("PERRY_DISABLE_WELL_KNOWN").is_none();
+    let mut well_known_libs: Vec<PathBuf> = Vec::new();
+    if use_well_known {
+        for module in &ctx.native_module_imports {
+            let Some(binding) = super::well_known::lookup_well_known(module) else {
+                continue;
+            };
+            // Locate the bundled `.a`. Workspace root might be unset
+            // when perry runs from a release tarball — in that case
+            // the bundled `.a` is expected to live next to the
+            // perry binary itself; followups under #466 Phase 4
+            // teach `bundled_staticlib_path` about that layout.
+            let workspace_root_opt = find_perry_workspace_root();
+            let Some(workspace_root) = workspace_root_opt.as_ref() else {
+                continue;
+            };
+            let Some(lib_path) = super::well_known::bundled_staticlib_path(workspace_root, binding)
+            else {
+                if matches!(format, OutputFormat::Text) && verbose > 0 {
+                    eprintln!(
+                        "  well-known: skipping `{}` — bundled `lib{}.a` not found \
+                         in target/release; falling back to perry-stdlib copy.",
+                        module, binding.lib
+                    );
+                }
+                continue;
+            };
+            // Strip the perry-stdlib feature(s) this binding was
+            // covering. `module_to_features` is the same table
+            // `compute_required_features` consulted above, so we
+            // know exactly what to remove.
+            for feat in crate::commands::stdlib_features::module_to_features(module) {
+                features.remove(*feat);
+            }
+            // perry-ffi's async surface (#466 Phase 1.1 / Phase 5
+            // step 5+) is gated behind perry-stdlib's
+            // `async-runtime` feature — the `perry_ffi_*` shim
+            // module that wrappers like bcrypt / argon2 / ws / db
+            // pull through linking lives in
+            // `crates/perry-stdlib/src/perry_ffi_async.rs` and
+            // can only be compiled when tokio is in the build.
+            // Stripping `bundled-bcrypt` (etc.) without
+            // re-asserting `async-runtime` would leave the
+            // wrapper's `.a` carrying unresolved `perry_ffi_*`
+            // references. Detect async wrappers by checking
+            // whether the original feature list contained an
+            // async feature; if it did, ensure it stays.
+            let original_features = crate::commands::stdlib_features::module_to_features(module);
+            if original_features.iter().any(|f| {
+                matches!(
+                    *f,
+                    "bundled-bcrypt"
+                        | "bundled-argon2"
+                        | "bundled-nodemailer"
+                        | "bundled-ioredis"
+                        | "bundled-pg"
+                        | "bundled-mysql2"
+                        | "bundled-mongodb"
+                        | "bundled-ws"
+                        | "bundled-net"
+                        | "http-client"
+                        | "bundled-streams"
+                        | "bundled-fastify"
+                )
+            }) {
+                features.insert("async-runtime");
+            }
+            // v0.5.579 — when the flip strips `bundled-net`, activate
+            // `external-net-pump` so perry-stdlib's
+            // `js_stdlib_process_pending` knows to call into
+            // perry-ext-net's queue. Without this the call site is
+            // `#[cfg]`-gated off and tokio events stay queued forever.
+            if original_features.contains(&"bundled-net") {
+                features.insert("external-net-pump");
+            }
+            if matches!(format, OutputFormat::Text) {
+                println!(
+                    "  well-known: routing `{}` → {} ({})",
+                    module,
+                    lib_path.display(),
+                    binding.tracking.as_deref().unwrap_or("no tracking issue")
+                );
+            }
+            well_known_libs.push(lib_path);
+        }
+    }
+
     // The UI backends (perry-ui-gtk4 on Linux, perry-ui-macos, perry-ui-windows)
     // reach into perry-stdlib's async bridge from GLib/NSTimer/WM_TIMER
     // trampolines (js_stdlib_process_pending, js_promise_run_microtasks).
@@ -492,5 +606,6 @@ pub(super) fn build_optimized_libs(
         runtime_bc,
         stdlib_bc,
         extra_bc,
+        well_known_libs,
     }
 }

@@ -82,6 +82,10 @@ pub mod proxy;
 pub mod static_plugins;
 #[cfg(not(feature = "stdlib"))]
 pub mod stdlib_stubs;
+/// First-call runtime diagnostic for no-op FFI stubs (#464). Owns the
+/// `PERRY_STUB_DIAG` env-var policy and the auto-generated `STUB_MANIFEST`
+/// derived from `build.rs`'s dispatch-table walk.
+pub mod stub_diag;
 pub mod thread;
 /// TTY support (#347 Phase 3): tty.isatty, process.std{in,out,err}.isTTY,
 /// process.stdout.columns/.rows, SIGWINCH 'resize' event handler. Lives

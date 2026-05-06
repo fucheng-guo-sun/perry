@@ -1,0 +1,26 @@
+[package]
+name = "perry-ext-jsonwebtoken"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native bindings for the npm `jsonwebtoken` package — uses only `perry-ffi`. Sync, string-only port (Phase 5 step 7)."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+perry-ffi.workspace = true
+# jsonwebtoken 10.x requires explicitly selecting a crypto
+# backend. `rust_crypto` keeps perry-ext-jsonwebtoken's deps tree
+# small (matches what `Cargo.lock` already contains via
+# perry-stdlib's transitive deps); aws-lc-rs is an alternative if
+# users want FIPS validation.
+# jsonwebtoken 10.x requires explicitly selecting a crypto
+# backend AND opting into PEM parsing for `from_ec_pem` /
+# `from_rsa_pem` (used by APNs / FCM signing flows). `rust_crypto`
+# keeps the deps tree small relative to `aws_lc_rs`; users who
+# need FIPS validation can fork.
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto", "use_pem"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"

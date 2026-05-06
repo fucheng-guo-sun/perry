@@ -4,6 +4,15 @@
 **Hardware:** Darwin 25.4.0 arm64 on MacBookPro · **Date:** 2026-04-25
 **Perry version:** v0.5.249
 
+> **⚠ Pre-fast-math-flip snapshot (v0.5.585+).** This table was generated
+> when Perry emitted `reassoc + contract` per-instruction FMF flags
+> unconditionally. The current default (v0.5.585+) does NOT emit those
+> flags; the numbers in the Perry column here correspond to today's
+> `--fast-math` mode. For the post-flip Perry numbers in BOTH modes,
+> see [`RESULTS.md`](./RESULTS.md). Re-running this auto-generated file
+> needs a full polyglot sweep (8 benches × 9 runtimes × RUNS=11);
+> tracked as a follow-up.
+
 Headline = median wall-clock ms. Lower is better.
 
 | Benchmark           | Perry |  Rust |   C++ |    Go | Swift |  Java |  Node |   Bun | Hermes |  Python |

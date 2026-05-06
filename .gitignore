@@ -155,3 +155,6 @@ private-*
 # mdBook output
 docs/book/
 
+# scripts/fp_fuzz.mjs failure dumps (regenerable, machine-local)
+fp_fuzz_failures/
+

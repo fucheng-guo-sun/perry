@@ -18,7 +18,11 @@ flag, every methodology decision is in this page — no tables hidden
 behind blog posts, no cherry-picked subsets.
 
 > **Hardware:** Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS
-> 26.4. Numbers from 2026-04-25 unless otherwise stated.
+> 26.4. JSON benchmark numbers from 2026-04-25 (v0.5.249); Perry
+> compute-microbench numbers refreshed 2026-05-06 (v0.5.585) following
+> the fast-math opt-in flip — see "Compute microbenches" below for
+> both `default` and `--fast-math` columns. Other languages' compute
+> numbers retained from 2026-04-25 unless otherwise stated.
 >
 > **CPU pinning:** macOS `taskpolicy -t 0 -l 0` — sets throughput-tier 0
 > + latency-tier 0, a scheduler HINT toward P-cores on Apple Silicon.
@@ -38,9 +42,18 @@ behind blog posts, no cherry-picked subsets.
 > RSS in MB (peak resident set size from `/usr/bin/time -l`, the worst
 > peak observed across runs).
 >
-> **Pre-1.0 caveat:** Perry is pre-1.0 (v0.5.279); compared compilers
+> **Pre-1.0 caveat:** Perry is pre-1.0 (v0.5.585); compared compilers
 > and runtimes are stable releases. Numbers reflect Perry's current
 > alpha state and may regress between releases.
+>
+> **Fast-math note (v0.5.585+):** LLVM `reassoc + contract` per-instruction
+> fast-math flags on f64 ops are now opt-in via `--fast-math` (CLI),
+> `PERRY_FAST_MATH=1` (env), or `"perry": { "fastMath": true }` in
+> package.json. Off by default — Perry produces bit-exact f64 output
+> with Node by default. Compute-microbench tables below show both modes
+> in adjacent columns for transparency. See
+> [`docs/src/cli/fast-math.md`](../docs/src/cli/fast-math.md) for the
+> full behavior contract and the rationale.
 >
 > **Warmup:** the bench programs themselves run 3 untimed warmup
 > iterations before the timed loop, to avoid charging JIT-y runtimes
@@ -195,7 +208,10 @@ the gap to simdjson's parse-throughput ceiling is tracked in
 
 ### Compute microbenches (idiomatic flags)
 
-RUNS=11 per cell, refreshed 2026-04-25 at v0.5.249. Headline =
+RUNS=11 per cell. Perry numbers refreshed 2026-05-06 at v0.5.585
+(both default and `--fast-math` columns); other languages from
+2026-04-25 at v0.5.249 (their numbers haven't moved — same compiler
+versions, same hardware, re-run on demand if needed). Headline =
 median ms. Full per-cell stats (median + p95 + σ + min + max) in
 [`polyglot/RESULTS_AUTO.md`](polyglot/RESULTS_AUTO.md) and the
 hand-curated [`polyglot/RESULTS.md`](polyglot/RESULTS.md). Lower is
@@ -204,50 +220,75 @@ have moved to the "Optimization probes" subsection below** — to
 avoid presenting them as runtime comparisons when they're really
 compiler-flag probes.
 
-| Benchmark           | Perry |  Rust |   C++ |    Go | Swift |  Java |  Node |   Bun |  Python |
-|---------------------|------:|------:|------:|------:|------:|------:|------:|------:|--------:|
-| fibonacci           |   318 |   330 |   315 |   451 |   406 |   282 |  1022 |   589 |   16054 |
-| loop_data_dependent |   235 |   229 |   129 |   128 |   233 |   229 |   322 |   232 |   10750 |
-| object_create       |     1 |     0 |     0 |     0 |     0 |     5 |    11 |     6 |     164 |
-| nested_loops        |    18 |     8 |     8 |    10 |     8 |    11 |    18 |    21 |     484 |
+| Benchmark           | Perry default | Perry --fast |  Rust |   C++ |    Go | Swift |  Java |  Node |   Bun |  Python |
+|---------------------|--------------:|-------------:|------:|------:|------:|------:|------:|------:|------:|--------:|
+| fibonacci           |           304 |          304 |   330 |   315 |   451 |   406 |   282 |  1022 |   589 |   16054 |
+| loop_data_dependent |           221 |          221 |   229 |   129 |   128 |   233 |   229 |   322 |   232 |   10750 |
+| object_create       |             2 |            0 |     0 |     0 |     0 |     0 |     5 |    11 |     6 |     164 |
+| nested_loops        |            17 |           17 |     8 |     8 |    10 |     8 |    11 |    18 |    21 |     484 |
 
-`fibonacci` (median 318 ms): Perry matches the compiled pack within
-3-15 ms; Java's HotSpot JIT is ~11% faster from inlining the
-recursive call.
+**Reading the two Perry columns:** identical numbers (`fibonacci`,
+`loop_data_dependent`, `nested_loops`) mean the workload doesn't
+benefit from `reassoc + contract` — either it's not FP-arithmetic-bound
+(`fibonacci` is integer recursion, `nested_loops` is cache-bound) or
+the FP work has a sequential dependency LLVM can't reorder regardless
+of permission (`loop_data_dependent`'s `sum * x[i] + x[j]` chain — see
+the discussion below). The 2/0 split on `object_create` is single-ms
+noise on a sub-3-ms cell. **The benchmarks where the gap is large
+sit in the "Optimization probes" table further down — that's the
+section the fast-math flag actually moves.**
 
-`loop_data_dependent` (median 235 ms for Perry): the genuinely-
+`fibonacci` (median 304 ms, both modes): Perry matches the compiled
+pack within 11-22 ms; Java's HotSpot JIT is ~7% faster from inlining
+the recursive call. Identical default vs `--fast-math` because this
+kernel is integer recursion, not FP arithmetic.
+
+`loop_data_dependent` (median 221 ms in both modes): the genuinely-
 non-foldable f64 microbench (multiplicative carry through `sum`
 plus array reads, 100M iters; LLVM cannot reorder under reassoc
 and cannot vectorize past the sequential dependency — verified at
 the asm level, see [`bench.rs`](polyglot/bench.rs#L122)). The
 sequential dependency on `sum` is preserved across every language
-on the row; the kernel is genuinely non-foldable. **The kernel
-splits the field into two FP-contract clusters:** an *FMA-contract
-pack* at ~128 ms (Go default, C++ `g++ -O3` on Apple Clang — both
-fuse `sum * a + b` into a single `FMADDD` instruction with one
-IEEE-754 rounding instead of two) and a *no-contract pack* at
-229-235 ms (Perry, Rust default `-O`, Swift `-O`, Java without
-`-XX:+UseFMA`, Bun) running scalar `FMUL` + `FADD`, two
-roundings, ~6-8 cycle dependency chain vs FMADDD's ~4. Verified
-at the asm level by inspecting `g++ -O3 bench.cpp` and `rustc -O
-bench.rs` on the same toolchain (LLVM 22 / Apple Clang on
-2026-04-25). LLVM matches the FMA pack with `-ffast-math` or
-`-ffp-contract=fast` — see
-[`polyglot/RESULTS_OPT.md`](polyglot/RESULTS_OPT.md). Node's 322 ms
-is a JIT-warm-up outlier this run (σ=63, p95=447); on quieter
-runs it lands in the no-contract pack alongside Bun. This bench
-answers the legitimate "what does Perry actually do, vs what does
-its flag posture do?" question — answer: **competitive with the
-no-contract compiled pack on genuine compute work, ~1.8× the
-FMA-contract pack**.
+on the row; the kernel is genuinely non-foldable. **Crucially,
+this is the bench where `--fast-math` does NOTHING for Perry**
+(221 ms either way) — sequential `sum * x[i] + x[j]` carries can't
+be reordered no matter how permissive the FMF flags are.
 
-`object_create` (1M iters): median 1 ms — within a tick of native
-(Rust/C++/Go/Swift all hit median 0 because their working set fits
-in one arena block; Perry hits 1 because gen-GC adds a single
-allocation-counter increment per iteration).
+**The kernel splits the field into two FP-contract clusters:** an
+*FMA-contract pack* at ~128 ms (Go default, C++ `g++ -O3` on Apple
+Clang — both fuse `sum * a + b` into a single `FMADDD` instruction
+with one IEEE-754 rounding instead of two) and a *no-contract pack*
+at 221-235 ms (Perry default AND `--fast-math`, Rust default `-O`,
+Swift `-O`, Java without `-XX:+UseFMA`, Bun) running scalar `FMUL`
++ `FADD`, two roundings, ~6-8 cycle dependency chain vs FMADDD's
+~4. Why doesn't `--fast-math`'s `contract` flag put Perry in the
+FMA pack here? Because the AArch64 backend at `-O3` already pattern-
+matches `mul + add` to FMADDD when it can prove the operands are
+in registers and the rounding rules permit; the gating factor is
+clang's `-ffp-contract` mode (Perry passes nothing, leaving it at
+clang's `on` default which permits intra-statement contraction
+*only*). Cross-statement contraction (which is what `--fast-math`'s
+`contract` adds) doesn't help here because every `sum * x[i] + x[j]`
+is one expression statement. Reaching the FMA pack would require
+`-ffp-contract=fast` at the linker step, which is a separate knob
+not covered by `--fast-math`. Node's 322 ms is a JIT-warm-up
+outlier (σ=63, p95=447); on quieter runs it lands in the
+no-contract pack alongside Bun. **Net answer to "what does Perry
+do on real FP work?":** competitive with the no-contract compiled
+pack regardless of `--fast-math` mode; reaching the FMA-contract
+pack needs a different lever entirely.
+
+`object_create` (1M iters): median 2 ms default / 0 ms `--fast-math`
+— sub-3-ms cells where 1-tick differences swing the headline number;
+not a real perf delta. Within a tick of native (Rust/C++/Go/Swift all
+hit median 0 because their working set fits in one arena block; Perry
+hits 1-2 because gen-GC adds a single allocation-counter increment
+per iteration). `--fast-math` doesn't legitimately speed this up —
+the 0 ms reading is just floor effect.
 
 `nested_loops` (3000×3000 flat-array sum): cache-bound, not
-compute-bound; everyone lands at 8-21 ms.
+compute-bound; everyone lands at 8-21 ms. `--fast-math` identical
+because the bottleneck is L1/L2 latency, not FP throughput.
 
 #### Optimization probes (compiler flag-aggressiveness, not runtime perf)
 
@@ -255,52 +296,91 @@ These five cells are *flag-aggressiveness probes*, not runtime perf
 comparisons. They measure whether the compiler applied
 **reassoc + IndVarSimplify + autovectorize** to a trivially-foldable
 accumulator, NOT how fast the resulting loop actually computes
-under load. Perry wins them because TypeScript's `number` semantics
-can't observe `reassoc contract` differences (no signalling NaNs,
-no fenv, no strict `-0` rules at the operator level), so LLVM's
-IndVarSimplify rewrites `sum + 1.0 × N` as an integer induction
-variable and the autovectorizer generates `<2 x double>` parallel-
-accumulator reductions with interleave count 4. **C++ closes every
-one of these gaps with `-O3 -ffast-math`** — same LLVM pipeline,
-one flag. See
-[`polyglot/RESULTS_OPT.md`](polyglot/RESULTS_OPT.md) for the
-per-language flag-tuning sweep that backs out this entire result.
+under load.
 
-| Benchmark           | Perry |  Rust |   C++ |    Go | Swift |  Java |  Node |   Bun |  Python |
-|---------------------|------:|------:|------:|------:|------:|------:|------:|------:|--------:|
-| loop_overhead       |    12 |    98 |    98 |    98 |   143 |   100 |    54 |    46 |    3019 |
-| math_intensive      |    14 |    48 |    51 |    49 |    50 |    74 |    51 |    51 |    2238 |
-| accumulate          |    34 |    98 |    98 |    98 |    98 |   100 |   617 |   100 |    5048 |
-| array_read          |     4 |     9 |     9 |    11 |     9 |    12 |    13 |    16 |     342 |
-| array_write         |     4 |     7 |     3 |     9 |     2 |     7 |     9 |     6 |     401 |
+**As of v0.5.585, fast-math is opt-in.** Perry's default mode lands
+in the no-flags pack alongside Rust/Swift/Bun on the FP-foldable
+benches; `--fast-math` reproduces the headline numbers Perry was
+posting through v0.5.584. The two-column shape lets readers see both
+truths at once: bit-exact-with-Node by default; opt-in 7-8× speedup
+on the foldable accumulator pattern. **C++ closes the same gap with
+`-O3 -ffast-math`** — same LLVM pipeline, one flag. See
+[`polyglot/RESULTS_OPT.md`](polyglot/RESULTS_OPT.md) for the
+per-language flag-tuning sweep.
+
+| Benchmark           | Perry default | Perry --fast |  Rust |   C++ |    Go | Swift |  Java |  Node |   Bun |  Python |
+|---------------------|--------------:|-------------:|------:|------:|------:|------:|------:|------:|------:|--------:|
+| loop_overhead       |            95 |           12 |    98 |    98 |    98 |   143 |   100 |    54 |    46 |    3019 |
+| math_intensive      |            50 |           14 |    48 |    51 |    49 |    50 |    74 |    51 |    51 |    2238 |
+| accumulate          |            95 |           33 |    98 |    98 |    98 |    98 |   100 |   617 |   100 |    5048 |
+| array_read          |            11 |           11 |     9 |     9 |    11 |     9 |    12 |    13 |    16 |     342 |
+| array_write         |             4 |            3 |     7 |     3 |     9 |     2 |     7 |     9 |     6 |     401 |
+
+Perry default-column reading: `loop_overhead`, `math_intensive`, and
+`accumulate` are all ~95-50 ms — dead-on the unflagged compiled pack
+(Rust/Swift/Bun at 46-100 ms). That's the honest "Perry on TypeScript
+arithmetic with bit-exact-Node semantics" number. `array_read` and
+`array_write` are essentially mode-independent (memory-bound).
+
+Perry --fast-column reading: same kernels with reassoc + contract
+permitted reach 12 / 14 / 33 ms. On `loop_overhead` and `accumulate`,
+LLVM's IndVarSimplify rewrites `sum + 1.0 × N` as an integer
+induction variable and the autovectorizer generates `<2 x double>`
+parallel-accumulator reductions with interleave count 4. On
+`math_intensive`, the harmonic-sum carry is associative under
+`reassoc`, allowing the same vectorize-and-reduce pattern.
+
+The 7-8× speedup on `loop_overhead` is real, repeatable, and
+TypeScript-spec-conformant only because TypeScript's `number`
+semantics can't observe `reassoc contract` differences — no
+signalling NaNs, no fenv, no strict `-0` rules at the operator
+level. The trade is the ~30% bit-divergence-from-Node rate documented
+in [`docs/src/cli/fast-math.md`](../docs/src/cli/fast-math.md).
 
 The companion `loop_data_dependent` (in the headline table above)
 shows what Perry looks like on the same kind of kernel WHEN THE
-COMPILER CAN'T FOLD: 235 ms, dead-on the no-contract pack (Rust /
-Swift / Java / Bun all 229-233 ms). The Go/C++-O3 FMA-contract
-pack at ~128 ms beats us on this kernel because they fuse FMUL +
-FADD into FMADDD; LLVM matches them under `-ffp-contract=fast`,
-which Perry doesn't enable by default. The 12 ms `loop_overhead`
-and 14 ms `math_intensive` numbers are real, repeatable, obtained
-via standard release-mode builds — but they measure compiler
-flags, not silicon. A reader who treats them as "Perry is 7×
-faster than C++" without reading this paragraph has been misled
-by the headline.
+COMPILER CAN'T FOLD even with permission: 221 ms, dead-on the
+no-contract pack (Rust/Swift/Java/Bun 229-233 ms), regardless of
+mode. The Go/C++-O3 FMA-contract pack at ~128 ms beats us on this
+kernel because they fuse FMUL + FADD into FMADDD via clang's
+`-ffp-contract=fast` (a separate knob `--fast-math` does NOT
+toggle). A reader who treats the 12 ms `loop_overhead` number as
+"Perry is 7× faster than C++" without reading this paragraph has
+been misled by the headline; the honest comparison is the default
+column, where Perry sits *with* the compiled pack, not above it.
 
-**Honest regressions vs the v0.5.164 baseline** (when these benches
-were last refreshed, before gen-GC became default):
+**Honest regressions / changes vs the v0.5.164 baseline:**
 
-- `nested_loops` 8 → 18 ms (+10 ms). Caused by the v0.5.237
-  generational GC default flip — gen-GC adds per-allocation overhead
-  (write-barrier potential, age-bump pass) that's pure cost on
-  workloads that don't benefit from it. Set `PERRY_GEN_GC=0` to
-  recover the 8 ms baseline.
-- `accumulate` 24 → 34 ms (+10 ms). Same root cause; same workaround.
-- `object_create` 0 → 1 ms (+1 ms). Same root cause.
-- `array_write` / `array_read` 3 → 4 ms each (+1 ms). Within
-  measurement noise.
-- All other cells (`fibonacci`, `loop_overhead`, `math_intensive`)
-  unchanged within ±6 ms of the v0.5.164 baseline.
+`v0.5.237` flip (gen-GC default ON):
+
+- `nested_loops` 8 → 17 ms (+9 ms). Gen-GC adds per-allocation
+  overhead (write-barrier potential, age-bump pass) that's pure
+  cost on workloads that don't benefit from it. Set
+  `PERRY_GEN_GC=0` to recover the 8 ms baseline.
+- `accumulate` 24 → 33 ms (`--fast-math` mode), or 95 ms (default
+  mode). Gen-GC + fast-math flip both contribute. Combined
+  workaround: `PERRY_GEN_GC=0` plus `--fast-math` recovers the
+  v0.5.164 24 ms.
+- `object_create` 0 → 0-2 ms (gen-GC only). Within noise.
+- `array_read`/`array_write` 3 → 3-11 ms. The 11 ms `array_read`
+  on default mode is a v0.5.585 regression I haven't isolated yet
+  — likely cache-prefetch ordering shifted with the new emission.
+  Tracked as a followup; not gated by either GC or fast-math
+  changes individually.
+
+`v0.5.585` flip (fast-math opt-in):
+
+- `loop_overhead` default 12 → 95 ms (+83 ms). `--fast-math` mode
+  recovers 12 ms exactly. The change is intentional: see "Optimization
+  probes" above for the rationale.
+- `math_intensive` default 14 → 50 ms (+36 ms). `--fast-math`
+  recovers 14 ms.
+- `accumulate` default 34 → 95 ms (+61 ms). `--fast-math` recovers
+  33 ms.
+- All other cells (`fibonacci`, `array_read`, `array_write`,
+  `nested_loops`, `loop_data_dependent`, `object_create`)
+  identical between modes within noise — fast-math changed
+  nothing observable on those workloads.
 
 The trade-off was deliberate: gen-GC's wins on long-running and
 allocation-heavy workloads (`test_memory_json_churn` 115 → 91 MB
@@ -554,18 +634,18 @@ the comparison is honest in both directions.
 ## 2. Compute microbenches — full data
 
 [`benchmarks/polyglot/`](polyglot/) — 10 implementations across 9
-benchmarks. **Cells in TL;DR's "Compute microbenches" and
-"Optimization probes" tables are RUNS=11 medians from a fresh
-2026-04-25 polyglot run at v0.5.249** (see
+benchmarks. **Perry cells in TL;DR's "Compute microbenches" and
+"Optimization probes" tables are RUNS=11 medians refreshed
+2026-05-06 at v0.5.585**, run in BOTH `default` and `--fast-math`
+modes following the v0.5.585 fast-math opt-in flip. Other languages'
+cells are RUNS=11 medians from the 2026-04-25 polyglot run at
+v0.5.249 — same compiler versions, same hardware; their numbers
+shouldn't have moved, and a full polyglot rerun is on the
+follow-up list but not blocking. See
 [`RESULTS_AUTO.md`](polyglot/RESULTS_AUTO.md) for per-cell
-distributions: median + p95 + σ + min + max). Perry's compute-suite
-behavior between v0.5.249 and the current v0.5.281 is unchanged —
-the intervening commits are JSON-runtime fixes (NaN equality,
-SSO consumers, ECMAScript number formatting) that don't touch the
-codegen paths these benchmarks exercise; rerunning is on the
-follow-up list but the gap is noise-floor at most. The JSON
-polyglot tables in TL;DR §A and §B were rerun separately and are
-fresh as of 2026-04-25 at v0.5.279.
+distributions (median + p95 + σ + min + max) of the 2026-04-25 run.
+The JSON polyglot tables in TL;DR §A and §B were rerun separately
+and are fresh as of 2026-04-25 at v0.5.279.
 
 ### Idiomatic flags table (current)
 
@@ -574,7 +654,8 @@ in the TL;DR above. Compiler details:
 
 | Language | Compiler | Idiomatic flag |
 |---|---|---|
-| Perry | self-hosted Rust, LLVM 22 | `cargo build --release -p perry` |
+| Perry default | self-hosted Rust, LLVM 22 | `perry app.ts` (no `--fast-math` — bit-exact f64 with Node) |
+| Perry --fast | self-hosted Rust, LLVM 22 | `perry --fast-math app.ts` (LLVM `reassoc + contract` per-instruction FMFs; ~30% bit-divergence vs Node) |
 | Rust | rustc 1.94.1 stable | `cargo build --release` |
 | C++ | Apple clang 21.0.0 | `clang++ -O3 -std=c++17` |
 | Go | go 1.21.3 | `go build` |
@@ -594,20 +675,28 @@ require porting the 8-benchmark `bench.kt` to match the existing
 ### Optimized flags + delta table
 
 [`RESULTS_OPT.md`](polyglot/RESULTS_OPT.md) holds the full opt-tuning
-sweep. Highlights:
+sweep. Highlights (note: comparisons here are against **Perry
+`--fast-math`**, the column where Perry uses `reassoc + contract` —
+the only fair apples-to-apples comparison once C++ also enables
+`-ffast-math`):
 
-- **C++ `-O3 -ffast-math` matches Perry to the millisecond** on
-  `loop_overhead` (12 = 12) and `math_intensive` (14 = 14).
-- **Rust on stable can't reach Perry on `loop_overhead`** because
-  there's no way to expose LLVM's `reassoc` flag on individual
-  fadd instructions without nightly's `fadd_fast` intrinsic. With
-  manual i64 accumulator + iterator form: 99 → 24 ms (still 2× off).
+- **C++ `-O3 -ffast-math` matches Perry `--fast-math` to the
+  millisecond** on `loop_overhead` (12 = 12) and `math_intensive`
+  (14 = 14). Perry default sits where C++ `-O3` (without fast-math)
+  sits.
+- **Rust on stable can't reach Perry `--fast-math` on `loop_overhead`**
+  because there's no way to expose LLVM's `reassoc` flag on
+  individual fadd instructions without nightly's `fadd_fast`
+  intrinsic. With manual i64 accumulator + iterator form: 99 → 24
+  ms (still 2× off Perry `--fast`). Rust's stable position is
+  comparable to **Perry default** at 95-98 ms; the takeaway is
+  that Perry default is in the same boat as Rust stable here.
 - **Go has no `-ffast-math` flag and can't enable LLVM's reassoc
   pipeline**; on the optimization-probe kernels in this section,
-  Go can't recover Perry's lead. (Go does win on
+  Go can't recover Perry-`--fast-math`'s lead. (Go does win on
   `loop_data_dependent` via FMA fusion — see TL;DR — so this
   limitation is workload-specific.)
-- **Swift `-O -wmo` closes 71-75% of the gap** on
+- **Swift `-O -wmo` closes 71-75% of the gap to Perry `--fast`** on
   `loop_overhead` / `math_intensive` / `accumulate`.
 
 ### What each microbench actually measures
@@ -690,13 +779,17 @@ Both numbers come from the same workload on the same v0.5.279 binary;
 the 5 ms gap is the difference between two independent RUNS=11
 samples, and is well inside the σ envelope.
 
-### Other Perry benches (RUNS=11, M1 Max, v0.5.279, taskpolicy -t 0 -l 0)
+### Other Perry benches (RUNS=11, M1 Max, taskpolicy -t 0 -l 0)
 
 Median + p95 + σ + min + max wall-clock ms, worst-observed peak RSS —
 the same methodology used by TL;DR §A and §B. Refreshed 2026-04-25
-using the same `compute_stats` awk routine as
+at v0.5.279 using the same `compute_stats` awk routine as
 [`json_polyglot/run.sh`](json_polyglot/run.sh) over each suite binary
-in [`benchmarks/suite/`](suite/).
+in [`benchmarks/suite/`](suite/). All rows here measure JSON, GC, or
+integer/cache work — none are FP-arithmetic-sensitive, so the
+v0.5.585 fast-math opt-in flip doesn't move them; rerunning is on
+the followup list but the gap is below the noise floor for the
+workloads listed.
 
 | Benchmark | Median (ms) | p95 (ms) | σ | Min | Max | Peak RSS (MB) |
 |---|---:|---:|---:|---:|---:|---:|

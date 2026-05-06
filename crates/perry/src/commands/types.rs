@@ -26,6 +26,14 @@ const PERRY_SYSTEM_DTS: &str = include_str!("../../../../types/perry/system/inde
 const PERRY_MEDIA_DTS: &str = include_str!("../../../../types/perry/media/index.d.ts");
 const PERRY_TUI_DTS: &str = include_str!("../../../../types/perry/tui/index.d.ts");
 
+// Auto-generated stdlib `.d.ts` from the API manifest (#465's
+// "stretch" deliverable: editor `.d.ts` shipped alongside the
+// generated docs). The file at `docs/api/perry.d.ts` is rebuilt
+// by `scripts/regen_api_docs.sh` and CI's `api-docs-drift` job
+// fails if it's out of sync, so embedding it here is safe — the
+// shipped binary always carries a current snapshot.
+const PERRY_STDLIB_DTS: &str = include_str!("../../../../docs/api/perry.d.ts");
+
 /// Write Perry type stubs into `<project>/.perry/types/perry/`.
 /// Always overwrites — these are generated files.
 pub fn write_perry_type_stubs(project_path: &Path, quiet: bool) -> Result<()> {
@@ -47,8 +55,19 @@ pub fn write_perry_type_stubs(project_path: &Path, quiet: bool) -> Result<()> {
         fs::write(dir.join("index.d.ts"), dts)?;
     }
 
+    // The stdlib `.d.ts` covers the Node-compat surface (crypto,
+    // fs, http, dotenv, mysql2, …) — every module the user imports
+    // by bare name. One file with `declare module "<name>"` blocks;
+    // tsc / VSCode picks them all up via the tsconfig `include`
+    // emitted by `perry init` (`.perry/types/**/*.d.ts`).
+    let stdlib_dir = project_path.join(".perry").join("types").join("stdlib");
+    fs::create_dir_all(&stdlib_dir)?;
+    fs::write(stdlib_dir.join("index.d.ts"), PERRY_STDLIB_DTS)?;
+
     if !quiet {
-        println!("  Created .perry/types/ type stubs (ui, thread, i18n, system, media, tui)");
+        println!(
+            "  Created .perry/types/ type stubs (ui, thread, i18n, system, media, tui, stdlib)"
+        );
     }
 
     Ok(())

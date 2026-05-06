@@ -489,6 +489,46 @@ pub(super) fn lower_member(ctx: &mut LoweringContext, member: &ast::MemberExpr) 
     }
 
     let object = Box::new(lower_expr(ctx, &member.obj)?);
+
+    // Unimplemented-API gate (#463). When the receiver is a
+    // `NativeModuleRef("crypto")`-style import binding and the user is
+    // reading a named property, fail loudly if the manifest doesn't
+    // know about that property. The check is gated on the module
+    // having at least one entry in `API_MANIFEST`, so modules whose
+    // surface hasn't been enumerated yet (incremental coverage) keep
+    // working — adding entries to a module promotes it to strict mode
+    // automatically.
+    //
+    // Stubs (`stub: true` in the manifest) are NOT treated as
+    // unimplemented — those are intentional no-ops surfaced by #464's
+    // runtime first-call warning. The call only checks that
+    // `module_has_symbol` returns Some; the stub flag is consulted by
+    // the docs serializer, not by the gate.
+    //
+    // Escape hatch: setting `PERRY_ALLOW_UNIMPLEMENTED=1` skips the
+    // check entirely (downgrades to existing silent-undefined
+    // behavior). Useful when the manifest has a real gap that a
+    // followup will fix; documents the bypass instead of forcing an
+    // unrelated change in this PR.
+    if let (Expr::NativeModuleRef(module), ast::MemberProp::Ident(prop_ident)) =
+        (&*object, &member.prop)
+    {
+        let prop = prop_ident.sym.as_ref();
+        let allow_unimplemented = std::env::var_os("PERRY_ALLOW_UNIMPLEMENTED").is_some();
+        if !allow_unimplemented
+            && perry_api_manifest::module_has_any_entries(module)
+            && perry_api_manifest::module_has_symbol(module, prop).is_none()
+        {
+            crate::lower_bail!(
+                member.span,
+                "`{}.{}` is not implemented in Perry — see `perry --print-api-manifest` for the supported surface, \
+                 or set `PERRY_ALLOW_UNIMPLEMENTED=1` to ignore. (#463)",
+                module,
+                prop,
+            );
+        }
+    }
+
     match &member.prop {
         ast::MemberProp::Ident(ident) => {
             let property = ident.sym.to_string();

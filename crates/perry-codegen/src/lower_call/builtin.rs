@@ -265,8 +265,59 @@ pub(super) fn lower_builtin_new(
                         }
                     }
                 } else {
-                    // Not an object literal — still evaluate for side effects.
-                    let _ = lower_expr(ctx, &args[1])?;
+                    // Fix #421 (v0.5.575): the second arg is a runtime
+                    // object (not an object literal) — happens when
+                    // user code does `new Response(body, opts)` where
+                    // `opts` is bound from elsewhere. Hono's
+                    // `c.text(body, status)` path builds `{ status,
+                    // headers }` inside `#newResponse` and passes it
+                    // here. Previously perry just evaluated the arg
+                    // for side effects and dropped status/headers,
+                    // so every hono response had perry-default
+                    // status (200) and no headers — `res.status`
+                    // read undefined because the response never
+                    // got a status to begin with. Now we extract
+                    // `.status` / `.statusText` / `.headers` at
+                    // runtime via `js_object_get_field_by_name_f64`
+                    // and feed them to `js_response_new`.
+                    let opts_val = lower_expr(ctx, &args[1])?;
+                    let blk = ctx.block();
+                    let opts_handle = crate::expr::unbox_to_i64(blk, &opts_val);
+
+                    // Helper: intern a key, load its raw string ptr,
+                    // call js_object_get_field_by_name_f64.
+                    let mut get_field = |ctx_inner: &mut FnCtx<'_>, key: &str| -> Result<String> {
+                        let key_idx = ctx_inner.strings.intern(key);
+                        let key_global =
+                            format!("@{}", ctx_inner.strings.entry(key_idx).handle_global);
+                        let blk = ctx_inner.block();
+                        let key_box = blk.load(DOUBLE, &key_global);
+                        let key_bits = blk.bitcast_double_to_i64(&key_box);
+                        let key_raw = blk.and(I64, &key_bits, crate::nanbox::POINTER_MASK_I64);
+                        let opts_handle_local = opts_handle.clone();
+                        Ok(blk.call(
+                            DOUBLE,
+                            "js_object_get_field_by_name_f64",
+                            &[(I64, &opts_handle_local), (I64, &key_raw)],
+                        ))
+                    };
+
+                    // status: NaN-boxed f64. The runtime treats NaN /
+                    // 0 as "use default 200" so a missing field flows
+                    // through cleanly.
+                    status_val = get_field(ctx, "status")?;
+                    // statusText: NaN-boxed string. Strip to raw ptr
+                    // for the FFI signature.
+                    let st_box = get_field(ctx, "statusText")?;
+                    let blk = ctx.block();
+                    status_text_ptr =
+                        blk.call(I64, "js_get_string_pointer_unified", &[(DOUBLE, &st_box)]);
+                    // headers: NaN-boxed Headers handle (an f64
+                    // numeric id from `js_headers_new`). Pass through
+                    // verbatim — js_response_new accepts the raw f64.
+                    // Defensive: strip NaN-box tag if hono / user code
+                    // wrapped it as a pointer.
+                    headers_handle = get_field(ctx, "headers")?;
                 }
             }
 

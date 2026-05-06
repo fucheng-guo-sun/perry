@@ -1,0 +1,30 @@
+{
+  "name": "{{npm_name}}",
+  "version": "0.1.0",
+  "description": "{{description}}",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/{{github_owner}}/{{repo_name}}.git"
+  },
+  "homepage": "https://github.com/{{github_owner}}/{{repo_name}}#readme",
+  "keywords": ["perry", "perryts", "{{crate_name}}"],
+  "files": [
+    "src/",
+    "Cargo.toml",
+    "README.md"
+  ],
+  "perry": {
+    "nativeLibrary": {
+      "abiVersion": "0.5",
+      "functions": [
+        { "name": "js_{{crate_name}}_hello", "params": ["string"], "returns": "string" }
+      ],
+      "targets": {
+        "macos":   { "cargo_features": [], "frameworks": [] },
+        "linux":   { "cargo_features": [] },
+        "windows": { "cargo_features": [] }
+      }
+    }
+  }
+}

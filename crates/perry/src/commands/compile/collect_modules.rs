@@ -314,6 +314,15 @@ pub(super) fn collect_modules(
                                 if let Some(manifest) =
                                     parse_native_library_manifest(dir, module_name, target)
                                 {
+                                    // #466 Phase 2: refuse to load a wrapper whose
+                                    // declared abiVersion is incompatible with the
+                                    // bundled perry-ffi. Missing field warns but
+                                    // continues during the v0.5.x cycle.
+                                    if let Err(msg) =
+                                        super::resolve::validate_abi_version(&manifest)
+                                    {
+                                        return Err(anyhow::anyhow!("{}", msg));
+                                    }
                                     match format {
                                         OutputFormat::Text => println!(
                                             "  Native library: {} ({} FFI functions)",
@@ -375,6 +384,15 @@ pub(super) fn collect_modules(
                                 if let Some(manifest) =
                                     parse_native_library_manifest(dir, module_name, target)
                                 {
+                                    // #466 Phase 2: refuse to load a wrapper whose
+                                    // declared abiVersion is incompatible with the
+                                    // bundled perry-ffi. Missing field warns but
+                                    // continues during the v0.5.x cycle.
+                                    if let Err(msg) =
+                                        super::resolve::validate_abi_version(&manifest)
+                                    {
+                                        return Err(anyhow::anyhow!("{}", msg));
+                                    }
                                     match format {
                                         OutputFormat::Text => println!(
                                             "  Native library: {} ({} FFI functions)",

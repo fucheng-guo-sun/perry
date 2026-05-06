@@ -4266,10 +4266,22 @@ fn lower_module_decl(
                             exported: exported.clone(),
                         });
 
-                        // If the local name refers to a function, add it to exported_functions
-                        // so that a wrapper function is generated for cross-module calls
-                        if let Some(func_id) = ctx.lookup_func(&local) {
-                            module.exported_functions.push((exported.clone(), func_id));
+                        // Fix #482 (v0.5.577): when `class Foo {}` is followed by
+                        // `export { Foo }` in a separate clause, the class was
+                        // lowered with `is_exported = false` (because the decl
+                        // wasn't a syntactic `export class Foo {}`). The
+                        // CLI-driver's `exported_classes` lookup
+                        // (`crates/perry/src/commands/compile.rs:1684`) filters
+                        // on `class.is_exported`, so the class never reached
+                        // the importer's `imported_classes` registry — `new
+                        // Foo()` from another module fell through to the
+                        // empty-object placeholder. Flip the class's
+                        // is_exported bit when an export clause names it.
+                        for class in module.classes.iter_mut() {
+                            if class.name == local {
+                                class.is_exported = true;
+                                break;
+                            }
                         }
 
                         // Check if the variable is a closure or other exportable object
@@ -4298,6 +4310,22 @@ fn lower_module_decl(
                                             | Expr::FuncRef(_)
                                             | Expr::ExternFuncRef { .. }
                                             | Expr::PropertyGet { .. }
+                                            // #421 fix (v0.5.574): primitive literals must
+                                            // also flow through `exported_objects` so the
+                                            // importing module's `imported_vars` set picks
+                                            // them up — without this, `var X = "literal";
+                                            // export { X };` (the shape hono / drizzle /
+                                            // any prebundled JS uses for string / number
+                                            // constants) gets imported as a closure-pointer
+                                            // wrapper instead of the actual value, and
+                                            // `typeof X` returns "function" + `X.toString`
+                                            // prints `[object Object]`.
+                                            | Expr::String(_)
+                                            | Expr::Number(_)
+                                            | Expr::Bool(_)
+                                            | Expr::BigInt(_)
+                                            | Expr::Null
+                                            | Expr::Undefined
                                     );
                                     if is_exportable {
                                         module.exported_objects.push(exported.clone());

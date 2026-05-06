@@ -34,6 +34,30 @@ struct Cli {
     /// Disable colored output
     #[arg(long, global = true)]
     no_color: bool,
+
+    /// Emit the structured manifest of supported stdlib APIs and exit.
+    /// The same source-of-truth that the unimplemented-API check (#463)
+    /// consults. Three formats:
+    /// - `json` (default): structured machine-readable manifest;
+    /// - `markdown`: Markdown reference page for docs (#465);
+    /// - `dts`: TypeScript declaration file for editor squiggles.
+    /// No subcommand is required — `perry --print-api-manifest` and
+    /// `perry --print-api-manifest=markdown` both work on their own.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        num_args = 0..=1,
+        default_missing_value = "json"
+    )]
+    print_api_manifest: Option<ApiManifestFormat>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ApiManifestFormat {
+    Json,
+    Markdown,
+    Dts,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -116,6 +140,14 @@ enum Commands {
     /// `perry updater sign`   — sign a binary for a v2 manifest entry.
     /// `perry updater verify` — sanity-check a v2 signature locally.
     Updater(commands::updater::UpdaterArgs),
+
+    /// Native-bindings package tooling (#466 Phase 3).
+    ///
+    /// `perry native init <name>`  — scaffold a new wrapper package.
+    /// `perry native validate`     — diff the manifest vs. the
+    ///                                 staticlib's exported symbols.
+    /// `perry native list`         — list bundled well-known bindings.
+    Native(commands::native::NativeArgs),
 }
 
 /// Check if the first non-flag argument looks like a TypeScript file
@@ -148,6 +180,7 @@ fn is_legacy_invocation(args: &[String]) -> bool {
                 | "types"
                 | "cache"
                 | "updater"
+                | "native"
                 | "help"
         ) {
             return false;
@@ -189,6 +222,33 @@ fn main_inner() -> Result<()> {
 
     // Determine if colors should be used
     let use_color = !cli.no_color && !cli.quiet && std::io::stdout().is_terminal();
+
+    // `--print-api-manifest[=<format>]` short-circuits before any
+    // subcommand dispatch — emits the manifest in the requested format
+    // and exits 0. Drives docs / .d.ts generation (#465) and lets
+    // editor tooling discover the supported surface without reading
+    // Rust source. Default format is JSON to preserve compatibility
+    // with the bare-flag form added in v0.5.528.
+    if let Some(format) = cli.print_api_manifest {
+        let version = env!("CARGO_PKG_VERSION");
+        match format {
+            ApiManifestFormat::Json => {
+                let entries: Vec<_> = perry_api_manifest::iter_entries().collect();
+                let payload = serde_json::json!({
+                    "version": version,
+                    "entries": entries,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            }
+            ApiManifestFormat::Markdown => {
+                print!("{}", perry_api_manifest::emit_markdown(version));
+            }
+            ApiManifestFormat::Dts => {
+                print!("{}", perry_api_manifest::emit_dts(version));
+            }
+        }
+        return Ok(());
+    }
 
     // Handle no command case
     if cli.command.is_none() {
@@ -264,6 +324,7 @@ fn main_inner() -> Result<()> {
         Commands::Types(args) => commands::types::run(args, cli.format, use_color),
         Commands::Cache(args) => commands::cache::run(args, cli.format),
         Commands::Updater(args) => commands::updater::run(args),
+        Commands::Native(args) => commands::native::run(args, cli.format, use_color),
     };
 
     // Send telemetry for non-compile commands (compile is handled above for target/status)

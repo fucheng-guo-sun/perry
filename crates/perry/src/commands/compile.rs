@@ -24,6 +24,7 @@ mod parse_cache;
 mod resolve;
 mod strip_dedup;
 mod targets;
+pub mod well_known;
 use collect_modules::collect_modules;
 pub use library_search::find_library;
 use library_search::{
@@ -175,6 +176,20 @@ pub struct CompileArgs {
     #[arg(long)]
     pub no_cache: bool,
 
+    /// Enable LLVM `reassoc + contract` per-instruction fast-math flags
+    /// on every f64 op. Off by default — Perry produces bit-exact f64
+    /// output with Node. With this flag, the optimizer is permitted to
+    /// reassociate FP chains (e.g. `(a + b) + c → a + (b + c)`) and to
+    /// fuse multiply-adds into FMA instructions. Wins ~7x on tight
+    /// `sum += constant` loops on M-series ARM64; ~0% on most realistic
+    /// FP-heavy code (per benchmarks). Costs ~30% bit-divergence from
+    /// Node on randomly-generated FP programs vs. ~6% without.
+    /// Also settable via `PERRY_FAST_MATH=1` env var or
+    /// `"perry": { "fastMath": true }` in package.json (CLI flag wins).
+    /// See `docs/src/cli/fast-math.md` for the full behavior contract.
+    #[arg(long)]
+    pub fast_math: bool,
+
     /// Minimum Windows version the compiled executable must run on.
     /// Accepted values: `7`, `8`, `10` (default `10`). Ignored on every
     /// non-Windows target.
@@ -276,6 +291,13 @@ pub struct CompilationContext {
     pub package_aliases: HashMap<String, String>,
     /// Packages to compile natively instead of routing to V8 (from perry.compilePackages)
     pub compile_packages: HashSet<String>,
+    /// Resolved `--fast-math` setting for this build. Default false.
+    /// Sources, last wins: `perry.fastMath` in package.json → env var
+    /// `PERRY_FAST_MATH=1` → CLI `--fast-math`. Drives the per-instruction
+    /// LLVM `reassoc + contract` FMF emission in `perry-codegen` and is
+    /// hashed into the per-module object cache key so toggling it
+    /// invalidates cached `.o` bytes.
+    pub fast_math: bool,
     /// First-resolved directory for each compile package (deduplication across nested node_modules)
     pub compile_package_dirs: HashMap<String, PathBuf>,
     /// Optional tsgo type checker client (when --type-check is enabled)
@@ -363,6 +385,7 @@ impl CompilationContext {
             native_libraries: Vec::new(),
             package_aliases: HashMap::new(),
             compile_packages: HashSet::new(),
+            fast_math: false,
             compile_package_dirs: HashMap::new(),
             type_checker: None,
             resolve_cache: HashMap::new(),
@@ -388,6 +411,13 @@ pub struct NativeLibraryManifest {
     pub module: String,
     /// Resolved package directory path
     pub package_dir: PathBuf,
+    /// `perry.nativeLibrary.abiVersion` — semver range the wrapper
+    /// declares it was built against. Validated against the bundled
+    /// `perry-ffi`'s version (#466 Phase 2). `None` is permitted
+    /// during the v0.5.x cycle but emits a warning; from v0.6.0 it
+    /// becomes a hard resolution error. See
+    /// `docs/src/native-libraries/manifest-v1.md`.
+    pub abi_version: Option<String>,
     /// FFI function declarations
     pub functions: Vec<NativeFunctionDecl>,
     /// Target-specific build configuration
@@ -680,8 +710,30 @@ pub fn run_with_parse_cache(
                         }
                     }
                 }
+                // perry.fastMath: opt in to LLVM `reassoc + contract` per-instruction
+                // FMF flags on f64 ops. Off by default — Perry produces bit-exact
+                // f64 with Node. See `docs/src/cli/fast-math.md`.
+                if let Some(fm) = pkg
+                    .get("perry")
+                    .and_then(|p| p.get("fastMath"))
+                    .and_then(|v| v.as_bool())
+                {
+                    ctx.fast_math = fm;
+                }
             }
         }
+    }
+
+    // Env var overrides package.json (`PERRY_FAST_MATH=1` opts in).
+    if std::env::var("PERRY_FAST_MATH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        ctx.fast_math = true;
+    }
+    // CLI flag overrides everything (last wins).
+    if args.fast_math {
+        ctx.fast_math = true;
     }
 
     // --- i18n: parse [i18n] config from perry.toml and load locale files ---
@@ -3283,6 +3335,7 @@ pub fn run_with_parse_cache(
                 bundled_extensions: bundled_ext_vec,
                 native_library_functions: ffi_functions.clone(),
                 i18n_table: i18n_snapshot.clone(),
+                fast_math: ctx.fast_math,
             };
             // V2.2 object cache lookup. The key hashes every codegen-affecting
             // field of `opts` together with this module's source hash and the
@@ -4017,6 +4070,7 @@ pub fn run_with_parse_cache(
         &compiled_features,
         &runtime_lib,
         &stdlib_lib,
+        &optimized_libs.well_known_libs,
         &jsruntime_lib,
         &exe_path,
         format,

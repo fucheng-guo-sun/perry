@@ -1468,6 +1468,146 @@ pub extern "C" fn js_buffer_write_double_le(buf_ptr: f64, value: f64, offset: i3
     }
 }
 
+// ---- Variable byteLength read/write (1..=6) ----
+// Node-spec `buf.{read,write}{U,}Int{BE,LE}(offset, byteLength)` — accept
+// any `byteLength` in 1..=6 and decode/encode that many bytes in the
+// requested endianness. Used by BSON `ObjectId` (3-byte counter) and any
+// other code that wants a width unknown at compile time. Out-of-range
+// `byteLength` falls back to `undefined` for reads / no-op for writes,
+// matching Perry's existing tolerant-on-bad-args buffer convention.
+
+#[no_mangle]
+pub extern "C" fn js_buffer_read_uint_be(buf_ptr: f64, offset: i32, byte_length: i32) -> f64 {
+    if !(1..=6).contains(&byte_length) {
+        return f64::from_bits(crate::value::TAG_UNDEFINED);
+    }
+    let buf = unbox_buffer_ptr(buf_ptr.to_bits()) as *const BufferHeader;
+    let n = byte_length as usize;
+    match buffer_slice_at(buf, offset, n) {
+        Some(s) => {
+            let mut v: u64 = 0;
+            for &b in s.iter() {
+                v = (v << 8) | (b as u64);
+            }
+            v as f64
+        }
+        None => f64::from_bits(crate::value::TAG_UNDEFINED),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_read_uint_le(buf_ptr: f64, offset: i32, byte_length: i32) -> f64 {
+    if !(1..=6).contains(&byte_length) {
+        return f64::from_bits(crate::value::TAG_UNDEFINED);
+    }
+    let buf = unbox_buffer_ptr(buf_ptr.to_bits()) as *const BufferHeader;
+    let n = byte_length as usize;
+    match buffer_slice_at(buf, offset, n) {
+        Some(s) => {
+            let mut v: u64 = 0;
+            for (i, &b) in s.iter().enumerate() {
+                v |= (b as u64) << (i * 8);
+            }
+            v as f64
+        }
+        None => f64::from_bits(crate::value::TAG_UNDEFINED),
+    }
+}
+
+#[inline]
+fn sign_extend(v: u64, bits: u32) -> i64 {
+    let sign_bit = 1u64 << (bits - 1);
+    let mask = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    let v = v & mask;
+    if v & sign_bit != 0 {
+        (v | !mask) as i64
+    } else {
+        v as i64
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_read_int_be(buf_ptr: f64, offset: i32, byte_length: i32) -> f64 {
+    if !(1..=6).contains(&byte_length) {
+        return f64::from_bits(crate::value::TAG_UNDEFINED);
+    }
+    let buf = unbox_buffer_ptr(buf_ptr.to_bits()) as *const BufferHeader;
+    let n = byte_length as usize;
+    match buffer_slice_at(buf, offset, n) {
+        Some(s) => {
+            let mut v: u64 = 0;
+            for &b in s.iter() {
+                v = (v << 8) | (b as u64);
+            }
+            sign_extend(v, (n * 8) as u32) as f64
+        }
+        None => f64::from_bits(crate::value::TAG_UNDEFINED),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_read_int_le(buf_ptr: f64, offset: i32, byte_length: i32) -> f64 {
+    if !(1..=6).contains(&byte_length) {
+        return f64::from_bits(crate::value::TAG_UNDEFINED);
+    }
+    let buf = unbox_buffer_ptr(buf_ptr.to_bits()) as *const BufferHeader;
+    let n = byte_length as usize;
+    match buffer_slice_at(buf, offset, n) {
+        Some(s) => {
+            let mut v: u64 = 0;
+            for (i, &b) in s.iter().enumerate() {
+                v |= (b as u64) << (i * 8);
+            }
+            sign_extend(v, (n * 8) as u32) as f64
+        }
+        None => f64::from_bits(crate::value::TAG_UNDEFINED),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_write_uint_be(buf_ptr: f64, value: f64, offset: i32, byte_length: i32) {
+    if !(1..=6).contains(&byte_length) {
+        return;
+    }
+    let buf = unbox_buffer_ptr(buf_ptr.to_bits()) as *mut BufferHeader;
+    let n = byte_length as usize;
+    if let Some(s) = buffer_slice_at_mut(buf, offset, n) {
+        let v = value as i64 as u64;
+        for i in 0..n {
+            s[n - 1 - i] = ((v >> (i * 8)) & 0xFF) as u8;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_write_uint_le(buf_ptr: f64, value: f64, offset: i32, byte_length: i32) {
+    if !(1..=6).contains(&byte_length) {
+        return;
+    }
+    let buf = unbox_buffer_ptr(buf_ptr.to_bits()) as *mut BufferHeader;
+    let n = byte_length as usize;
+    if let Some(s) = buffer_slice_at_mut(buf, offset, n) {
+        let v = value as i64 as u64;
+        for i in 0..n {
+            s[i] = ((v >> (i * 8)) & 0xFF) as u8;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_write_int_be(buf_ptr: f64, value: f64, offset: i32, byte_length: i32) {
+    js_buffer_write_uint_be(buf_ptr, value, offset, byte_length);
+}
+
+#[no_mangle]
+pub extern "C" fn js_buffer_write_int_le(buf_ptr: f64, value: f64, offset: i32, byte_length: i32) {
+    js_buffer_write_uint_le(buf_ptr, value, offset, byte_length);
+}
+
 // ---- BigInt 64-bit read/write ----
 
 #[no_mangle]

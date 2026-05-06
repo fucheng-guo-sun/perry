@@ -62,6 +62,55 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ---------------------------------------------------------------------------
+  # API docs drift gate (#465)
+  #
+  # Regenerates `docs/src/api/reference.md` and `docs/api/perry.d.ts` from
+  # the compile-time manifest in `crates/perry-api-manifest/src/entries.rs`,
+  # then `git diff --exit-code`s the result. Fails when a code change updated
+  # the manifest without re-committing the artifacts. Closes the "Release
+  # workflow regenerates docs automatically (no drift from code)" criterion
+  # — committing the diff is the easiest way to keep the docs in sync,
+  # since the diff is reviewable in the PR that introduces it.
+  # ---------------------------------------------------------------------------
+  api-docs-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "${{ runner.os }}-perry"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Regenerate API docs
+        run: ./scripts/regen_api_docs.sh
+
+      - name: Check for drift
+        run: |
+          if ! git diff --quiet -- docs/src/api/reference.md docs/api/perry.d.ts; then
+            echo ""
+            echo "::error::API docs drift detected. The compile-time manifest in"
+            echo "::error::crates/perry-api-manifest/src/entries.rs changed but the"
+            echo "::error::generated artifacts under docs/ weren't regenerated."
+            echo ""
+            echo "Fix by running:"
+            echo "  ./scripts/regen_api_docs.sh"
+            echo "  git add docs/src/api/reference.md docs/api/perry.d.ts"
+            echo "  git commit -m 'docs: regenerate API reference + .d.ts'"
+            echo ""
+            echo "Diff:"
+            git --no-pager diff --stat -- docs/src/api/reference.md docs/api/perry.d.ts
+            echo ""
+            git --no-pager diff -- docs/src/api/reference.md docs/api/perry.d.ts | head -200
+            exit 1
+          fi
+          echo "✅ API docs match the manifest."
+
+  # ---------------------------------------------------------------------------
   # Rust unit tests (266+ tests across all crates)
   # ---------------------------------------------------------------------------
   # Note: a separate `build` job that produced runtime/stdlib/compiler

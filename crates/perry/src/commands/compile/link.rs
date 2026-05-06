@@ -45,6 +45,12 @@ pub(super) fn build_and_run_link(
     compiled_features: &[String],
     runtime_lib: &Path,
     stdlib_lib: &Option<PathBuf>,
+    // #466 Phase 4 step 2: well-known native binding archives. Added
+    // to the link line right after `stdlib_lib`. The matching
+    // perry-stdlib feature was already stripped during the auto-
+    // optimize rebuild, so the resulting link contains exactly one
+    // copy of each `_js_<package>_*` symbol — no duplicates.
+    well_known_libs: &[PathBuf],
     jsruntime_lib: &Option<PathBuf>,
     exe_path: &Path,
     format: OutputFormat,
@@ -850,6 +856,14 @@ pub(super) fn build_and_run_link(
             // won't dead-strip. On macOS/Linux, the linker ignores unreferenced archives.
             if let Some(ref stdlib) = stdlib_lib {
                 cmd.arg(stdlib);
+                // #466 Phase 4 step 2: well-known bindings join the
+                // link line right after perry-stdlib so they cover
+                // the exact `_js_*` symbol gap that was just opened
+                // by stripping the corresponding feature from the
+                // perry-stdlib rebuild.
+                for wk in well_known_libs {
+                    cmd.arg(wk);
+                }
                 // Also link runtime to supply symbols that may be DCE'd from stdlib's
                 // bundled perry-runtime (e.g. js_closure_unbind_this, js_string_addref)
                 if !is_android && !is_windows {
@@ -877,6 +891,11 @@ pub(super) fn build_and_run_link(
         // separately (UI lib does not bundle perry-stdlib).
         if let Some(ref stdlib) = stdlib_lib {
             cmd.arg(stdlib);
+            // #466 Phase 4 step 2: see the parallel comment in the
+            // non-Android branch above.
+            for wk in well_known_libs {
+                cmd.arg(wk);
+            }
         } else {
             eprintln!("Warning: stdlib required but libperry_stdlib.a not found");
         }

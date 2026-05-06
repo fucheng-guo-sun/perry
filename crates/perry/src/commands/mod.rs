@@ -15,6 +15,7 @@ pub mod harmonyos_hap;
 pub mod i18n;
 pub mod init;
 pub mod login;
+pub mod native;
 pub mod publish;
 pub mod run;
 pub mod setup;

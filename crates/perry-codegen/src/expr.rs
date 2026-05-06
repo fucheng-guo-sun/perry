@@ -299,6 +299,16 @@ pub(crate) struct FnCtx<'a> {
     /// with TAG_UNDEFINED so the callee's default-param desugaring fires
     /// correctly. See issue #235 for the failure mode.
     pub method_param_counts: &'a std::collections::HashMap<(String, String), usize>,
+    /// Closes #484: per-`(class, method)` rest-parameter flag. Used by
+    /// `lower_call.rs`'s static / dynamic dispatch arms to bundle
+    /// trailing args into a `js_array_alloc(n)` rest array when the
+    /// method's last declared param is `...rest`. Without this
+    /// information the call site emits `args.len()` doubles and the
+    /// callee's `args` ends up as raw uninitialized stack-slot
+    /// junk — `args.length` then panics with "Cannot read properties
+    /// of undefined". Same shape as `func_signatures`'s `has_rest`
+    /// bit but for class-method dispatch.
+    pub method_has_rest: &'a std::collections::HashMap<(String, String), bool>,
     /// FFI manifest: `name → (param_kinds, return_kind)` from
     /// `package.json` `nativeLibrary.functions`. Each kind is a string like
     /// `"i64"`, `"f64"`, `"void"`, `"string"`, or `"ptr"`. `lower_call` consults
@@ -3392,8 +3402,54 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             let pic_end_label = ctx.block().label.clone();
             ctx.block().br(&final_merge_label);
 
-            // Invalid receiver: return undefined without dereferencing.
+            // Invalid receiver: per JS spec, `undefined` and `null`
+            // throw a TypeError; other non-pointer tags (int32, bool,
+            // plain f64, bigint) should auto-box and look up via the
+            // primitive's prototype. Perry doesn't implement primitive
+            // auto-boxing yet, so non-nullish primitives continue to
+            // return `undefined` to preserve existing behavior.
+            //
+            // Issue #462: bare `obj.foo` against TAG_UNDEFINED /
+            // TAG_NULL silently returned undefined, which masked
+            // unimplemented-API bugs (e.g. `crypto.subtle.encrypt(...)`
+            // ran to completion as a chain of no-ops). Funnel the
+            // nullish receiver into the runtime helper which prints a
+            // node-shaped diagnostic and aborts.
             ctx.current_block = invalid_idx;
+            let is_undef = ctx
+                .block()
+                .icmp_eq(I64, &obj_bits, crate::nanbox::TAG_UNDEFINED_I64);
+            let is_null = ctx
+                .block()
+                .icmp_eq(I64, &obj_bits, crate::nanbox::TAG_NULL_I64);
+            let is_nullish = ctx.block().or(I1, &is_undef, &is_null);
+            let throw_idx = ctx.new_block("pget.throw_nullish");
+            let undef_idx = ctx.new_block("pget.recv_undef_return");
+            let throw_label = ctx.block_label(throw_idx);
+            let undef_label = ctx.block_label(undef_idx);
+            ctx.block().cond_br(&is_nullish, &throw_label, &undef_label);
+
+            // Throw path: helper aborts the process; block ends with
+            // `unreachable` because the helper's `-> !` return is
+            // not visible to LLVM.
+            ctx.current_block = throw_idx;
+            let prop_entry = ctx.strings.entry(key_idx);
+            let prop_bytes_global = format!("@{}", prop_entry.bytes_global);
+            let prop_len_str = prop_entry.byte_len.to_string();
+            let is_null_i32 = ctx.block().zext(I1, &is_null, I32);
+            ctx.block().call_void(
+                "js_throw_type_error_property_access",
+                &[
+                    (I32, &is_null_i32),
+                    (PTR, &prop_bytes_global),
+                    (I64, &prop_len_str),
+                ],
+            );
+            ctx.block().unreachable();
+
+            // Undef-return path: existing fall-through for non-nullish
+            // invalid receivers.
+            ctx.current_block = undef_idx;
             let undef_bits = crate::nanbox::i64_literal(crate::nanbox::TAG_UNDEFINED);
             let undef_val = ctx.block().bitcast_i64_to_double(&undef_bits);
             let invalid_end_label = ctx.block().label.clone();
@@ -4875,12 +4931,15 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             Ok(nanbox_pointer_inline(ctx.block(), &obj_handle))
         }
 
-        // -------- new Set(arr) --------
+        // -------- new Set(iter) --------
+        // Fix #421 (v0.5.574): route through js_set_from_iterable so
+        // string inputs (`new Set("abc")`) iterate codepoints instead of
+        // segfaulting on a bad ArrayHeader cast. The runtime function
+        // takes the NaN-boxed value directly and dispatches by tag.
         Expr::SetNewFromArray(arr_expr) => {
             let arr_box = lower_expr(ctx, arr_expr)?;
             let blk = ctx.block();
-            let arr_handle = unbox_to_i64(blk, &arr_box);
-            let handle = blk.call(I64, "js_set_from_array", &[(I64, &arr_handle)]);
+            let handle = blk.call(I64, "js_set_from_iterable", &[(DOUBLE, &arr_box)]);
             Ok(nanbox_pointer_inline(blk, &handle))
         }
 

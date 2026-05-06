@@ -128,9 +128,30 @@ pub unsafe extern "C" fn js_handle_method_dispatch(
     // net.Socket: covers wrapper-function, struct-field, and Map.get
     // receivers where codegen lost the static type. Static NATIVE_MODULE_TABLE
     // path is still preferred when types are visible.
-    #[cfg(all(feature = "net", not(target_os = "ios"), not(target_os = "android")))]
+    #[cfg(all(
+        feature = "bundled-net",
+        not(target_os = "ios"),
+        not(target_os = "android")
+    ))]
     if crate::net::is_net_socket_handle(handle) {
         return dispatch_net_socket(handle, method_name, args);
+    }
+    // External net path (v0.5.581): perry-ext-net registers itself when
+    // the well-known flip strips bundled-net. Same dispatch contract,
+    // but routes through extern "C" symbols perry-ext-net provides.
+    #[cfg(all(
+        not(feature = "bundled-net"),
+        feature = "external-net-pump",
+        not(target_os = "ios"),
+        not(target_os = "android")
+    ))]
+    {
+        extern "C" {
+            fn js_ext_net_is_socket_handle(handle: i64) -> i32;
+        }
+        if unsafe { js_ext_net_is_socket_handle(handle) } != 0 {
+            return dispatch_external_net_socket(handle, method_name, args);
+        }
     }
 
     // Unknown handle type - return undefined
@@ -362,7 +383,11 @@ unsafe fn dispatch_fastify_context(handle: i64, method: &str, args: &[f64]) -> f
 /// pointers in the low 48 bits with POINTER_TAG / STRING_TAG in the top.
 /// We strip the tag and pass the raw `i64` to the FFI — same shape the
 /// codegen path produces.
-#[cfg(all(feature = "net", not(target_os = "ios"), not(target_os = "android")))]
+#[cfg(all(
+    feature = "bundled-net",
+    not(target_os = "ios"),
+    not(target_os = "android")
+))]
 unsafe fn dispatch_net_socket(handle: i64, method: &str, args: &[f64]) -> f64 {
     /// Strip a NaN-box tag (POINTER / STRING / BIGINT) to get the raw 48-bit pointer.
     fn unbox_to_i64(v: f64) -> i64 {
@@ -404,6 +429,73 @@ unsafe fn dispatch_net_socket(handle: i64, method: &str, args: &[f64]) -> f64 {
             let servername_ptr = unbox_to_i64(args[0]);
             let verify = if args.len() >= 2 { args[1] } else { 1.0 };
             let promise = crate::net::js_net_socket_upgrade_tls(handle, servername_ptr, verify);
+            f64::from_bits(0x7FFD_0000_0000_0000u64 | (promise as u64 & 0x0000_FFFF_FFFF_FFFF))
+        }
+        _ => f64::from_bits(0x7FFC_0000_0000_0001),
+    }
+}
+
+/// Dispatch a method call on a perry-ext-net Socket handle via
+/// extern "C" symbols. Same shape as `dispatch_net_socket` above
+/// but the per-method functions resolve to perry-ext-net's archive
+/// at link time, not perry-stdlib's `crate::net::*`.
+///
+/// Closes issue #91 regression for the well-known-flipped path:
+/// Map.get'd / struct-field / wrapper-function receivers where
+/// the static type was lost get caught by HANDLE_METHOD_DISPATCH
+/// and routed here.
+#[cfg(all(
+    not(feature = "bundled-net"),
+    feature = "external-net-pump",
+    not(target_os = "ios"),
+    not(target_os = "android")
+))]
+unsafe fn dispatch_external_net_socket(handle: i64, method: &str, args: &[f64]) -> f64 {
+    fn unbox_to_i64(v: f64) -> i64 {
+        (v.to_bits() & 0x0000_FFFF_FFFF_FFFF) as i64
+    }
+    extern "C" {
+        fn js_net_socket_write(handle: i64, buf_ptr: i64);
+        fn js_net_socket_end(handle: i64);
+        fn js_net_socket_destroy(handle: i64);
+        fn js_net_socket_on(handle: i64, event_ptr: i64, cb_ptr: i64);
+        fn js_net_socket_method_connect(handle: i64, port: f64, host_ptr: i64);
+        fn js_net_socket_upgrade_tls(
+            handle: i64,
+            servername_ptr: i64,
+            verify: f64,
+        ) -> *mut perry_runtime::Promise;
+    }
+
+    match method {
+        "write" if !args.is_empty() => {
+            js_net_socket_write(handle, unbox_to_i64(args[0]));
+            f64::from_bits(0x7FFC_0000_0000_0001)
+        }
+        "end" => {
+            js_net_socket_end(handle);
+            f64::from_bits(0x7FFC_0000_0000_0001)
+        }
+        "destroy" => {
+            js_net_socket_destroy(handle);
+            f64::from_bits(0x7FFC_0000_0000_0001)
+        }
+        "on" if args.len() >= 2 => {
+            let event_ptr = unbox_to_i64(args[0]);
+            let cb_ptr = unbox_to_i64(args[1]);
+            js_net_socket_on(handle, event_ptr, cb_ptr);
+            f64::from_bits(0x7FFC_0000_0000_0001)
+        }
+        "connect" if args.len() >= 2 => {
+            let port = args[0];
+            let host_ptr = unbox_to_i64(args[1]);
+            js_net_socket_method_connect(handle, port, host_ptr);
+            f64::from_bits(0x7FFC_0000_0000_0001)
+        }
+        "upgradeToTLS" if !args.is_empty() => {
+            let servername_ptr = unbox_to_i64(args[0]);
+            let verify = if args.len() >= 2 { args[1] } else { 1.0 };
+            let promise = js_net_socket_upgrade_tls(handle, servername_ptr, verify);
             f64::from_bits(0x7FFD_0000_0000_0000u64 | (promise as u64 & 0x0000_FFFF_FFFF_FFFF))
         }
         _ => f64::from_bits(0x7FFC_0000_0000_0001),

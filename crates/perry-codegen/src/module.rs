@@ -115,6 +115,14 @@ impl LlModule {
         self.functions.get_mut(idx)
     }
 
+    /// True if a function with the given name has already been *defined*
+    /// in this module. Used by the #461 export-stub pass to avoid
+    /// redefining a symbol that an earlier emission path (function body,
+    /// value-getter, #460 forwarding wrapper) already claimed.
+    pub fn has_function(&self, name: &str) -> bool {
+        self.functions.iter().any(|f| f.name == name)
+    }
+
     pub fn add_global(&mut self, name: &str, ty: LlvmType, init: &str) {
         self.globals
             .push(format!("@{} = global {} {}", name, ty, init));

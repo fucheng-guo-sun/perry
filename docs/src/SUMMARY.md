@@ -20,6 +20,10 @@
 # npm Packages
 
 - [Porting Packages (experimental)](packages/porting.md)
+- [Native Bindings — Overview](native-libraries/overview.md)
+  - [Authoring a Native Binding](native-libraries/authoring-guide.md)
+  - [`perry-ffi` ABI Reference](native-libraries/abi.md)
+  - [Manifest Schema (spec v1)](native-libraries/manifest-v1.md)
 
 # Multi-Threading
 
@@ -70,6 +74,7 @@
 - [Cryptography](stdlib/crypto.md)
 - [Utilities](stdlib/utilities.md)
 - [Other Modules](stdlib/other.md)
+- [API Reference (auto-generated)](api/reference.md)
 
 # Internationalization
 
@@ -119,6 +124,7 @@
 
 - [Commands](cli/commands.md)
 - [Compiler Flags](cli/flags.md)
+- [Fast-math (`--fast-math`)](cli/fast-math.md)
 - [perry.toml Reference](cli/perry-toml.md)
 
 ---

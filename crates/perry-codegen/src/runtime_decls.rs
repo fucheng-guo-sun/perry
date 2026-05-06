@@ -304,6 +304,13 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_array_concat", I64, &[I64, I64]);
     module.declare_function("js_error_new", I64, &[]);
     module.declare_function("js_error_new_with_message", I64, &[I64]);
+    // Issue #462: thrown by PropertyGet codegen on undefined/null receiver.
+    // Helper diverges (`-> !`); declared as void-return for LLVM purposes.
+    module.declare_function(
+        "js_throw_type_error_property_access",
+        VOID,
+        &[I32, PTR, I64],
+    );
     module.declare_function("js_map_set", I64, &[I64, DOUBLE, DOUBLE]);
     module.declare_function("js_map_get", DOUBLE, &[I64, DOUBLE]);
     module.declare_function("js_map_has", I32, &[I64, DOUBLE]);
@@ -318,6 +325,7 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_array_shift_f64", DOUBLE, &[I64]);
     module.declare_function("js_set_alloc", I64, &[I32]);
     module.declare_function("js_set_from_array", I64, &[I64]);
+    module.declare_function("js_set_from_iterable", I64, &[DOUBLE]);
     module.declare_function("js_map_from_array", I64, &[I64]);
     module.declare_function("js_object_has_property", DOUBLE, &[DOUBLE, DOUBLE]);
     module.declare_function("js_fs_write_file_sync", I32, &[DOUBLE, DOUBLE]);

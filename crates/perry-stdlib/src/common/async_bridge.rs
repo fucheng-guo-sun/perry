@@ -227,8 +227,25 @@ pub extern "C" fn js_stdlib_process_pending() -> i32 {
         count += http_count;
     }
 
-    // Process pending raw TCP socket events (net.Socket)
-    #[cfg(all(feature = "net", not(target_os = "ios"), not(target_os = "android")))]
+    // Process pending raw TCP socket events (net.Socket).
+    // v0.5.579 — gate now fires for `bundled-net` (perry-stdlib's
+    // own implementation) AND `external-net-pump` (which the
+    // well-known flip in `optimized_libs.rs` enables when routing
+    // `import 'net'` to perry-ext-net). The fallback no-op stub
+    // pattern (e.g. cron's) doesn't work for net because the
+    // perry-ext-net wrapper's symbol can't be reliably preferred
+    // over perry-stdlib's stub on Mach-O.
+    // v0.5.579: gate on `bundled-net` (perry-stdlib has its own net
+    // module compiled in) OR `external-net-pump` (well-known flip
+    // activated → perry-ext-net is linked, provides the symbol).
+    // Without this gate, the cfg `feature = "net"` from v0.5.572's
+    // umbrella renaming was always FALSE under the well-known flip,
+    // and tokio events queued by perry-ext-net never got drained.
+    #[cfg(all(
+        any(feature = "bundled-net", feature = "external-net-pump"),
+        not(target_os = "ios"),
+        not(target_os = "android")
+    ))]
     {
         extern "C" {
             fn js_net_process_pending() -> i32;

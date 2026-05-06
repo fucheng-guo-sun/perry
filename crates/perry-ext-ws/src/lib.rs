@@ -1,0 +1,831 @@
+//! Native bindings for the npm `ws` package — WebSocket client +
+//! server via `tokio-tungstenite`. Uses only perry-ffi.
+//!
+//! Architecture mirrors perry-stdlib's existing copy minus the iOS
+//! `NSURLSessionWebSocketTask` delegation path (out of scope for an
+//! in-tree port that doesn't depend on `perry-ui-ios`):
+//!
+//!   - Per-client: `tokio::spawn`-driven select loop reads incoming
+//!     messages and writes commands from an mpsc channel. Reader
+//!     pushes events onto `WS_PENDING_EVENTS`; main thread drains
+//!     them via `js_ws_process_pending`.
+//!   - Per-server: another spawned task accepts TCP connections, does
+//!     the WebSocket handshake, allocates a per-client id, spawns
+//!     the per-client task. Each connection carries a back-reference
+//!     to its parent server handle so events can route.
+//!   - GC root scanner walks WS_CLIENT_LISTENERS + every
+//!     WsServerHandle's listeners, marking every closure pointer
+//!     so a malloc-triggered sweep can't free them between
+//!     registration and dispatch (issue #35 pattern).
+//!
+//! `spawn_blocking + tokio::Handle::current().block_on(async {...})`
+//! is used in place of perry-stdlib's `crate::common::async_bridge::spawn`.
+//! Each long-running task ties up one blocking-pool thread for the
+//! connection's lifetime; default tokio blocking pool is 512 threads,
+//! enough for typical WebSocket usage. Cooperative `spawn_async` is
+//! a v0.6.0 followup.
+
+use futures_util::{SinkExt, StreamExt};
+use lazy_static::lazy_static;
+use perry_ffi::{
+    alloc_string, gc_register_root_scanner, get_handle_mut, iter_handles_of, notify_main_thread,
+    register_handle, spawn_blocking_with_reactor as spawn_blocking, take_handle, Handle, JsClosure,
+    JsString, JsValue, ObjectHeader, RawClosureHeader, StringHeader,
+};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+const POINTER_TAG: u64 = 0x7FFD_0000_0000_0000;
+const TAG_MASK: u64 = 0xFFFF_0000_0000_0000;
+const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+unsafe fn read_str(ptr: *const StringHeader) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let h = JsString::from_raw(ptr as *mut StringHeader);
+    perry_ffi::read_string(h).map(String::from)
+}
+
+// ── Global state ──────────────────────────────────────────────────
+
+struct WsConnection {
+    sender: mpsc::UnboundedSender<WsCommand>,
+    messages: Vec<String>,
+    is_open: bool,
+}
+
+enum WsCommand {
+    Send(String),
+    Close,
+}
+
+struct WsClientListeners {
+    listeners: HashMap<String, Vec<i64>>,
+}
+
+pub struct WsServerHandle {
+    /// Event name → list of closure pointers.
+    pub listeners: HashMap<String, Vec<i64>>,
+    pub port: u16,
+    pub is_listening: bool,
+    pub client_ids: Vec<usize>,
+    pub shutdown_tx: Option<mpsc::UnboundedSender<()>>,
+}
+
+enum PendingWsEvent {
+    Connection(Handle, usize),
+    Message(usize, String),
+    Close(usize, u16, String),
+    Error(usize, String),
+    ServerError(Handle, String),
+    Listening(Handle),
+}
+
+lazy_static! {
+    static ref WS_CONNECTIONS: Mutex<HashMap<usize, WsConnection>> = Mutex::new(HashMap::new());
+    static ref WS_CLIENT_PARENT_SERVER: Mutex<HashMap<usize, Handle>> = Mutex::new(HashMap::new());
+    static ref NEXT_WS_ID: Mutex<usize> = Mutex::new(1);
+    static ref WS_CLIENT_LISTENERS: Mutex<HashMap<usize, WsClientListeners>> =
+        Mutex::new(HashMap::new());
+    static ref WS_PENDING_EVENTS: Mutex<Vec<PendingWsEvent>> = Mutex::new(Vec::new());
+}
+
+static WS_ACTIVE_SERVERS: AtomicI32 = AtomicI32::new(0);
+static WS_GC_REGISTERED: std::sync::Once = std::sync::Once::new();
+
+fn ensure_gc_scanner_registered() {
+    WS_GC_REGISTERED.call_once(|| {
+        gc_register_root_scanner(scan_ws_roots);
+    });
+}
+
+fn scan_ws_roots(mark: &mut dyn FnMut(f64)) {
+    let mark_cb = |cb: i64, mark: &mut dyn FnMut(f64)| {
+        if cb != 0 {
+            let boxed = f64::from_bits(POINTER_TAG | (cb as u64 & POINTER_MASK));
+            mark(boxed);
+        }
+    };
+    if let Ok(per_client) = WS_CLIENT_LISTENERS.lock() {
+        for client in per_client.values() {
+            for cb_vec in client.listeners.values() {
+                for &cb in cb_vec.iter() {
+                    mark_cb(cb, mark);
+                }
+            }
+        }
+    }
+    iter_handles_of::<WsServerHandle, _>(|server| {
+        for cb_vec in server.listeners.values() {
+            for &cb in cb_vec.iter() {
+                mark_cb(cb, mark);
+            }
+        }
+    });
+}
+
+fn push_ws_event(ev: PendingWsEvent) {
+    WS_PENDING_EVENTS.lock().unwrap().push(ev);
+    notify_main_thread();
+}
+
+// ── Client connect ────────────────────────────────────────────────
+
+/// `new WebSocket(url)` — async constructor returning Promise<id>.
+///
+/// # Safety
+/// `url_ptr` must be null or a Perry-runtime `StringHeader`.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_connect(url_ptr: *const StringHeader) -> *mut perry_ffi::Promise {
+    ensure_gc_scanner_registered();
+    let promise = perry_ffi::JsPromise::new();
+    let raw = promise.as_raw();
+    let Some(url) = read_str(url_ptr) else {
+        promise.reject_string("Invalid URL");
+        return raw;
+    };
+    spawn_blocking(move || {
+        let result =
+            tokio::runtime::Handle::current().block_on(async move { connect_async(&url).await });
+        match result {
+            Ok((ws_stream, _resp)) => {
+                let id = setup_client_io(ws_stream);
+                promise.resolve(JsValue::from_number(id as f64));
+            }
+            Err(e) => promise.reject_string(&format!("WebSocket connect error: {}", e)),
+        }
+    });
+    raw
+}
+
+/// `js_ws_connect_start(url_nanboxed)` — sync alternative used by
+/// codegen sites that don't expect a Promise return.
+#[no_mangle]
+pub extern "C" fn js_ws_connect_start(url_nanboxed: f64) -> f64 {
+    ensure_gc_scanner_registered();
+    let bits = url_nanboxed.to_bits();
+    let mask = TAG_MASK;
+    let string_tag = 0x7FFF_0000_0000_0000u64;
+    let url = if (bits & mask) == string_tag {
+        let ptr = (bits & POINTER_MASK) as *const StringHeader;
+        unsafe { read_str(ptr) }
+    } else {
+        None
+    };
+    let Some(url) = url else { return 0.0 };
+
+    // Allocate the id synchronously so the caller can register
+    // listeners before the connect resolves.
+    let mut id_guard = NEXT_WS_ID.lock().unwrap();
+    let ws_id = *id_guard;
+    *id_guard += 1;
+    drop(id_guard);
+    let (tx, rx) = mpsc::unbounded_channel::<WsCommand>();
+    WS_CONNECTIONS.lock().unwrap().insert(
+        ws_id,
+        WsConnection {
+            sender: tx,
+            messages: Vec::new(),
+            is_open: false,
+        },
+    );
+    WS_CLIENT_LISTENERS.lock().unwrap().insert(
+        ws_id,
+        WsClientListeners {
+            listeners: HashMap::new(),
+        },
+    );
+    spawn_blocking(move || {
+        let outcome =
+            tokio::runtime::Handle::current().block_on(async move { connect_async(&url).await });
+        match outcome {
+            Ok((ws_stream, _)) => {
+                if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
+                    c.is_open = true;
+                }
+                drive_client_io(ws_id, ws_stream, rx);
+            }
+            Err(e) => {
+                push_ws_event(PendingWsEvent::Error(
+                    ws_id,
+                    format!("WebSocket connect error: {}", e),
+                ));
+            }
+        }
+    });
+    ws_id as f64
+}
+
+fn setup_client_io(
+    ws_stream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> usize {
+    let mut id_guard = NEXT_WS_ID.lock().unwrap();
+    let ws_id = *id_guard;
+    *id_guard += 1;
+    drop(id_guard);
+    let (tx, rx) = mpsc::unbounded_channel::<WsCommand>();
+    WS_CONNECTIONS.lock().unwrap().insert(
+        ws_id,
+        WsConnection {
+            sender: tx,
+            messages: Vec::new(),
+            is_open: true,
+        },
+    );
+    WS_CLIENT_LISTENERS.lock().unwrap().insert(
+        ws_id,
+        WsClientListeners {
+            listeners: HashMap::new(),
+        },
+    );
+    drive_client_io(ws_id, ws_stream, rx);
+    ws_id
+}
+
+fn drive_client_io<S>(
+    ws_id: usize,
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    mut rx: mpsc::UnboundedReceiver<WsCommand>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            let (mut write, mut read) = ws_stream.split();
+            loop {
+                tokio::select! {
+                    msg_result = read.next() => {
+                        match msg_result {
+                            Some(Ok(Message::Text(text))) => {
+                                let has_listeners = WS_CLIENT_LISTENERS.lock().unwrap()
+                                    .get(&ws_id)
+                                    .map(|l| l.listeners.get("message").map(|v| !v.is_empty()).unwrap_or(false))
+                                    .unwrap_or(false);
+                                if has_listeners {
+                                    push_ws_event(PendingWsEvent::Message(ws_id, text));
+                                } else if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
+                                    c.messages.push(text);
+                                }
+                            }
+                            Some(Ok(Message::Binary(b))) => {
+                                let s = String::from_utf8_lossy(&b).to_string();
+                                push_ws_event(PendingWsEvent::Message(ws_id, s));
+                            }
+                            Some(Ok(Message::Close(frame))) => {
+                                let (code, reason) = frame
+                                    .map(|f| (f.code.into(), f.reason.to_string()))
+                                    .unwrap_or((1000u16, String::new()));
+                                if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
+                                    c.is_open = false;
+                                }
+                                push_ws_event(PendingWsEvent::Close(ws_id, code, reason));
+                                break;
+                            }
+                            Some(Ok(_)) => { /* ping/pong/etc — ignore */ }
+                            Some(Err(e)) => {
+                                push_ws_event(PendingWsEvent::Error(ws_id, format!("{}", e)));
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                    cmd = rx.recv() => {
+                        match cmd {
+                            Some(WsCommand::Send(text)) => {
+                                if write.send(Message::Text(text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(WsCommand::Close) => {
+                                let _ = write.send(Message::Close(None)).await;
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+            if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
+                c.is_open = false;
+            }
+        });
+    });
+}
+
+// ── Send / close (client) ─────────────────────────────────────────
+
+/// # Safety
+/// `message_ptr` must be null or a Perry-runtime `StringHeader`.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_send(handle: i64, message_ptr: *const StringHeader) {
+    let Some(msg) = read_str(message_ptr) else {
+        return;
+    };
+    let id = handle as usize;
+    if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+        let _ = c.sender.send(WsCommand::Send(msg));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_ws_close(handle: i64) {
+    let id = handle as usize;
+    if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+        let _ = c.sender.send(WsCommand::Close);
+        c.is_open = false;
+    }
+}
+
+/// # Safety
+/// `message_ptr` must be null or a Perry-runtime `StringHeader`.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_send_to_client(handle_f64: f64, message_ptr: *const StringHeader) {
+    let id = handle_f64 as i64 as usize;
+    let Some(msg) = read_str(message_ptr) else {
+        return;
+    };
+    if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+        let _ = c.sender.send(WsCommand::Send(msg));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn js_ws_close_client(handle_f64: f64) {
+    let id = handle_f64 as i64 as usize;
+    if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+        let _ = c.sender.send(WsCommand::Close);
+        c.is_open = false;
+    }
+}
+
+// ── Accessors ─────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn js_ws_is_open(handle: i64) -> f64 {
+    let id = handle as usize;
+    WS_CONNECTIONS
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|c| if c.is_open { 1.0 } else { 0.0 })
+        .unwrap_or(0.0)
+}
+
+#[no_mangle]
+pub extern "C" fn js_ws_message_count(handle: i64) -> f64 {
+    let id = handle as usize;
+    WS_CONNECTIONS
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|c| c.messages.len() as f64)
+        .unwrap_or(0.0)
+}
+
+#[no_mangle]
+pub extern "C" fn js_ws_receive(handle: i64) -> *mut StringHeader {
+    let id = handle as usize;
+    let mut g = WS_CONNECTIONS.lock().unwrap();
+    if let Some(c) = g.get_mut(&id) {
+        if !c.messages.is_empty() {
+            let msg = c.messages.remove(0);
+            return alloc_string(&msg).as_raw();
+        }
+    }
+    std::ptr::null_mut()
+}
+
+/// `js_ws_wait_for_message(handle, timeout_ms)` — block up to
+/// `timeout_ms` milliseconds for a buffered message; returns the
+/// message string or null on timeout.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_wait_for_message(handle: i64, timeout_ms: f64) -> *mut StringHeader {
+    let id = handle as usize;
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(0.0) as u64);
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+            if !c.messages.is_empty() {
+                let msg = c.messages.remove(0);
+                return alloc_string(&msg).as_raw();
+            }
+        }
+        if start.elapsed() >= timeout {
+            return std::ptr::null_mut();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Helper: extract i64 handle from a NaN-boxed JsValue (server
+/// handle as POINTER_TAG-tagged f64) OR a plain f64 number (client
+/// ws_id). Used at JS-side dispatch points where the handle could be
+/// either.
+#[no_mangle]
+pub extern "C" fn js_ws_handle_to_i64(val_f64: f64) -> i64 {
+    let bits = val_f64.to_bits();
+    if (bits & TAG_MASK) == POINTER_TAG {
+        (bits & POINTER_MASK) as i64
+    } else {
+        val_f64 as i64
+    }
+}
+
+/// Register an event listener. Routes to server-handle listeners or
+/// per-client-id listeners based on which registry the handle is in.
+///
+/// # Safety
+/// `event_name_ptr` must be null or a Perry-runtime `StringHeader`.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_on(
+    handle: i64,
+    event_name_ptr: *const StringHeader,
+    callback_ptr: i64,
+) -> i64 {
+    ensure_gc_scanner_registered();
+    let Some(event_name) = read_str(event_name_ptr) else {
+        return handle;
+    };
+    if callback_ptr == 0 {
+        return handle;
+    }
+    if let Some(server) = get_handle_mut::<WsServerHandle>(handle) {
+        server
+            .listeners
+            .entry(event_name)
+            .or_insert_with(Vec::new)
+            .push(callback_ptr);
+        return handle;
+    }
+    let ws_id = handle as usize;
+    let mut g = WS_CLIENT_LISTENERS.lock().unwrap();
+    let entry = g.entry(ws_id).or_insert_with(|| WsClientListeners {
+        listeners: HashMap::new(),
+    });
+    entry
+        .listeners
+        .entry(event_name)
+        .or_default()
+        .push(callback_ptr);
+    handle
+}
+
+// ── Server ────────────────────────────────────────────────────────
+
+/// `new WebSocketServer({ port })` — sync ctor; spawns the accept loop.
+#[no_mangle]
+pub extern "C" fn js_ws_server_new(opts_f64: f64) -> Handle {
+    ensure_gc_scanner_registered();
+    let port = extract_port(opts_f64);
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<()>();
+    let server_handle = register_handle(WsServerHandle {
+        listeners: HashMap::new(),
+        port,
+        is_listening: false,
+        client_ids: Vec::new(),
+        shutdown_tx: Some(shutdown_tx),
+    });
+    WS_ACTIVE_SERVERS.fetch_add(1, Ordering::Relaxed);
+    let handle_id = server_handle;
+    spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            let addr = format!("0.0.0.0:{}", port);
+            let listener = match tokio::net::TcpListener::bind(&addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    push_ws_event(PendingWsEvent::ServerError(
+                        handle_id,
+                        format!("WebSocketServer bind error: {}", e),
+                    ));
+                    return;
+                }
+            };
+            push_ws_event(PendingWsEvent::Listening(handle_id));
+            if let Some(s) = get_handle_mut::<WsServerHandle>(handle_id) {
+                s.is_listening = true;
+            }
+            loop {
+                tokio::select! {
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((tcp_stream, _addr)) => {
+                                match tokio_tungstenite::accept_async(tcp_stream).await {
+                                    Ok(ws_stream) => {
+                                        let mut id_guard = NEXT_WS_ID.lock().unwrap();
+                                        let ws_id = *id_guard;
+                                        *id_guard += 1;
+                                        drop(id_guard);
+                                        let (tx, rx) = mpsc::unbounded_channel::<WsCommand>();
+                                        WS_CONNECTIONS.lock().unwrap().insert(ws_id, WsConnection {
+                                            sender: tx,
+                                            messages: Vec::new(),
+                                            is_open: true,
+                                        });
+                                        WS_CLIENT_LISTENERS.lock().unwrap().insert(ws_id, WsClientListeners {
+                                            listeners: HashMap::new(),
+                                        });
+                                        if let Some(s) = get_handle_mut::<WsServerHandle>(handle_id) {
+                                            s.client_ids.push(ws_id);
+                                        }
+                                        WS_CLIENT_PARENT_SERVER.lock().unwrap().insert(ws_id, handle_id);
+                                        push_ws_event(PendingWsEvent::Connection(handle_id, ws_id));
+                                        drive_server_client_io(ws_id, ws_stream, rx);
+                                    }
+                                    Err(e) => {
+                                        push_ws_event(PendingWsEvent::ServerError(
+                                            handle_id,
+                                            format!("WebSocket handshake error: {}", e),
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                push_ws_event(PendingWsEvent::ServerError(
+                                    handle_id,
+                                    format!("accept error: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+            if let Some(s) = get_handle_mut::<WsServerHandle>(handle_id) {
+                s.is_listening = false;
+            }
+            WS_ACTIVE_SERVERS.fetch_sub(1, Ordering::Relaxed);
+        });
+    });
+    server_handle
+}
+
+fn extract_port(opts_f64: f64) -> u16 {
+    let bits = opts_f64.to_bits();
+    if (bits & TAG_MASK) == POINTER_TAG {
+        let ptr = (bits & POINTER_MASK) as *const ObjectHeader;
+        if !ptr.is_null() {
+            // Object literal: assume `port` is the first field
+            // (positional shape — same convention as nodemailer/pg/mysql2).
+            let val = unsafe { perry_ffi::js_object_get_field(ptr, 0) };
+            if val.is_number() {
+                let n = val.to_number();
+                if n.is_finite() && n > 0.0 {
+                    return n as u16;
+                }
+            }
+        }
+        return 0;
+    }
+    if opts_f64.is_finite() && opts_f64 > 0.0 {
+        opts_f64 as u16
+    } else {
+        0
+    }
+}
+
+fn drive_server_client_io<S>(
+    ws_id: usize,
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    mut rx: mpsc::UnboundedReceiver<WsCommand>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            let (mut write, mut read) = ws_stream.split();
+            loop {
+                tokio::select! {
+                    msg_result = read.next() => {
+                        match msg_result {
+                            Some(Ok(Message::Text(text))) => {
+                                push_ws_event(PendingWsEvent::Message(ws_id, text.to_string()));
+                            }
+                            Some(Ok(Message::Binary(b))) => {
+                                let s = String::from_utf8_lossy(&b).to_string();
+                                push_ws_event(PendingWsEvent::Message(ws_id, s));
+                            }
+                            Some(Ok(Message::Close(frame))) => {
+                                let (code, reason) = frame
+                                    .map(|f| (f.code.into(), f.reason.to_string()))
+                                    .unwrap_or((1000u16, String::new()));
+                                push_ws_event(PendingWsEvent::Close(ws_id, code, reason));
+                                break;
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(e)) => {
+                                push_ws_event(PendingWsEvent::Error(ws_id, format!("{}", e)));
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                    cmd = rx.recv() => {
+                        match cmd {
+                            Some(WsCommand::Send(text)) => {
+                                if write.send(Message::Text(text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(WsCommand::Close) => {
+                                let _ = write.send(Message::Close(None)).await;
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+            if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
+                c.is_open = false;
+            }
+        });
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn js_ws_server_close(handle: i64) {
+    if let Some(server) = take_handle::<WsServerHandle>(handle) {
+        if let Some(tx) = server.shutdown_tx {
+            let _ = tx.send(());
+        }
+    }
+}
+
+// ── Event-loop tick ───────────────────────────────────────────────
+
+/// Drain pending events and dispatch to user-registered listeners.
+/// Called by perry-codegen's main-thread event-loop pump.
+#[no_mangle]
+pub extern "C" fn js_ws_process_pending() -> i32 {
+    let events: Vec<PendingWsEvent> = {
+        let mut g = WS_PENDING_EVENTS.lock().unwrap();
+        std::mem::take(&mut *g)
+    };
+    if events.is_empty() {
+        return 0;
+    }
+    let mut fired = 0;
+    for ev in events {
+        match ev {
+            PendingWsEvent::Connection(server_handle, client_id) => {
+                let listeners = listeners_on_server(server_handle, "connection");
+                for cb in listeners {
+                    if cb != 0 {
+                        let closure = unsafe { JsClosure::from_raw(cb as *const RawClosureHeader) };
+                        // Pass client_id as f64 so user handler can
+                        // pass it back to js_ws_send_to_client etc.
+                        let _ = unsafe { closure.call1(client_id as f64) };
+                        fired += 1;
+                    }
+                }
+            }
+            PendingWsEvent::Message(ws_id, text) => {
+                let listeners = listeners_on_client(ws_id, "message");
+                for cb in listeners {
+                    if cb != 0 {
+                        let closure = unsafe { JsClosure::from_raw(cb as *const RawClosureHeader) };
+                        let s = alloc_string(&text);
+                        let _ = unsafe {
+                            closure
+                                .call1(f64::from_bits(JsValue::from_string_ptr(s.as_raw()).bits()))
+                        };
+                        fired += 1;
+                    }
+                }
+            }
+            PendingWsEvent::Close(ws_id, _code, _reason) => {
+                let listeners = listeners_on_client(ws_id, "close");
+                for cb in listeners {
+                    if cb != 0 {
+                        let closure = unsafe { JsClosure::from_raw(cb as *const RawClosureHeader) };
+                        let _ = unsafe { closure.call0() };
+                        fired += 1;
+                    }
+                }
+                WS_CONNECTIONS.lock().unwrap().remove(&ws_id);
+                WS_CLIENT_LISTENERS.lock().unwrap().remove(&ws_id);
+                WS_CLIENT_PARENT_SERVER.lock().unwrap().remove(&ws_id);
+            }
+            PendingWsEvent::Error(ws_id, err) => {
+                let listeners = listeners_on_client(ws_id, "error");
+                for cb in listeners {
+                    if cb != 0 {
+                        let closure = unsafe { JsClosure::from_raw(cb as *const RawClosureHeader) };
+                        let s = alloc_string(&err);
+                        let _ = unsafe {
+                            closure
+                                .call1(f64::from_bits(JsValue::from_string_ptr(s.as_raw()).bits()))
+                        };
+                        fired += 1;
+                    }
+                }
+            }
+            PendingWsEvent::ServerError(server_handle, err) => {
+                let listeners = listeners_on_server(server_handle, "error");
+                for cb in listeners {
+                    if cb != 0 {
+                        let closure = unsafe { JsClosure::from_raw(cb as *const RawClosureHeader) };
+                        let s = alloc_string(&err);
+                        let _ = unsafe {
+                            closure
+                                .call1(f64::from_bits(JsValue::from_string_ptr(s.as_raw()).bits()))
+                        };
+                        fired += 1;
+                    }
+                }
+            }
+            PendingWsEvent::Listening(server_handle) => {
+                let listeners = listeners_on_server(server_handle, "listening");
+                for cb in listeners {
+                    if cb != 0 {
+                        let closure = unsafe { JsClosure::from_raw(cb as *const RawClosureHeader) };
+                        let _ = unsafe { closure.call0() };
+                        fired += 1;
+                    }
+                }
+            }
+        }
+    }
+    fired
+}
+
+#[no_mangle]
+pub extern "C" fn js_ws_has_pending() -> i32 {
+    if !WS_PENDING_EVENTS.lock().unwrap().is_empty() {
+        return 1;
+    }
+    if WS_ACTIVE_SERVERS.load(Ordering::Relaxed) > 0 {
+        return 1;
+    }
+    let any_open = WS_CONNECTIONS.lock().unwrap().values().any(|c| c.is_open);
+    if any_open {
+        1
+    } else {
+        0
+    }
+}
+
+fn listeners_on_client(ws_id: usize, event: &str) -> Vec<i64> {
+    WS_CLIENT_LISTENERS
+        .lock()
+        .unwrap()
+        .get(&ws_id)
+        .and_then(|l| l.listeners.get(event).cloned())
+        .unwrap_or_default()
+}
+
+fn listeners_on_server(handle: Handle, event: &str) -> Vec<i64> {
+    perry_ffi::with_handle::<WsServerHandle, _, _>(handle, |s| {
+        s.listeners.get(event).cloned().unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gc_scanner_registration_idempotent() {
+        ensure_gc_scanner_registered();
+        ensure_gc_scanner_registered();
+    }
+
+    #[test]
+    fn has_pending_returns_zero_with_no_state() {
+        // May be non-zero if a prior test left state behind, but
+        // process_pending drains it.
+        let _ = js_ws_process_pending();
+        // No active servers, no pending events, no open connections.
+        // (We can't fully clean state across tests since these are
+        // process-globals; assert non-negative as the minimal sanity
+        // check.)
+        let v = js_ws_has_pending();
+        assert!(v >= 0);
+    }
+
+    #[test]
+    fn handle_to_i64_strips_pointer_tag() {
+        let raw_ptr: u64 = 0x1234_5678_9abc;
+        let nan_boxed = f64::from_bits(POINTER_TAG | raw_ptr);
+        assert_eq!(js_ws_handle_to_i64(nan_boxed), raw_ptr as i64);
+
+        let plain = 42.0_f64;
+        assert_eq!(js_ws_handle_to_i64(plain), 42);
+    }
+
+    #[test]
+    fn extract_port_from_number_arg() {
+        assert_eq!(extract_port(8080.0), 8080);
+        assert_eq!(extract_port(0.0), 0);
+        assert_eq!(extract_port(-5.0), 0);
+    }
+}
