@@ -344,19 +344,32 @@ where
         // instead — the future will drive itself to completion
         // via `await` chains while we return immediately.
         //
-        // Black-box defeat for the LTO pass: a release build
-        // without this guard call gets perry-ext-net's tokio
-        // CONTEXT statics dead-stripped, and the subsequent
-        // `Handle::current()` panics with "there is no reactor
-        // running" — even though perry-stdlib's tokio has the
-        // runtime entered. Forcing the result through
-        // `std::hint::black_box` keeps the static alive.
-        let _check = std::hint::black_box(tokio::runtime::Handle::try_current());
+        // Defeat the LTO pass that dead-strips perry-ext-net's
+        // private copy of tokio's CONTEXT statics. Without these
+        // touches, the subsequent `Handle::current()` panics with
+        // "there is no reactor running" — even though perry-stdlib's
+        // tokio runtime has the context entered. Two layers:
+        //   - eprintln of try_current() debug result keeps the
+        //     CONTEXT static referenced AT MULTIPLE call sites.
+        //   - black_box on the spawn handle prevents the
+        //     compiler from collapsing this whole closure into a
+        //     no-op when nothing later uses the result.
+        let try_h = tokio::runtime::Handle::try_current();
+        std::hint::black_box(&try_h);
+        if try_h.is_err() {
+            eprintln!(
+                "[perry-ext-net] BUG: spawn_socket_runner Handle::try_current returned Err — \
+                 LTO has likely dead-stripped tokio's CONTEXT statics. This will panic on \
+                 the subsequent `Handle::current()`."
+            );
+        }
         let handle = tokio::runtime::Handle::current();
         let fut = fut_factory();
         // Detach via JoinHandle drop — tokio doesn't cancel on drop
         // (only on explicit `abort()`), unlike `JoinSet` semantics.
-        let _ = handle.spawn(fut);
+        let jh = handle.spawn(fut);
+        std::hint::black_box(&jh);
+        std::mem::forget(jh);
     });
 }
 
@@ -875,6 +888,29 @@ pub extern "C" fn js_net_has_pending() -> i32 {
 /// perry-stdlib export so codegen's `HANDLE_METHOD_DISPATCH` keeps working.
 pub fn is_net_socket_handle(handle: i64) -> bool {
     statics::sockets().lock().unwrap().contains_key(&handle)
+}
+
+/// `extern "C"` form of `is_net_socket_handle` — used by
+/// perry-stdlib's `common::dispatch::dispatch_handle_method`
+/// (HANDLE_METHOD_DISPATCH) when bundled-net is stripped and
+/// the well-known flip routes 'net' to perry-ext-net. Returns
+/// 1 for a registered socket handle, 0 otherwise.
+///
+/// Closes the issue #91 regression: Map.get'd / struct-field /
+/// wrapper-function receivers where codegen lost the static type
+/// fall through to `js_native_call_method` →
+/// `dispatch_handle_method` → this query → `dispatch_net_socket`.
+/// Without the extern, the dispatch tower's `is_net_socket_handle`
+/// reference resolved to perry-stdlib's no-op stub (compiled-out
+/// when bundled-net is off) and Map-retrieved sockets silently
+/// dispatched to undefined.
+#[no_mangle]
+pub extern "C" fn js_ext_net_is_socket_handle(handle: i64) -> i32 {
+    if is_net_socket_handle(handle) {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
