@@ -115,6 +115,13 @@ pub fn compute_object_cache_key(
     h.field("gh", if opts.needs_geisterhand { "1" } else { "0" });
     h.field("jsrt", if opts.needs_js_runtime { "1" } else { "0" });
     h.field("gh_port", &opts.geisterhand_port.to_string());
+    // Fast-math flag flips per-instruction `reassoc + contract` emission
+    // in `perry-codegen`, which produces different LLVM IR (and therefore
+    // different `.o` bytes) for the same TS source. Without this in the
+    // key, `perry --fast-math foo.ts` after a default `perry foo.ts` would
+    // serve the previously-cached non-fast-math `.o` and the flag would
+    // appear to do nothing.
+    h.field("fmath", if opts.fast_math { "1" } else { "0" });
 
     // Ordered lists (order is significant — topological init, FFI index,
     // bundled extension order, etc.)
@@ -499,6 +506,7 @@ mod object_cache_tests {
             bundled_extensions: Vec::new(),
             native_library_functions: Vec::new(),
             i18n_table: None,
+            fast_math: false,
         }
     }
 
@@ -554,6 +562,23 @@ mod object_cache_tests {
         assert_ne!(
             compute_object_cache_key(&a, 1, "0.5.156"),
             compute_object_cache_key(&b, 1, "0.5.156")
+        );
+    }
+
+    #[test]
+    fn key_changes_with_fast_math_flag() {
+        // Without this guard, `perry --fast-math foo.ts` after a default
+        // build would silently serve the cached non-fast-math `.o` and
+        // the flag would appear to do nothing. Bug found during the
+        // original fast-math investigation; gate it here so a future
+        // refactor can't reintroduce it.
+        let mut a = empty_opts();
+        let mut b = empty_opts();
+        a.fast_math = false;
+        b.fast_math = true;
+        assert_ne!(
+            compute_object_cache_key(&a, 1, "0.5.569"),
+            compute_object_cache_key(&b, 1, "0.5.569")
         );
     }
 

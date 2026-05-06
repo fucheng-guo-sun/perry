@@ -88,16 +88,22 @@ pub fn compile_ll_to_object(ll_text: &str, target_triple: Option<&str>) -> Resul
         } else {
             vec![]
         })
-        // We want LLVM to reassociate f64 ops (for loop unrolling)
-        // but NOT to assume NaN never occurs — Perry's NaN-boxing uses
-        // NaN bit patterns for ALL non-number values (strings, objects,
-        // null, undefined, booleans). -ffast-math includes
-        // -ffinite-math-only which tells LLVM NaN never happens,
-        // causing it to replace NaN-boxed constants (TAG_NULL, etc.)
-        // with 0.0. Use individual flags instead:
-        // -funsafe-math-optimizations: allows reassociation + reciprocal
-        // -fno-math-errno: skip errno checks on math functions
-        // (Do NOT use -ffinite-math-only or -ffast-math)
+        // We pass `-fno-math-errno` to skip errno set/check around libm
+        // calls (no observable JS semantics depend on errno). Everything
+        // else is left at clang defaults: precise FP, no reassociation,
+        // no FMA contraction beyond the C/C++ within-statement default.
+        //
+        // (We do NOT pass `-ffast-math` or `-funsafe-math-optimizations`
+        // here. -ffast-math implies -ffinite-math-only which tells LLVM
+        // NaN never happens — catastrophic for NaN-boxing. Tried at
+        // commit 083ce16, reverted in b5a8c83f.)
+        //
+        // Per-instruction fast-math flags (`reassoc + contract`) are
+        // emitted by perry-codegen `block.rs` only when the build is
+        // run with `--fast-math` (or `PERRY_FAST_MATH=1`, or
+        // `perry.fastMath: true` in package.json). Default OFF — see
+        // `docs/src/cli/fast-math.md` for the behavior contract and
+        // benchmark numbers.
         .arg("-fno-math-errno");
     // Native CPU tuning: only when building for the host. The flag name
     // (`-mcpu` vs `-march`) is also arch-specific, and clang rejects

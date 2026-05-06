@@ -155,6 +155,19 @@ pub struct CompileOptions {
     /// every translated string. The tuple shape is unchanged for the
     /// downstream destructure at `compile_module` line 597.
     pub i18n_table: Option<std::sync::Arc<(Vec<String>, usize, usize, Vec<String>, usize)>>,
+
+    /// When true, emit LLVM `reassoc contract` per-instruction fast-math
+    /// flags on every f64 op. Off by default — Perry produces bit-exact
+    /// output with Node's f64 arithmetic. On (via `--fast-math`,
+    /// `PERRY_FAST_MATH=1`, or `perry.fastMath: true` in package.json),
+    /// the optimizer is permitted to reassociate FP chains and fuse
+    /// multiply-adds, producing observable 1-ULP differences from Node
+    /// in ~30% of randomly-generated FP programs in exchange for a ~7x
+    /// speedup on tight `sum += constant` loops (and ~0% on most other
+    /// FP-heavy code, per benchmarks). See `docs/src/cli/fast-math.md`.
+    /// Drives `crate::block::FAST_MATH`; included in the object cache
+    /// key so toggling it invalidates cached `.o` bytes.
+    pub fast_math: bool,
 }
 
 /// A class imported from another native module.
@@ -238,6 +251,11 @@ pub(crate) struct CrossModuleCtx {
     /// over from a prior call's return state — dereferencing `options.session`
     /// inside the dispatch chain silently hung. See issue #235.
     pub method_param_counts: std::collections::HashMap<(String, String), usize>,
+    /// Per-`(class, method)` rest-parameter flag. Set when the method's
+    /// final declared param is `...rest` — drives the call-site
+    /// rest-bundling in `lower_call.rs`'s static / dynamic dispatch
+    /// arms. Closes #484. Sparse map (only `true` entries stored).
+    pub method_has_rest: std::collections::HashMap<(String, String), bool>,
     /// Per-class `keys_array` global variable names. Each entry maps
     /// `class_name → @perry_class_keys_<modprefix>__<sanitized_class>`.
     /// Built once in `compile_module` (one entry per class — local
@@ -310,6 +328,13 @@ pub(crate) struct CrossModuleCtx {
 
 /// Compile a Perry HIR module to an object file via LLVM IR.
 pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> {
+    // Set the per-instruction FMF emission mode for this build before
+    // any LlBlock methods run. All modules in a single program build
+    // share the same `fast_math` setting, so writing the AtomicBool
+    // here (potentially redundantly when rayon parallelizes module
+    // compiles) is safe — every store writes the same value.
+    crate::block::FAST_MATH.store(opts.fast_math, std::sync::atomic::Ordering::Relaxed);
+
     let triple = opts.target.clone().unwrap_or_else(default_target_triple);
 
     let mut llmod = LlModule::new(&triple);
@@ -755,9 +780,24 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // dereferenced for `options.session` silently hung in the dispatch chain.
     let mut method_param_counts: std::collections::HashMap<(String, String), usize> =
         std::collections::HashMap::new();
+    // Parallel `(class, method) → has_rest_param` map. Closes #484:
+    // `b.with(1)` on `class Builder { with<T>(id, ...args: T extends void ?
+    // [] | [void] : [T]): this }` left `args` as undefined because the
+    // codegen-side dispatch table didn't track the rest bit, so the
+    // call site never bundled trailing args (zero, in that test) into
+    // a `js_array_alloc(0)` rest array. The conditional rest type is
+    // a red herring — even `...args: any[]` would have shown the same
+    // signature gap, except for the freestanding-function path which
+    // already had `func_signatures.has_rest`.
+    let mut method_has_rest: std::collections::HashMap<(String, String), bool> =
+        std::collections::HashMap::new();
     for cls in &hir.classes {
         for m in &cls.methods {
             method_param_counts.insert((cls.name.clone(), m.name.clone()), m.params.len());
+            let has_rest = m.params.iter().any(|p| p.is_rest);
+            if has_rest {
+                method_has_rest.insert((cls.name.clone(), m.name.clone()), true);
+            }
         }
     }
     for ic in &opts.imported_classes {
@@ -783,6 +823,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         imported_func_param_counts: opts.imported_func_param_counts,
         imported_func_return_types: opts.imported_func_return_types,
         method_param_counts,
+        method_has_rest,
         class_keys_globals: class_keys_globals_map,
         imported_class_ctors: opts
             .imported_classes
@@ -2390,6 +2431,7 @@ fn compile_function(
         type_aliases: &cross_module.type_aliases,
         imported_func_param_counts: &cross_module.imported_func_param_counts,
         method_param_counts: &cross_module.method_param_counts,
+        method_has_rest: &cross_module.method_has_rest,
         imported_func_return_types: &cross_module.imported_func_return_types,
         ffi_signatures: &cross_module.ffi_signatures,
         try_depth: 0,
@@ -2762,6 +2804,7 @@ fn compile_closure(
         type_aliases: &cross_module.type_aliases,
         imported_func_param_counts: &cross_module.imported_func_param_counts,
         method_param_counts: &cross_module.method_param_counts,
+        method_has_rest: &cross_module.method_has_rest,
         imported_func_return_types: &cross_module.imported_func_return_types,
         ffi_signatures: &cross_module.ffi_signatures,
         try_depth: 0,
@@ -2979,6 +3022,7 @@ fn compile_method(
         type_aliases: &cross_module.type_aliases,
         imported_func_param_counts: &cross_module.imported_func_param_counts,
         method_param_counts: &cross_module.method_param_counts,
+        method_has_rest: &cross_module.method_has_rest,
         imported_func_return_types: &cross_module.imported_func_return_types,
         ffi_signatures: &cross_module.ffi_signatures,
         try_depth: 0,
@@ -3268,6 +3312,7 @@ fn compile_module_entry(
             type_aliases: &cross_module.type_aliases,
             imported_func_param_counts: &cross_module.imported_func_param_counts,
             method_param_counts: &cross_module.method_param_counts,
+            method_has_rest: &cross_module.method_has_rest,
             imported_func_return_types: &cross_module.imported_func_return_types,
             ffi_signatures: &cross_module.ffi_signatures,
             try_depth: 0,
@@ -3514,6 +3559,7 @@ fn compile_module_entry(
             type_aliases: &cross_module.type_aliases,
             imported_func_param_counts: &cross_module.imported_func_param_counts,
             method_param_counts: &cross_module.method_param_counts,
+            method_has_rest: &cross_module.method_has_rest,
             imported_func_return_types: &cross_module.imported_func_return_types,
             ffi_signatures: &cross_module.ffi_signatures,
             try_depth: 0,
@@ -3987,6 +4033,7 @@ fn compile_static_method(
         type_aliases: &cross_module.type_aliases,
         imported_func_param_counts: &cross_module.imported_func_param_counts,
         method_param_counts: &cross_module.method_param_counts,
+        method_has_rest: &cross_module.method_has_rest,
         imported_func_return_types: &cross_module.imported_func_return_types,
         ffi_signatures: &cross_module.ffi_signatures,
         try_depth: 0,

@@ -299,6 +299,16 @@ pub(crate) struct FnCtx<'a> {
     /// with TAG_UNDEFINED so the callee's default-param desugaring fires
     /// correctly. See issue #235 for the failure mode.
     pub method_param_counts: &'a std::collections::HashMap<(String, String), usize>,
+    /// Closes #484: per-`(class, method)` rest-parameter flag. Used by
+    /// `lower_call.rs`'s static / dynamic dispatch arms to bundle
+    /// trailing args into a `js_array_alloc(n)` rest array when the
+    /// method's last declared param is `...rest`. Without this
+    /// information the call site emits `args.len()` doubles and the
+    /// callee's `args` ends up as raw uninitialized stack-slot
+    /// junk — `args.length` then panics with "Cannot read properties
+    /// of undefined". Same shape as `func_signatures`'s `has_rest`
+    /// bit but for class-method dispatch.
+    pub method_has_rest: &'a std::collections::HashMap<(String, String), bool>,
     /// FFI manifest: `name → (param_kinds, return_kind)` from
     /// `package.json` `nativeLibrary.functions`. Each kind is a string like
     /// `"i64"`, `"f64"`, `"void"`, `"string"`, or `"ptr"`. `lower_call` consults
