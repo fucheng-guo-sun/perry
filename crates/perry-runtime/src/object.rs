@@ -4202,12 +4202,21 @@ pub unsafe extern "C" fn js_native_call_method(
                         }
                     };
                     let needle = arg_str(0);
+                    // Integer-returning methods MUST return raw `i as f64` (not
+                    // NaN-boxed INT32_TAG) — otherwise downstream comparisons
+                    // like `idx < url.length` fail because NaN-boxed values
+                    // are NaN and any comparison with NaN returns false. The
+                    // typed string-method path in `lower_string_method.rs`
+                    // uses `sitofp` (signed-int-to-float) for the same reason.
+                    // Boolean-returning methods stay as TAG_TRUE/FALSE since
+                    // codegen's `js_is_truthy` and explicit `=== true/false`
+                    // checks both unbox these tags correctly (and Node's
+                    // `Array.prototype.includes` etc. on plain values
+                    // already use this representation).
                     if needle.is_null() {
                         // Match Node: `s.indexOf(undefined)` → -1, includes → false.
                         return match method_name {
-                            "indexOf" | "lastIndexOf" => {
-                                f64::from_bits(JSValue::int32(-1).bits())
-                            }
+                            "indexOf" | "lastIndexOf" => -1.0_f64,
                             "includes" | "startsWith" | "endsWith" => {
                                 f64::from_bits(JSValue::bool(false).bits())
                             }
@@ -4218,8 +4227,7 @@ pub unsafe extern "C" fn js_native_call_method(
                     return match method_name {
                         "indexOf" => {
                             let from = if args_len >= 2 { arg_i32(1) } else { 0 };
-                            let i = crate::string::js_string_index_of_from(s_ptr, needle, from);
-                            f64::from_bits(JSValue::int32(i).bits())
+                            crate::string::js_string_index_of_from(s_ptr, needle, from) as f64
                         }
                         "includes" => {
                             let from = if args_len >= 2 { arg_i32(1) } else { 0 };
@@ -4227,8 +4235,7 @@ pub unsafe extern "C" fn js_native_call_method(
                             f64::from_bits(JSValue::bool(i >= 0).bits())
                         }
                         "lastIndexOf" => {
-                            let i = crate::string::js_string_last_index_of(s_ptr, needle);
-                            f64::from_bits(JSValue::int32(i).bits())
+                            crate::string::js_string_last_index_of(s_ptr, needle) as f64
                         }
                         "startsWith" => {
                             let at = if args_len >= 2 { arg_i32(1) } else { 0 };

@@ -209,6 +209,7 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     // (e.g. `obj.cb(a, b, c)` where `cb` is a class field holding an
     // arrow with `...rest`). Called once per closure body at module init.
     module.declare_function("js_register_closure_rest", VOID, &[PTR, I32]);
+    module.declare_function("js_register_closure_arity", VOID, &[PTR, I32]);
     module.declare_function("js_closure_call0", DOUBLE, &[I64]);
     module.declare_function("js_closure_call1", DOUBLE, &[I64, DOUBLE]);
     module.declare_function("js_closure_call2", DOUBLE, &[I64, DOUBLE, DOUBLE]);

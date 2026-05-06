@@ -1615,6 +1615,23 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         })
         .collect();
 
+    // Refs #421: declared param count for every non-rest closure. Used by
+    // `emit_string_pool` to register each closure's arity so the runtime can
+    // pad missing args with TAG_UNDEFINED in the dynamic-dispatch path.
+    let closure_arities: HashMap<u32, u32> = closures
+        .iter()
+        .filter_map(|(fid, expr)| {
+            if let perry_hir::Expr::Closure { params, .. } = expr {
+                if params.iter().any(|p| p.is_rest) {
+                    return None;
+                }
+                Some((*fid, params.len() as u32))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Integer specialization: for pure numeric recursive functions (like
     // fibonacci), emit an i64 variant that uses integer registers and
     // integer arithmetic. The f64 wrapper calls fptosi → i64_fn → sitofp.
@@ -2241,6 +2258,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         &class_ids,
         &class_table,
         &closure_rest_params,
+        &closure_arities,
     );
 
     // Emit the buffer alias-scope metadata once per module, covering every
@@ -3766,6 +3784,7 @@ fn emit_string_pool(
     class_ids: &HashMap<String, u32>,
     classes: &HashMap<String, &perry_hir::Class>,
     closure_rest_params: &HashMap<u32, usize>,
+    closure_arities: &HashMap<u32, u32>,
 ) {
     for entry in strings.iter() {
         // .rodata bytes — `[N+1 x i8]` because we include the null terminator.
@@ -3987,6 +4006,26 @@ fn emit_string_pool(
         blk.call_void(
             "js_register_closure_rest",
             &[(PTR, &func_ref), (I32, &fixed_arity.to_string())],
+        );
+    }
+
+    // Refs #421: register every non-rest closure's declared param count so
+    // `js_native_call_value` can pad missing trailing args with TAG_UNDEFINED
+    // when a closure stored as a class field is invoked method-style on an
+    // any-typed receiver with fewer args than declared. Rest-bearing closures
+    // are already handled by the closure-rest registry above (which pads
+    // internally via `dispatch_rest_bundled`).
+    let mut sorted_arities: Vec<(u32, u32)> = closure_arities
+        .iter()
+        .map(|(fid, arity)| (*fid, *arity))
+        .collect();
+    sorted_arities.sort_unstable();
+    for (fid, arity) in sorted_arities {
+        let closure_sym = format!("perry_closure_{}__{}", module_prefix, fid);
+        let func_ref = format!("@{}", closure_sym);
+        blk.call_void(
+            "js_register_closure_arity",
+            &[(PTR, &func_ref), (I32, &arity.to_string())],
         );
     }
 
