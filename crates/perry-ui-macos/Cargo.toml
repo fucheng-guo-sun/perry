@@ -58,4 +58,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSPopUpButton",
     "NSImage",
     "NSImageView",
+    # System tray icon (issue #490)
+    "NSStatusBar",
+    "NSStatusItem",
+    "NSStatusBarButton",
 ] }

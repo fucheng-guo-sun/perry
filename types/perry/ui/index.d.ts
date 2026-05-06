@@ -623,6 +623,49 @@ export function menuBarAddMenu(menuBar: Widget, title: string, menu: Widget): vo
 export function menuBarAttach(menuBar: Widget): void;
 
 // ---------------------------------------------------------------------------
+// Tray icon (system tray / menu-bar / notification area) — issue #490
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a system tray icon. Returns a tray handle.
+ *
+ * Per-platform behaviour:
+ * - **macOS**: `NSStatusItem` in the menu bar (top-right of the screen).
+ * - **Windows**: `Shell_NotifyIconW` in the notification area (bottom-right).
+ * - **Linux/GTK4**: `StatusNotifierItem` (KSNI) over D-Bus — works on KDE,
+ *   GNOME-with-extension, XFCE, Plasma. Logs a warning and no-ops on plain
+ *   Wayland sessions without a status notifier host.
+ * - **iOS / tvOS / visionOS / watchOS / Android / HarmonyOS**: no-op stub
+ *   (these platforms have no tray concept).
+ *
+ * `iconPath` is a filesystem path to a PNG (or `.icns` on macOS, `.ico` on
+ * Windows). Pass `""` to use a default placeholder.
+ */
+export function trayCreate(iconPath: string): Widget;
+
+/** Update the tray icon image. */
+export function traySetIcon(tray: Widget, iconPath: string): void;
+
+/** Set the tooltip text shown when the user hovers the icon. */
+export function traySetTooltip(tray: Widget, tooltip: string): void;
+
+/**
+ * Attach a context menu (built with `menuCreate` / `menuAddItem`) to the
+ * tray icon. Right-click — or left-click on macOS — opens the menu.
+ */
+export function trayAttachMenu(tray: Widget, menu: Widget): void;
+
+/**
+ * Register a callback that fires on left-click of the tray icon. On macOS
+ * the click opens the attached menu directly, so this handler is mostly
+ * useful on Windows and Linux for "show the main window" buttons.
+ */
+export function trayOnClick(tray: Widget, callback: () => void): void;
+
+/** Remove the tray icon. */
+export function trayDestroy(tray: Widget): void;
+
+// ---------------------------------------------------------------------------
 // NavigationStack
 // ---------------------------------------------------------------------------
 

@@ -10,6 +10,7 @@ pub mod menu;
 pub mod notifications;
 pub mod state;
 pub mod string_header;
+pub mod tray;
 pub mod widgets;
 
 pub mod screenshot;
@@ -651,6 +652,40 @@ pub extern "C" fn perry_ui_menubar_add_menu(bar_handle: i64, title_ptr: i64, men
 #[no_mangle]
 pub extern "C" fn perry_ui_menubar_attach(bar_handle: i64) {
     menu::menubar_attach(bar_handle);
+}
+
+// =============================================================================
+// Tray icon (issue #490)
+// =============================================================================
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_create(icon_path_ptr: i64) -> i64 {
+    tray::create(icon_path_ptr as *const u8)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_set_icon(tray_handle: i64, icon_path_ptr: i64) {
+    tray::set_icon(tray_handle, icon_path_ptr as *const u8);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_set_tooltip(tray_handle: i64, tooltip_ptr: i64) {
+    tray::set_tooltip(tray_handle, tooltip_ptr as *const u8);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_attach_menu(tray_handle: i64, menu_handle: i64) {
+    tray::attach_menu(tray_handle, menu_handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_on_click(tray_handle: i64, callback: f64) {
+    tray::on_click(tray_handle, callback);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_destroy(tray_handle: i64) {
+    tray::destroy(tray_handle);
 }
 
 /// Open a file dialog. Calls callback with selected path or undefined if cancelled.

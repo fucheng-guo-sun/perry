@@ -188,6 +188,43 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         args: &[],
         ret: ReturnKind::Widget,
     },
+    // ---- Tray icon (issue #490) ----
+    MethodRow {
+        method: "trayCreate",
+        runtime: "perry_ui_tray_create",
+        args: &[ArgKind::Str],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "traySetIcon",
+        runtime: "perry_ui_tray_set_icon",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "traySetTooltip",
+        runtime: "perry_ui_tray_set_tooltip",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "trayAttachMenu",
+        runtime: "perry_ui_tray_attach_menu",
+        args: &[ArgKind::Widget, ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "trayOnClick",
+        runtime: "perry_ui_tray_on_click",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "trayDestroy",
+        runtime: "perry_ui_tray_destroy",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
     // ---- ScrollView ----
     MethodRow {
         method: "scrollviewSetChild",

@@ -22,6 +22,13 @@ gstreamer = "0.23"
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util"] }
+# perry/ui — system tray icon support via the StatusNotifierItem
+# (KSNI / KDE / GNOME-with-extension / XFCE / Plasma / Cinnamon)
+# DBus protocol (#490). Pure-Rust — no native systray library
+# dependency. Linux-only because the SNI protocol IS the Linux
+# tray protocol; macOS / Windows have native equivalents handled
+# in their respective UI crates.
+ksni = { version = "0.3", features = ["tokio"] }
 
 [features]
 geisterhand = []

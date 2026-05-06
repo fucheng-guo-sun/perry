@@ -624,6 +624,23 @@ pub extern "C" fn perry_ui_menubar_attach(bar_handle: i64) {
     menu::menubar_attach(bar_handle);
 }
 
+// =============================================================================
+// Tray icon (issue #490) — no-op on tvOS (no system tray concept).
+// =============================================================================
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_create(_icon_path_ptr: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_set_icon(_tray_handle: i64, _icon_path_ptr: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_set_tooltip(_tray_handle: i64, _tooltip_ptr: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_attach_menu(_tray_handle: i64, _menu_handle: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_on_click(_tray_handle: i64, _callback: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tray_destroy(_tray_handle: i64) {}
+
 /// Remove all items from a menu.
 #[no_mangle]
 pub extern "C" fn perry_ui_menu_clear(menu_handle: i64) {

@@ -1158,6 +1158,13 @@ unsafe extern "system" fn wnd_proc(
             do_layout();
             LRESULT(0)
         }
+        x if x == crate::tray::WM_PERRY_TRAY => {
+            // Tray icon callback (issue #490). lparam carries the actual mouse
+            // event (WM_LBUTTONUP / WM_RBUTTONUP); wparam's low word is the
+            // tray's `uID`. The tray module handles dispatch + popup menu.
+            crate::tray::handle_callback_message(wparam.0, lparam.0);
+            LRESULT(0)
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
