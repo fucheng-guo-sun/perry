@@ -657,20 +657,39 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         let mut packed_keys = String::new();
         let mut total_field_count = c.fields.len() as u32;
         let mut parent_chain: Vec<String> = Vec::new();
+        // Resolver that finds a parent's `(fields_vec, next_extends)` either
+        // in the local HIR or, failing that, in the imported_class_stubs
+        // built earlier in this fn (which carry `ic.field_names` as full
+        // ClassField records). Issue #485: without falling back to imports,
+        // a local subclass that extends an IMPORTED parent ends up with a
+        // packed_keys / total_field_count that omits the parent's fields,
+        // so instances get allocated with too-few inline slots and the
+        // parent's cross-module ctor's `this.field = ...` writes overflow
+        // the object header — making `f.field` read undefined on the
+        // importing side even though the parent's ctor "ran".
+        let lookup_class_chain_link = |name: &str| -> Option<(Vec<perry_hir::ClassField>, Option<String>)> {
+            if let Some(parent) = hir.classes.iter().find(|cls| cls.name == name) {
+                return Some((parent.fields.clone(), parent.extends_name.clone()));
+            }
+            if let Some(stub) = imported_class_stubs.iter().find(|cls| cls.name == name) {
+                return Some((stub.fields.clone(), stub.extends_name.clone()));
+            }
+            None
+        };
         let mut p = c.extends_name.clone();
         while let Some(parent_name) = p {
-            if let Some(parent) = hir.classes.iter().find(|cls| cls.name == parent_name) {
+            if let Some((parent_fields, parent_extends)) = lookup_class_chain_link(&parent_name) {
                 parent_chain.push(parent_name.clone());
-                total_field_count += parent.fields.len() as u32;
-                p = parent.extends_name.clone();
+                total_field_count += parent_fields.len() as u32;
+                p = parent_extends;
             } else {
                 break;
             }
         }
         // Walk from deepest ancestor to direct parent.
         for parent_name in parent_chain.iter().rev() {
-            if let Some(parent) = hir.classes.iter().find(|cls| cls.name == *parent_name) {
-                for f in &parent.fields {
+            if let Some((parent_fields, _)) = lookup_class_chain_link(parent_name) {
+                for f in &parent_fields {
                     packed_keys.push_str(&f.name);
                     packed_keys.push('\0');
                 }
@@ -706,11 +725,54 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         llmod.add_internal_global(&global_name, I64, "0");
         class_keys_globals_map.insert(c.name.clone(), global_name.clone());
         let mut packed_keys = String::new();
+        let mut total_field_count = c.fields.len() as u32;
+        // Issue #485: imported subclass stubs also need their parent's
+        // fields prepended to the packed-keys, so allocations on this
+        // importing side reserve enough inline slots for parent +
+        // child. Without this, `new Sub()` in the importing module
+        // allocates 0 slots when Sub has no own fields and the
+        // cross-module ctor's `this.parentField = v` writes past the
+        // object header — exactly the same shape collapse the local-
+        // class branch above guards against.
+        let mut parent_chain: Vec<String> = Vec::new();
+        let mut p = c.extends_name.clone();
+        while let Some(parent_name) = p {
+            if let Some(parent) =
+                imported_class_stubs.iter().find(|cls| cls.name == parent_name)
+            {
+                parent_chain.push(parent_name.clone());
+                total_field_count += parent.fields.len() as u32;
+                p = parent.extends_name.clone();
+            } else if let Some(parent) = hir.classes.iter().find(|cls| cls.name == parent_name) {
+                parent_chain.push(parent_name.clone());
+                total_field_count += parent.fields.len() as u32;
+                p = parent.extends_name.clone();
+            } else {
+                break;
+            }
+        }
+        for parent_name in parent_chain.iter().rev() {
+            if let Some(parent) =
+                imported_class_stubs.iter().find(|cls| cls.name == *parent_name)
+            {
+                for f in &parent.fields {
+                    packed_keys.push_str(&f.name);
+                    packed_keys.push('\0');
+                }
+            } else if let Some(parent) =
+                hir.classes.iter().find(|cls| cls.name == *parent_name)
+            {
+                for f in &parent.fields {
+                    packed_keys.push_str(&f.name);
+                    packed_keys.push('\0');
+                }
+            }
+        }
         for f in &c.fields {
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
         }
-        class_keys_init_data.push((global_name, packed_keys, c.fields.len() as u32));
+        class_keys_init_data.push((global_name, packed_keys, total_field_count));
     }
 
     // Derive __platform__ number from target triple:

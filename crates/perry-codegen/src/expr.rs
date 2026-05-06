@@ -4271,6 +4271,41 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
 
                 ctx.locals = saved_locals;
                 ctx.local_types = saved_local_types;
+            } else if let Some((ctor_name, param_count)) =
+                ctx.imported_class_ctors.get(&parent_name).cloned()
+            {
+                // Issue #485: parent class is imported (stub with `constructor: None`)
+                // and has no inlineable body in this module. Call the cross-module
+                // standalone constructor symbol — it exists per-class in the source
+                // module (compile_method emits `<source_prefix>__<class>_constructor`)
+                // and itself runs `apply_field_initializers_recursive_pub`, so calling
+                // it from `super()` inherits the parent's arrow-class-field
+                // initializers (e.g. HonoBase's `request = (...) => ...`,
+                // `fetch = (...) => ...`) onto `this`. Without this branch, perry
+                // silently drops `super(...)` for imported parents and the subclass
+                // ends up with only its own fields, breaking hono-base inheritance.
+                let undef_lit = double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
+                while lowered_args.len() < param_count {
+                    lowered_args.push(undef_lit.clone());
+                }
+                let this_slot = ctx.this_stack.last().cloned();
+                let this_box = if let Some(slot) = this_slot {
+                    ctx.block().load(DOUBLE, &slot)
+                } else {
+                    undef_lit.clone()
+                };
+                let ctor_param_types: Vec<crate::types::LlvmType> = std::iter::once(DOUBLE)
+                    .chain(lowered_args.iter().map(|_| DOUBLE))
+                    .collect();
+                let mut ctor_args: Vec<(crate::types::LlvmType, &str)> =
+                    Vec::with_capacity(1 + lowered_args.len());
+                ctor_args.push((DOUBLE, &this_box));
+                for la in &lowered_args {
+                    ctor_args.push((DOUBLE, la.as_str()));
+                }
+                ctx.pending_declares
+                    .push((ctor_name.clone(), crate::types::VOID, ctor_param_types));
+                ctx.block().call_void(&ctor_name, &ctor_args);
             }
 
             // super() evaluates to undefined in JS.

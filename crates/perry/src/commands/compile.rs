@@ -1363,6 +1363,17 @@ pub fn run_with_parse_cache(
                     println!("      [{}] {:?}", i, stmt);
                 }
             }
+            println!("Classes: {}", hir_module.classes.len());
+            for cls in &hir_module.classes {
+                println!(
+                    "  - {} (exported: {}, fields: {}, methods: {}, constructor: {})",
+                    cls.name,
+                    cls.is_exported,
+                    cls.fields.len(),
+                    cls.methods.len(),
+                    cls.constructor.is_some()
+                );
+            }
             println!("Init statements: {}", hir_module.init.len());
             for (i, stmt) in hir_module.init.iter().enumerate() {
                 println!("  [{}] {:?}", i, stmt);
@@ -1726,6 +1737,31 @@ pub fn run_with_parse_cache(
         for class in &hir_module.classes {
             if class.is_exported {
                 exported_classes.insert((path_str.clone(), class.name.clone()), class);
+            }
+        }
+        // Issue #485: handle `export { Local as Exported }` for classes.
+        // Without this, a module that declares `class Hono extends … {}` and
+        // re-exports it via `export { Hono as HonoBase }` registers under
+        // (path, "Hono") only — but the importer's lookup uses the imported
+        // (alias) side: `(path, "HonoBase")`. The miss makes
+        // `imported_classes` skip the entry entirely, so the importing module
+        // gets no class metadata for HonoBase, no constructor symbol via
+        // `imported_class_ctors`, and `super(...)` from a subclass (e.g. the
+        // Hono class in hono.js extends HonoBase) silently no-ops — the
+        // subclass's `app.fetch` / `app.get` / etc. arrow-class-field methods
+        // are never installed onto `this`.
+        for export in &hir_module.exports {
+            if let perry_hir::Export::Named { local, exported } = export {
+                if local == exported {
+                    continue;
+                }
+                if let Some(class) =
+                    hir_module.classes.iter().find(|c| c.name == *local && c.is_exported)
+                {
+                    exported_classes
+                        .entry((path_str.clone(), exported.clone()))
+                        .or_insert(class);
+                }
             }
         }
     }
@@ -3217,12 +3253,26 @@ pub fn run_with_parse_cache(
                 let ic_idx = imported_classes.iter().position(|ic| ic.name == name);
                 let Some(idx) = ic_idx else { continue };
                 let field_types_clone = imported_classes[idx].field_types.clone();
-                for ty in &field_types_clone {
-                    let ref_name = match ty {
-                        perry_types::Type::Named(n) => n.clone(),
-                        perry_types::Type::Generic { base, .. } => base.clone(),
-                        _ => continue,
-                    };
+                let parent_name_clone = imported_classes[idx].parent_name.clone();
+                // Issue #485: include the class's parent in the transitive
+                // closure too. Without this, `import { Sub } from 'pkg'` where
+                // `Sub extends Base` (and Base lives in another file inside
+                // the same package) leaves Base unimported on this side, so
+                // codegen builds Sub's per-class shape with zero parent-field
+                // contribution. Sub instances allocate too few inline slots
+                // and the parent's cross-module ctor's `this.field = …`
+                // writes overflow the object header — `f.field` reads
+                // undefined on the importing side.
+                let parent_refs: Vec<String> = parent_name_clone.into_iter().collect();
+                for ref_name in field_types_clone
+                    .iter()
+                    .filter_map(|ty| match ty {
+                        perry_types::Type::Named(n) => Some(n.clone()),
+                        perry_types::Type::Generic { base, .. } => Some(base.clone()),
+                        _ => None,
+                    })
+                    .chain(parent_refs.into_iter())
+                {
                     if visited_imports.contains(&ref_name) {
                         continue;
                     }
@@ -3232,9 +3282,25 @@ pub fn run_with_parse_cache(
                         .map(|((path, _), class)| (path.clone(), *class));
                     if let Some((src_path, class)) = found {
                         let class_prefix = compute_module_prefix(&src_path, &ctx.project_root);
+                        // Issue #485: when the child's `parent_name` doesn't
+                        // match the source class's `class.name` (because the
+                        // parent was imported via a rename — `import { Base
+                        // as HBase } from './base.js'` or
+                        // `export { Base as HBase }` on the source side),
+                        // expose the stub under the alias the child knows.
+                        // Without this, codegen's `imported_class_stubs`
+                        // would register the parent under "Base" while the
+                        // child's `extends_name` is "HBase", and the
+                        // packed-keys / slot-index walker fails to traverse
+                        // the chain.
+                        let alias = if ref_name != class.name {
+                            Some(ref_name.clone())
+                        } else {
+                            None
+                        };
                         imported_classes.push(perry_codegen::ImportedClass {
                             name: class.name.clone(),
-                            local_alias: None,
+                            local_alias: alias,
                             source_prefix: class_prefix,
                             constructor_param_count: class
                                 .constructor
