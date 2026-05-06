@@ -1628,9 +1628,9 @@ pub extern "C" fn perry_system_audio_set_output_filename(filename_ptr: i64) {
             return "";
         }
         unsafe {
-            let header = ptr as *const crate::string_header::StringHeader;
+            let header = ptr as *const perry_runtime::string::StringHeader;
             let len = (*header).byte_len as usize;
-            let data = ptr.add(std::mem::size_of::<crate::string_header::StringHeader>());
+            let data = ptr.add(std::mem::size_of::<perry_runtime::string::StringHeader>());
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
         }
     }

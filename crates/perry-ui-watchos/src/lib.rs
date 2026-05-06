@@ -961,11 +961,18 @@ pub extern "C" fn perry_system_get_device_model() -> i64 {
     0
 }
 #[no_mangle]
-pub extern "C" fn perry_system_audio_set_output_filename(_filename_ptr: i64) {}
+pub extern "C" fn perry_system_audio_set_output_filename(filename_ptr: i64) {
+    let filename = str_from_header(filename_ptr as *const u8);
+    audio::set_output_filename(filename);
+}
 #[no_mangle]
-pub extern "C" fn perry_system_audio_start_recording() {}
+pub extern "C" fn perry_system_audio_start_recording() {
+    audio::start_recording();
+}
 #[no_mangle]
-pub extern "C" fn perry_system_audio_stop_recording() {}
+pub extern "C" fn perry_system_audio_stop_recording() {
+    audio::stop_recording();
+}
 #[no_mangle]
 pub extern "C" fn perry_system_is_dark_mode() -> i64 {
     0
