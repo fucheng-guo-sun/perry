@@ -387,6 +387,15 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // the HIR has unique names per module.
     let mut class_table: HashMap<String, &perry_hir::Class> =
         hir.classes.iter().map(|c| (c.name.clone(), c)).collect();
+    // Refs #486: also register class-expression self-binding aliases so
+    // `lookup_new("_X")` and other code paths that consult `class_table` by
+    // name find the underlying class. See `class_ids` block below for the
+    // companion id-map registration and the broader rationale.
+    for c in &hir.classes {
+        for alias in &c.aliases {
+            class_table.entry(alias.clone()).or_insert(c);
+        }
+    }
 
     // Class id assignment: each user class gets an integer id
     // starting at 1 (0 is reserved for anonymous object literals).
@@ -403,6 +412,16 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // importing modules check against in `e instanceof C`.
     let mut class_ids: HashMap<String, u32> =
         hir.classes.iter().map(|c| (c.name.clone(), c.id)).collect();
+    // Refs #486: register class-expression self-binding aliases (e.g. the
+    // `_X` in `var X = class _X { ... }`) so `new _X()` from inside the class
+    // body resolves to the same class id as `new X()` would. Without this,
+    // lower_new("_X") falls into the placeholder path and stamps class_id=0
+    // on the new instance, breaking method dispatch.
+    for c in &hir.classes {
+        for alias in &c.aliases {
+            class_ids.entry(alias.clone()).or_insert(c.id);
+        }
+    }
 
     // Enum lookup table for `Expr::EnumMember`. Each (enum_name,
     // member_name) maps to its EnumValue, which the codegen lowers
@@ -519,6 +538,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             static_fields: Vec::new(),
             static_methods: Vec::new(),
             is_exported: false,
+            aliases: Vec::new(),
         };
         imported_class_stubs.push(stub);
     }
@@ -723,6 +743,17 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             packed_keys.push('\0');
         }
         class_keys_globals_map.insert(c.name.clone(), global_name.clone());
+        // Refs #486: register self-binding aliases (`_X` from `var X = class _X`)
+        // so the inline-alloc fast path at lower_call.rs:2532 finds the keys
+        // global when the class is referenced by its inner name. Without this,
+        // `new _X()` would fall into the slower `js_object_alloc_class_with_keys`
+        // path that builds packed_keys at the call site — which works but is
+        // unnecessarily slow.
+        for alias in &c.aliases {
+            class_keys_globals_map
+                .entry(alias.clone())
+                .or_insert_with(|| global_name.clone());
+        }
         class_keys_init_data.push((global_name, packed_keys, total_field_count));
     }
     // Same naming convention for IMPORTED class stubs. Pack the field
@@ -1356,10 +1387,20 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // symbol name matches where the method was actually compiled.
         let class_prefix = imported_class_prefix.get(&c.name).unwrap_or(&module_prefix);
         for m in &c.methods {
+            let llvm_name = scoped_method_name(class_prefix, &c.name, &m.name);
             method_names.insert(
                 (c.name.clone(), m.name.clone()),
-                scoped_method_name(class_prefix, &c.name, &m.name),
+                llvm_name.clone(),
             );
+            // Refs #486: also register self-binding aliases (e.g. `_X` from
+            // `var X = class _X`) so static method dispatch on a receiver typed
+            // as `_X` (the inner name) finds the same LLVM symbol as the
+            // canonical `X`-typed dispatch.
+            for alias in &c.aliases {
+                method_names
+                    .entry((alias.clone(), m.name.clone()))
+                    .or_insert_with(|| llvm_name.clone());
+            }
         }
         // Constructor: register as a method so compile_method can find it.
         // Emitted for ALL classes (even without explicit constructors)
@@ -4217,6 +4258,16 @@ fn emit_string_pool(
     // ensures all init functions run before main.
     let mut method_triples: Vec<(u32, String, String, u32)> = Vec::new();
     for (class_name, class) in classes.iter() {
+        // Refs #486: skip alias keys (class_table now contains both the
+        // canonical name and self-binding aliases like `_X` from
+        // `var X = class _X`); the symbol emission iterates by canonical
+        // class.name. Without this skip the alias key generates bogus
+        // symbol names like `perry_method_<mod>___X__method` (extra
+        // leading underscore from sanitize("_X")) that don't resolve at
+        // link time.
+        if *class_name != class.name {
+            continue;
+        }
         let cid = match class_ids.get(class_name) {
             Some(&c) if c != 0 => c,
             _ => continue,
@@ -4286,6 +4337,10 @@ fn emit_string_pool(
     // `undefined`.
     let mut getter_pairs: Vec<(u32, String, String)> = Vec::new();
     for (class_name, class) in classes.iter() {
+        // Refs #486: skip alias keys (see method-emission loop above).
+        if *class_name != class.name {
+            continue;
+        }
         let cid = match class_ids.get(class_name).copied() {
             Some(c) if c != 0 => c,
             _ => continue,

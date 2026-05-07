@@ -74,6 +74,19 @@ pub(crate) fn nanbox_bigint_inline(blk: &mut LlBlock, ptr_i64: &str) -> String {
 fn try_static_class_name<'a>(callee: &'a Expr, ctx: &FnCtx<'_>) -> Option<&'a str> {
     match callee {
         Expr::ClassRef(name) => Some(name.as_str()),
+        // Refs #486: `new _X()` where `_X` is the inner self-binding name of
+        // a class expression (e.g. `var X = class _X { ... new _X() ... }`)
+        // lowers to `NewDynamic { callee: ExternFuncRef("_X") }` because the
+        // inner name isn't a real outer-scope identifier — the HIR walker
+        // can't resolve it to anything but an unknown extern. Recognize it
+        // here by checking the per-module class_ids table, which codegen has
+        // already populated with the inner-name → same-id mapping at
+        // compile_module entry. Without this, the call falls through to the
+        // empty-object placeholder path with class_id=0 and method dispatch
+        // breaks on the resulting instance.
+        Expr::ExternFuncRef { name, .. } if ctx.class_ids.contains_key(name) => {
+            Some(name.as_str())
+        }
         Expr::PropertyGet { object, property } => {
             if matches!(object.as_ref(), Expr::GlobalGet(_)) {
                 return Some(property.as_str());

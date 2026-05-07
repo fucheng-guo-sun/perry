@@ -1453,6 +1453,7 @@ pub(crate) fn lower_class_decl(
         static_fields,
         static_methods,
         is_exported,
+        aliases: Vec::new(),
     })
 }
 
@@ -1696,6 +1697,7 @@ pub(crate) fn lower_class_from_ast(
         static_fields,
         static_methods,
         is_exported,
+        aliases: Vec::new(),
     })
 }
 

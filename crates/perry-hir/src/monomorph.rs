@@ -2009,6 +2009,7 @@ pub fn specialize_class(class: &Class, type_args: &[Type], new_id: ClassId) -> C
         static_fields: class.static_fields.clone(),
         static_methods: class.static_methods.clone(),
         is_exported: class.is_exported,
+        aliases: class.aliases.clone(),
     }
 }
 

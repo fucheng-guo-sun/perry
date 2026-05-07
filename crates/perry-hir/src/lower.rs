@@ -923,6 +923,7 @@ impl LoweringContext {
             static_fields: Vec::new(),
             static_methods: Vec::new(),
             is_exported: false,
+            aliases: Vec::new(),
         });
 
         self.anon_shape_classes
@@ -4497,6 +4498,7 @@ fn lower_namespace_as_class(
                 static_fields: Vec::new(),
                 static_methods: Vec::new(),
                 is_exported,
+                aliases: Vec::new(),
             });
         }
     };
@@ -4676,6 +4678,7 @@ fn lower_namespace_as_class(
         static_fields: Vec::new(),
         static_methods,
         is_exported,
+        aliases: Vec::new(),
     })
 }
 
@@ -5180,14 +5183,42 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                                 // that would conflict, and the binding name isn't
                                 // already a class (no shadow).
                                 if ctx.lookup_class(&bind_name).is_none() {
+                                    // Refs #486: `var X = class _X { ... new _X() ... }` —
+                                    // the inner self-binding name `_X` references the same
+                                    // class as the outer binding `X`. Pre-register the inner
+                                    // name as a class alias BEFORE lowering the class body
+                                    // so any `Ident("_X")` inside method bodies (e.g.
+                                    // `new _X()`) lowers to `Expr::ClassRef("_X")` instead
+                                    // of falling through to ExternFuncRef. The HIR `new`
+                                    // ident path keys off `lookup_class`. Hono's
+                                    // `var Node = class _Node { ... }` and similar npm dist
+                                    // shapes hit this.
+                                    let inner_name_for_register = class_expr
+                                        .ident
+                                        .as_ref()
+                                        .map(|i| i.sym.to_string())
+                                        .filter(|n| n != &bind_name);
+                                    if let Some(ref inner_name) = inner_name_for_register {
+                                        // Allocate the class id eagerly so we can register
+                                        // it under both names; lower_class_from_ast picks up
+                                        // the same id via lookup_class(bind_name).
+                                        let class_id = ctx.fresh_class();
+                                        ctx.register_class(bind_name.clone(), class_id);
+                                        ctx.register_class(inner_name.clone(), class_id);
+                                        ctx.class_expr_aliases
+                                            .insert(inner_name.clone(), bind_name.clone());
+                                    }
                                     // Lower the class with the binding name so
                                     // `new BindName(...)` works unchanged.
-                                    let lowered_class = crate::lower_decl::lower_class_from_ast(
+                                    let mut lowered_class = crate::lower_decl::lower_class_from_ast(
                                         ctx,
                                         &class_expr.class,
                                         &bind_name,
                                         false,
                                     )?;
+                                    if let Some(inner_name) = inner_name_for_register {
+                                        lowered_class.aliases.push(inner_name);
+                                    }
                                     push_class_dedup(module, lowered_class);
                                     // Register the alias so `new X()` → `new X()`
                                     // (no-op lookup, but marks the binding as a class).

@@ -549,6 +549,10 @@ pub struct Class {
     pub static_methods: Vec<Function>,
     /// Whether this class is exported from the module
     pub is_exported: bool,
+    /// Self-binding aliases for class-expression bindings:
+    /// `var X = class _X { ... new _X() ... }` records `_X` here so codegen
+    /// can look it up as the same class. Refs #486.
+    pub aliases: Vec<String>,
 }
 
 /// A class field

@@ -985,12 +985,29 @@ fn collect_nonexported_class_names(module: &Module) -> HashSet<String> {
     let mut set = HashSet::new();
     for c in &module.classes {
         if c.is_exported {
+            // Refs #486: even for an EXPORTED class, the inner self-binding
+            // alias from `var X = class _X` (recorded in `c.aliases`) is NOT
+            // exported under the inner name — only the outer name `X` is
+            // visible cross-module. A method body that constructs `new _X()`
+            // (e.g. hono `Node.insert` doing `new _Node()` inside an exported
+            // `class Node = class _Node`) can't be inlined into a destination
+            // module, because the destination only sees `Node` in its
+            // `imported_classes` table — `_Node` falls into the
+            // `js_object_alloc(0, 0)` placeholder path. Add the alias names
+            // to the rejection set so methods that reference them stay as
+            // real cross-module method calls.
+            for alias in &c.aliases {
+                set.insert(alias.clone());
+            }
             continue;
         }
         if c.name.starts_with("__AnonShape_") {
             continue;
         }
         set.insert(c.name.clone());
+        for alias in &c.aliases {
+            set.insert(alias.clone());
+        }
     }
     set
 }
