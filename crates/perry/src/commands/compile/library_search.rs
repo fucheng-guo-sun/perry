@@ -22,6 +22,7 @@
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use crate::OutputFormat;
 
@@ -29,6 +30,71 @@ use crate::OutputFormat;
 // the compile.rs orchestrator. Pull them in as private parent-module
 // items so the search helpers below can reach them.
 use super::{find_perry_workspace_root, rust_target_triple};
+
+/// Resolve the host's Rust target triple by parsing `rustc -vV`.
+///
+/// Cached per-process via `OnceLock`. Returns `None` if `rustc` is missing
+/// or its `-vV` output doesn't include a `host:` line — callers should
+/// fall back to the simple `target/release/` layout in that case.
+///
+/// Used by `locate_native_lib_artifact` (refs #564) to probe
+/// `target/<host-triple>/release/` when cargo writes artifacts under the
+/// triple-prefixed directory because something pinned a default target
+/// (`[build] target = "..."` in `.cargo/config.toml`,
+/// `CARGO_BUILD_TARGET`, `rust-toolchain.toml` `targets = [...]`).
+pub(crate) fn host_target_triple() -> Option<&'static str> {
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let vv = Command::new("rustc").arg("-vV").output().ok()?;
+            if !vv.status.success() {
+                return None;
+            }
+            let vv_str = String::from_utf8_lossy(&vv.stdout);
+            let host_line = vv_str.lines().find(|l| l.starts_with("host:"))?;
+            let triple = host_line.trim_start_matches("host:").trim().to_string();
+            if triple.is_empty() {
+                None
+            } else {
+                Some(triple)
+            }
+        })
+        .as_deref()
+}
+
+/// Locate a `perry.nativeLibrary` crate's build artifact, probing both
+/// the bare `target/release/` and the triple-prefixed
+/// `target/<triple>/release/` layouts.
+///
+/// Cargo writes to `target/<triple>/release/` (not `target/release/`)
+/// whenever something pins a default target — `[build] target = "..."`
+/// in `.cargo/config.toml`, `CARGO_BUILD_TARGET`, or a
+/// `rust-toolchain.toml` with `targets = [...]`. These setups are common
+/// on Linux dev machines and CI, so a native build (no `--target` passed
+/// to perry) needs to find the artifact in either location.
+///
+/// When a `--target` was passed, prefer the cross-target triple subdir
+/// but fall through to `target/release/` defensively. When no target was
+/// passed, prefer `target/release/` and fall through to the host triple.
+///
+/// Refs #564.
+pub(crate) fn locate_native_lib_artifact(
+    crate_target_dir: &Path,
+    target: Option<&str>,
+    lib_name: &str,
+) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(triple) = rust_target_triple(target) {
+        candidates.push(crate_target_dir.join(triple).join("release").join(lib_name));
+        candidates.push(crate_target_dir.join("release").join(lib_name));
+    } else {
+        candidates.push(crate_target_dir.join("release").join(lib_name));
+        if let Some(host) = host_target_triple() {
+            candidates.push(crate_target_dir.join(host).join("release").join(lib_name));
+        }
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
 
 pub(super) fn find_llvm_tool(tool_name: &str) -> Option<PathBuf> {
     // 1. Env var override (e.g. PERRY_LLD_LINK for "lld-link")
@@ -1119,6 +1185,55 @@ mod apple_lib_name_tests {
             apple_class_lib_name("libperry_stdlib.a", "_visionos", false),
             "libperry_stdlib_visionos.a"
         );
+    }
+}
+
+#[cfg(test)]
+mod native_lib_artifact_tests {
+    use super::{host_target_triple, locate_native_lib_artifact};
+    use std::fs;
+
+    /// Refs #564 — when cargo writes to `target/<triple>/release/`
+    /// (because something pinned a default target), perry must still
+    /// find the artifact for a native build (no `--target` passed).
+    #[test]
+    fn locates_artifact_under_host_triple_dir_for_native_build() {
+        let host = match host_target_triple() {
+            Some(h) => h,
+            None => return, // rustc unavailable in this test env — skip.
+        };
+
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let target_dir = tmp.path().join("target");
+        let triple_dir = target_dir.join(host).join("release");
+        fs::create_dir_all(&triple_dir).expect("mkdir triple/release");
+        let lib_path = triple_dir.join("libfoo.a");
+        fs::write(&lib_path, b"fake archive").expect("write lib");
+
+        let found = locate_native_lib_artifact(&target_dir, None, "libfoo.a");
+        assert_eq!(found.as_deref(), Some(lib_path.as_path()));
+    }
+
+    #[test]
+    fn prefers_bare_release_dir_when_present() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let target_dir = tmp.path().join("target");
+        let release_dir = target_dir.join("release");
+        fs::create_dir_all(&release_dir).expect("mkdir release");
+        let lib_path = release_dir.join("libfoo.a");
+        fs::write(&lib_path, b"fake archive").expect("write lib");
+
+        let found = locate_native_lib_artifact(&target_dir, None, "libfoo.a");
+        assert_eq!(found.as_deref(), Some(lib_path.as_path()));
+    }
+
+    #[test]
+    fn returns_none_when_artifact_missing() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let target_dir = tmp.path().join("target");
+        fs::create_dir_all(&target_dir).expect("mkdir target");
+        let found = locate_native_lib_artifact(&target_dir, None, "libfoo.a");
+        assert!(found.is_none());
     }
 }
 

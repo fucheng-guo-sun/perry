@@ -1699,20 +1699,18 @@ pub(super) fn build_and_run_link(
             // Find and link the static library
             let lib_name = &target_config.lib_name;
             if !lib_name.is_empty() {
-                // Search in the crate's target directory first, then standard paths
-                let mut lib_path = None;
+                // Search in the crate's target directory first, then standard paths.
+                // Refs #564: probe both `target/release/` and
+                // `target/<host-triple>/release/` for native builds — cargo
+                // writes to the triple-prefixed dir when a default target is
+                // pinned via `[build] target` / `CARGO_BUILD_TARGET` /
+                // `rust-toolchain.toml`.
                 let crate_target_dir = target_config.crate_path.join("target");
-                if let Some(triple) = rust_target_triple(target) {
-                    let candidate = crate_target_dir.join(triple).join("release").join(lib_name);
-                    if candidate.exists() {
-                        lib_path = Some(candidate);
-                    }
-                } else {
-                    let candidate = crate_target_dir.join("release").join(lib_name);
-                    if candidate.exists() {
-                        lib_path = Some(candidate);
-                    }
-                }
+                let lib_path = super::library_search::locate_native_lib_artifact(
+                    &crate_target_dir,
+                    target,
+                    lib_name,
+                );
 
                 if let Some(lib) = lib_path {
                     // For shared libraries (.so) on Android, use -L/-l so the linker

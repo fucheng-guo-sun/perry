@@ -186,22 +186,37 @@ fn run_cargo_build(root: &Path) -> Result<()> {
 
 fn locate_staticlib(root: &Path, crate_name: &str) -> Result<PathBuf> {
     let lib_basename = crate_name.replace('-', "_");
-    let target_dir = root.join("target").join("release");
-    let candidates = [
-        target_dir.join(format!("lib{}.a", lib_basename)),
-        target_dir.join(format!("{}.lib", lib_basename)),
-        target_dir.join(format!("lib{}.dylib", lib_basename)),
-        target_dir.join(format!("lib{}.so", lib_basename)),
+    // Refs #564: probe both `target/release/` and
+    // `target/<host-triple>/release/`. Cargo writes to the
+    // triple-prefixed dir whenever a default target is pinned via
+    // `[build] target = "..."` (project / workspace / `~/.cargo/config.toml`)
+    // or `CARGO_BUILD_TARGET` — common on Linux dev setups.
+    let target_root = root.join("target");
+    let mut search_dirs = vec![target_root.join("release")];
+    if let Some(host) = crate::commands::compile::host_target_triple() {
+        search_dirs.push(target_root.join(host).join("release"));
+    }
+    let lib_filenames = [
+        format!("lib{}.a", lib_basename),
+        format!("{}.lib", lib_basename),
+        format!("lib{}.dylib", lib_basename),
+        format!("lib{}.so", lib_basename),
     ];
-    for c in &candidates {
-        if c.exists() {
-            return Ok(c.clone());
+    for dir in &search_dirs {
+        for filename in &lib_filenames {
+            let candidate = dir.join(filename);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
         }
     }
     Err(anyhow!(
-        "no staticlib/dylib found at {} (looked for: {:?})",
-        target_dir.display(),
-        candidates.iter().map(|p| p.file_name()).collect::<Vec<_>>()
+        "no staticlib/dylib found in {:?} (looked for: {:?})",
+        search_dirs
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>(),
+        lib_filenames
     ))
 }
 

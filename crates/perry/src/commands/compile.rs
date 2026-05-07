@@ -27,6 +27,7 @@ mod targets;
 pub mod well_known;
 use collect_modules::collect_modules;
 pub use library_search::find_library;
+pub(crate) use library_search::{host_target_triple, locate_native_lib_artifact};
 use library_search::{
     build_geisterhand_libs, find_geisterhand_library, find_geisterhand_runtime,
     find_geisterhand_ui, find_harmonyos_sdk, find_jsruntime_library, find_lld_link, find_llvm_tool,
@@ -4337,14 +4338,16 @@ pub fn run_with_parse_cache(
                 if let Some(ref target_config) = native_lib.target_config {
                     let lib_name = &target_config.lib_name;
                     if lib_name.ends_with(".so") {
+                        // Refs #564: use the shared probe helper so we also
+                        // catch `target/<host-triple>/release/` when cargo
+                        // is configured with a pinned default target.
                         let crate_target_dir = target_config.crate_path.join("target");
-                        let candidate = if let Some(triple) = rust_target_triple(target.as_deref())
-                        {
-                            crate_target_dir.join(triple).join("release").join(lib_name)
-                        } else {
-                            crate_target_dir.join("release").join(lib_name)
-                        };
-                        if candidate.exists() {
+                        let candidate = library_search::locate_native_lib_artifact(
+                            &crate_target_dir,
+                            target.as_deref(),
+                            lib_name,
+                        );
+                        if let Some(candidate) = candidate {
                             let dest = output_dir.join(lib_name);
                             if let Err(e) = fs::copy(&candidate, &dest) {
                                 eprintln!(
