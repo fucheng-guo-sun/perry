@@ -909,6 +909,187 @@ pub extern "C" fn perry_ui_image_set_tint(handle: i64, r: f64, g: f64, b: f64, a
 
 /// Create a Picker (dropdown). style: 0=dropdown, 1=segmented. Returns widget handle.
 #[no_mangle]
+// Issue #478 — Rich text editor — real iOS impl via UITextView.
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_create(w: f64, h: f64, cb: f64) -> i64 {
+    widgets::rich_text::create(w, h, cb)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_string(h: i64, t: i64) {
+    widgets::rich_text::set_string(h, t as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_string(h: i64) -> f64 {
+    widgets::rich_text::get_string(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_html(h: i64, html: i64) -> i64 {
+    widgets::rich_text::set_html(h, html as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_html(h: i64) -> f64 {
+    widgets::rich_text::get_html(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_bold(h: i64) {
+    widgets::rich_text::toggle_bold(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_italic(h: i64) {
+    widgets::rich_text::toggle_italic(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_underline(h: i64) {
+    widgets::rich_text::toggle_underline(h)
+}
+
+// Issue #516 — PdfView (iOS) — real impl via PDFView.
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_create(w: f64, h: f64) -> i64 {
+    widgets::pdf_view::create(w, h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_load_file(h: i64, p: i64) -> i64 {
+    if widgets::pdf_view::load_file(h, p as *const u8) { 1 } else { 0 }
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_page_count(h: i64) -> i64 {
+    widgets::pdf_view::get_page_count(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_go_to_page(h: i64, i: i64) {
+    widgets::pdf_view::go_to_page(h, i)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_current_page(h: i64) -> i64 {
+    widgets::pdf_view::get_current_page(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_set_scale(h: i64, s: f64) {
+    widgets::pdf_view::set_scale(h, s)
+}
+
+// Issue #517 — MapView (iOS) — real impl via MKMapView.
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_create(w: f64, h: f64) -> i64 {
+    widgets::map_view::create(w, h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_region(h: i64, lat: f64, lon: f64, ls: f64, os: f64) {
+    widgets::map_view::set_region(h, lat, lon, ls, os)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_add_pin(h: i64, lat: f64, lon: f64, t: i64) {
+    widgets::map_view::add_pin(h, lat, lon, t as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_clear_pins(h: i64) {
+    widgets::map_view::clear_pins(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_map_type(h: i64, s: i64) {
+    widgets::map_view::set_map_type(h, s)
+}
+
+// Issue #477 — Command palette stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_register(_id: i64, _l: i64, _s: i64, _cb: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_unregister(_id: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_clear() {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_show() {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_hide() {}
+
+// Issue #474 — Chart (iOS) — UIView subclass + CoreGraphics drawRect:.
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_create(kind: i64, w: f64, h: f64) -> i64 {
+    widgets::chart::create(kind, w, h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_add_data_point(h: i64, l: i64, v: f64) {
+    widgets::chart::add_data_point(h, l as *const u8, v)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_clear_data(h: i64) {
+    widgets::chart::clear_data(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_set_title(h: i64, t: i64) {
+    widgets::chart::set_title(h, t as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_reload(h: i64) {
+    widgets::chart::reload(h)
+}
+
+// Issue #481 — Calendar widget — real iOS impl via UIDatePicker.inline.
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_create(year: i64, month: i64, on_change: f64) -> i64 {
+    widgets::calendar::create(year, month, on_change)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_set_date(h: i64, y: i64, m: i64, d: i64) {
+    widgets::calendar::set_date(h, y, m, d)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_get_selected_date(h: i64) -> f64 {
+    widgets::calendar::get_selected_date(h)
+}
+
+// Issue #473 — table sort/filter/multi-select stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_on_sort_change(_h: i64, _cb: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_allows_multiple_selection(_h: i64, _allow: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_rows_count(_h: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_row_at(_h: i64, _n: i64) -> i64 { -1 }
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_filter_text(_h: i64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_filter_text(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+/// TreeView stubs (issue #480). iOS — `UITableView` with hierarchical
+/// indentation is the future custom layout. Stubs return 0 / undefined
+/// so user code compiles cross-platform.
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_create(_id_ptr: i64, _label_ptr: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_add_child(_parent: i64, _child: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_create(_root: i64, _on_select: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_expand_all(_handle: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_collapse_all(_handle: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_get_selected_id(_handle: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+/// Combobox stub (issue #475). Falls back to a plain text field on
+/// platforms without a native filterable-dropdown primitive — the
+/// suggestion list is dropped silently.
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_create(initial_ptr: i64, on_change: f64) -> i64 {
+    perry_ui_textfield_create(initial_ptr, on_change)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_add_item(_handle: i64, _value_ptr: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_set_value(_handle: i64, _value_ptr: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_get_value(_handle: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+#[no_mangle]
 pub extern "C" fn perry_ui_picker_create(label_ptr: i64, on_change: f64, style: i64) -> i64 {
     widgets::picker::create(label_ptr as *const u8, on_change, style)
 }
@@ -994,6 +1175,16 @@ pub extern "C" fn perry_ui_zstack_create() -> i64 {
 #[no_mangle]
 pub extern "C" fn perry_ui_widget_set_enabled(handle: i64, enabled: i64) {
     widgets::set_enabled(handle, enabled != 0);
+}
+
+/// Rich tooltip stub (issue #479). iOS has no hover; long-press
+/// presentation is a future iteration.
+#[no_mangle]
+pub extern "C" fn perry_ui_widget_set_rich_tooltip(
+    _handle: i64,
+    _content_handle: i64,
+    _hover_delay_ms: f64,
+) {
 }
 
 /// Set a tooltip on a widget.

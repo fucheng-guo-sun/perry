@@ -1064,6 +1064,272 @@ pub extern "C" fn perry_ui_picker_get_selected(handle: i64) -> i64 {
     widgets::picker::get_selected(handle)
 }
 
+/// Create a Combobox (NSComboBox: editable filterable text field +
+/// dropdown). `initial_ptr` is the starting text (may be null/empty);
+/// `on_change` fires with the current string value when the user picks
+/// from the dropdown or commits free text via Return. See issue #475.
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_create(initial_ptr: i64, on_change: f64) -> i64 {
+    widgets::combobox::create(initial_ptr as *const u8, on_change)
+}
+
+/// Append a suggestion item to a Combobox dropdown.
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_add_item(handle: i64, value_ptr: i64) {
+    widgets::combobox::add_item(handle, value_ptr as *const u8);
+}
+
+/// Replace the editable text content of a Combobox.
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_set_value(handle: i64, value_ptr: i64) {
+    widgets::combobox::set_value(handle, value_ptr as *const u8);
+}
+
+/// Get the current editable text content of a Combobox as a NaN-boxed
+/// string (STRING_TAG-tagged f64).
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_get_value(handle: i64) -> f64 {
+    widgets::combobox::get_value(handle)
+}
+
+// ---- Rich text editor (issue #478) ----
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_create(width: f64, height: f64, on_change: f64) -> i64 {
+    widgets::rich_text::create(width, height, on_change)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_string(handle: i64, text_ptr: i64) {
+    widgets::rich_text::set_string(handle, text_ptr as *const u8);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_string(handle: i64) -> f64 {
+    widgets::rich_text::get_string(handle)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_html(handle: i64, html_ptr: i64) -> i64 {
+    widgets::rich_text::set_html(handle, html_ptr as *const u8)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_html(handle: i64) -> f64 {
+    widgets::rich_text::get_html(handle)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_bold(handle: i64) {
+    widgets::rich_text::toggle_bold(handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_italic(handle: i64) {
+    widgets::rich_text::toggle_italic(handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_underline(handle: i64) {
+    widgets::rich_text::toggle_underline(handle);
+}
+
+// ---- PdfView (issue #516) ----
+
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_create(width: f64, height: f64) -> i64 {
+    widgets::pdf_view::create(width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_load_file(handle: i64, path_ptr: i64) -> i64 {
+    if widgets::pdf_view::load_file(handle, path_ptr as *const u8) {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_page_count(handle: i64) -> i64 {
+    widgets::pdf_view::get_page_count(handle)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_go_to_page(handle: i64, page_index: i64) {
+    widgets::pdf_view::go_to_page(handle, page_index);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_current_page(handle: i64) -> i64 {
+    widgets::pdf_view::get_current_page(handle)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_set_scale(handle: i64, scale: f64) {
+    widgets::pdf_view::set_scale(handle, scale);
+}
+
+// ---- MapView (issue #517) ----
+
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_create(width: f64, height: f64) -> i64 {
+    widgets::map_view::create(width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_region(
+    handle: i64,
+    lat: f64,
+    lon: f64,
+    lat_span: f64,
+    lon_span: f64,
+) {
+    widgets::map_view::set_region(handle, lat, lon, lat_span, lon_span);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_add_pin(
+    handle: i64,
+    lat: f64,
+    lon: f64,
+    title_ptr: i64,
+) {
+    widgets::map_view::add_pin(handle, lat, lon, title_ptr as *const u8);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_clear_pins(handle: i64) {
+    widgets::map_view::clear_pins(handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_map_type(handle: i64, style: i64) {
+    widgets::map_view::set_map_type(handle, style);
+}
+
+// ---- Command palette (issue #477) ----
+
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_register(
+    id_ptr: i64,
+    label_ptr: i64,
+    subtitle_ptr: i64,
+    on_run: f64,
+) {
+    widgets::command_palette::register(
+        id_ptr as *const u8,
+        label_ptr as *const u8,
+        subtitle_ptr as *const u8,
+        on_run,
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_unregister(id_ptr: i64) {
+    widgets::command_palette::unregister(id_ptr as *const u8);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_clear() {
+    widgets::command_palette::clear();
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_show() {
+    widgets::command_palette::show();
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_hide() {
+    widgets::command_palette::hide();
+}
+
+// ---- Chart (issue #474) ----
+
+/// Create a Chart widget. `kind` is 0=line, 1=bar, 2=pie.
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_create(kind: i64, width: f64, height: f64) -> i64 {
+    widgets::chart::create(kind, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_add_data_point(handle: i64, label_ptr: i64, value: f64) {
+    widgets::chart::add_data_point(handle, label_ptr as *const u8, value);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_clear_data(handle: i64) {
+    widgets::chart::clear_data(handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_set_title(handle: i64, title_ptr: i64) {
+    widgets::chart::set_title(handle, title_ptr as *const u8);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_reload(handle: i64) {
+    widgets::chart::reload(handle);
+}
+
+// ---- Calendar (issue #481) ----
+
+/// Create an `NSDatePicker` calendar in graphical month-grid mode.
+/// `year` and `month` are 1-based; pass <=0 / out-of-range to default
+/// to 2026-01. `on_change` fires with the selected date as `yyyy-MM-dd`.
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_create(year: i64, month: i64, on_change: f64) -> i64 {
+    widgets::calendar::create(year, month, on_change)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_set_date(handle: i64, year: i64, month: i64, day: i64) {
+    widgets::calendar::set_date(handle, year, month, day);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_get_selected_date(handle: i64) -> f64 {
+    widgets::calendar::get_selected_date(handle)
+}
+
+// ---- TreeView (issue #480) ----
+
+/// Register a tree node with `id` and `label`. Standalone — wire into
+/// a topology via `treeNodeAddChild`, then mount via `TreeView`.
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_create(id_ptr: i64, label_ptr: i64) -> i64 {
+    widgets::tree_view::node_create(id_ptr as *const u8, label_ptr as *const u8)
+}
+
+/// Append `child` as the last child of `parent`.
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_add_child(parent: i64, child: i64) {
+    widgets::tree_view::node_add_child(parent, child);
+}
+
+/// Mount the `root_node` topology in an `NSOutlineView`. `on_select`
+/// is invoked with the picked node's `id` when selection changes.
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_create(root_node: i64, on_select: f64) -> i64 {
+    widgets::tree_view::create(root_node, on_select)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_expand_all(handle: i64) {
+    widgets::tree_view::expand_all(handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_collapse_all(handle: i64) {
+    widgets::tree_view::collapse_all(handle);
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_get_selected_id(handle: i64) -> f64 {
+    widgets::tree_view::get_selected_id(handle)
+}
+
 /// Create a Form container. Returns widget handle.
 #[no_mangle]
 pub extern "C" fn perry_ui_form_create() -> i64 {
@@ -1109,6 +1375,23 @@ pub extern "C" fn perry_ui_zstack_create() -> i64 {
 #[no_mangle]
 pub extern "C" fn perry_ui_widget_set_enabled(handle: i64, enabled: i64) {
     widgets::set_enabled(handle, enabled != 0);
+}
+
+/// Set a rich tooltip on a widget. The tooltip body is `content_handle`
+/// (any pre-built widget tree) and is presented in a borderless NSPanel
+/// after `hover_delay_ms` of mouse hover. See issue #479.
+#[no_mangle]
+pub extern "C" fn perry_ui_widget_set_rich_tooltip(
+    handle: i64,
+    content_handle: i64,
+    hover_delay_ms: f64,
+) {
+    let delay = if hover_delay_ms.is_nan() || hover_delay_ms < 0.0 {
+        500
+    } else {
+        hover_delay_ms as u32
+    };
+    widgets::rich_tooltip::set_rich_tooltip(handle, content_handle, delay);
 }
 
 /// Set a tooltip on a widget.
@@ -1875,6 +2158,41 @@ pub extern "C" fn perry_ui_table_set_on_row_select(handle: i64, callback: f64) {
 #[no_mangle]
 pub extern "C" fn perry_ui_table_get_selected_row(handle: i64) -> i64 {
     widgets::table::get_selected_row(handle)
+}
+
+// ---- Issue #473 — sort + filter + multi-select extensions ----
+
+/// Register a `(colIndex, ascending) => void` callback that fires when
+/// the user clicks a column header. Installing the callback also turns
+/// on per-column sort indicators.
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_on_sort_change(handle: i64, callback: f64) {
+    widgets::table::set_on_sort_change(handle, callback)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_allows_multiple_selection(handle: i64, allow: i64) {
+    widgets::table::set_allows_multiple_selection(handle, allow != 0)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_rows_count(handle: i64) -> i64 {
+    widgets::table::get_selected_rows_count(handle)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_row_at(handle: i64, n: i64) -> i64 {
+    widgets::table::get_selected_row_at(handle, n)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_filter_text(handle: i64, text_ptr: i64) {
+    widgets::table::set_filter_text(handle, text_ptr as *const u8)
+}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_filter_text(handle: i64) -> i64 {
+    widgets::table::get_filter_text(handle) as i64
 }
 
 // =============================================================================

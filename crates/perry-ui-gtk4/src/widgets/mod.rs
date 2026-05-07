@@ -1,5 +1,9 @@
 pub mod button;
+pub mod calendar;
 pub mod canvas;
+pub mod chart;
+pub mod combobox;
+pub mod command_palette;
 pub mod divider;
 pub mod form;
 pub mod hstack;
@@ -8,6 +12,8 @@ pub mod lazyvstack;
 pub mod navstack;
 pub mod picker;
 pub mod progressview;
+pub mod rich_text;
+pub mod rich_tooltip;
 pub mod scrollview;
 pub mod securefield;
 pub mod slider;
@@ -19,6 +25,7 @@ pub mod textarea;
 pub mod textfield;
 pub mod toast;
 pub mod toggle;
+pub mod tree_view;
 pub mod vstack;
 pub mod zstack;
 

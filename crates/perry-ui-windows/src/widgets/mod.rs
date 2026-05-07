@@ -2,7 +2,10 @@
 //! Each widget has an HWND (on Windows), a kind, children list, and layout info.
 
 pub mod button;
+pub mod calendar;
 pub mod canvas;
+pub mod chart;
+pub mod combobox;
 pub mod divider;
 pub mod form;
 pub mod hstack;
@@ -19,7 +22,9 @@ pub mod text;
 pub mod text_registry;
 pub mod textfield;
 pub mod toast;
+pub mod rich_text;
 pub mod toggle;
+pub mod tree_view;
 pub mod vstack;
 pub mod zstack;
 
@@ -61,6 +66,11 @@ pub enum WidgetKind {
     NavStack,
     LazyVStack,
     Image,
+    Calendar,
+    Combobox,
+    TreeView,
+    RichText,
+    Chart,
 }
 
 pub struct WidgetEntry {
@@ -694,6 +704,32 @@ pub fn handle_command(control_id: u16, notify_code: u16, _lparam: LPARAM) {
             });
             if matches!(kind, Some(WidgetKind::Picker)) {
                 picker::handle_selchange(handle);
+            } else if matches!(kind, Some(WidgetKind::Combobox)) {
+                combobox::handle_dropdown_pick(handle);
+            }
+        }
+    }
+    // CBN_EDITCHANGE = 5 — fired on every edit-field keystroke for
+    // CBS_DROPDOWN-style comboboxes (the editable variant). Routes to
+    // the combobox `handle_change` so user code sees as-you-type updates
+    // without waiting for a dropdown pick.
+    if notify_code == 5 {
+        let handle = find_handle_by_control_id(control_id);
+        if handle > 0 {
+            let kind = WIDGETS.with(|w| {
+                let widgets = match w.try_borrow() {
+                    Ok(w) => w,
+                    Err(_) => return None,
+                };
+                let idx = (handle - 1) as usize;
+                if idx < widgets.len() {
+                    Some(widgets[idx].kind.clone())
+                } else {
+                    None
+                }
+            });
+            if matches!(kind, Some(WidgetKind::Combobox)) {
+                combobox::handle_change(handle);
             }
         }
     }
@@ -715,6 +751,7 @@ pub fn handle_command(control_id: u16, notify_code: u16, _lparam: LPARAM) {
             });
             match kind {
                 Some(WidgetKind::SecureField) => securefield::handle_change(handle),
+                Some(WidgetKind::RichText) => rich_text::handle_change(handle),
                 _ => textfield::handle_change(handle),
             }
         }
@@ -723,6 +760,41 @@ pub fn handle_command(control_id: u16, notify_code: u16, _lparam: LPARAM) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn handle_command(_control_id: u16, _notify_code: u16, _lparam: isize) {}
+
+/// Dispatcher for WM_NOTIFY messages. lparam is `*mut NMHDR`.
+/// `MCN_SELCHANGE` (-749) → calendar; `TVN_SELCHANGEDW` (-411) → tree.
+#[cfg(target_os = "windows")]
+pub fn handle_notify(lparam: LPARAM) {
+    if lparam.0 == 0 {
+        return;
+    }
+    #[repr(C)]
+    struct Nmhdr {
+        hwnd_from: HWND,
+        id_from: usize,
+        code: i32,
+    }
+    let hdr = unsafe { &*(lparam.0 as *const Nmhdr) };
+    let control_id = hdr.id_from as u16;
+    let handle = find_handle_by_control_id(control_id);
+    if handle <= 0 {
+        return;
+    }
+    let kind = WIDGETS.with(|w| {
+        w.try_borrow().ok().and_then(|widgets| {
+            let idx = (handle - 1) as usize;
+            widgets.get(idx).map(|e| e.kind.clone())
+        })
+    });
+    if hdr.code == -749 && matches!(kind, Some(WidgetKind::Calendar)) {
+        calendar::handle_selection_change(handle);
+    } else if hdr.code == -411 && matches!(kind, Some(WidgetKind::TreeView)) {
+        tree_view::handle_selection_change(handle);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn handle_notify(_lparam: isize) {}
 
 /// Handle WM_HSCROLL/WM_VSCROLL — dispatch to slider or scrollview.
 #[cfg(target_os = "windows")]

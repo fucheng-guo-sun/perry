@@ -482,6 +482,173 @@ export function widgetSetBackgroundGradient(
 export function widgetSetOpacity(widget: Widget, opacity: number): void;
 export function widgetSetEnabled(widget: Widget, enabled: number): void;
 export function widgetSetTooltip(widget: Widget, text: string): void;
+/**
+ * Attach a rich (widget-tree) tooltip to `widget`. The `content` widget
+ * is presented in a borderless floating panel after `hoverDelayMs` of
+ * mouse hover (default 500ms when ≤0). Currently wired on macOS via
+ * `NSPanel` + `NSTrackingArea`; iOS/tvOS/visionOS/watchOS/Android/
+ * Windows/GTK4 stub the FFI so calls compile but produce no overlay
+ * yet — track in issue #479. For plain-text tooltips, prefer
+ * `widgetSetTooltip` so the OS handles VoiceOver / a11y correctly.
+ */
+export function widgetSetRichTooltip(widget: Widget, content: Widget, hoverDelayMs: number): void;
+
+// ---------------------------------------------------------------------------
+// Combobox (issue #475) — editable text field with a filterable dropdown of
+// suggestions. macOS uses NSComboBox with `setCompletes:YES` for as-you-type
+// completion; iOS / tvOS / visionOS / watchOS / Android / Windows / GTK4
+// stub the FFI today (text field falls back to a plain editable field).
+// `onChange` fires with the current string value when the user picks from
+// the dropdown or commits free text via Return.
+// ---------------------------------------------------------------------------
+
+export function Combobox(initial: string, onChange: (value: string) => void): Widget;
+export function comboboxAddItem(widget: Widget, value: string): void;
+export function comboboxSetValue(widget: Widget, value: string): void;
+export function comboboxGetValue(widget: Widget): string;
+
+// ---------------------------------------------------------------------------
+// TreeView / outline view (issue #480) — hierarchical disclosure list. Build
+// the topology bottom-up via TreeNode + treeNodeAddChild, then mount it via
+// TreeView(rootNode, onSelect). macOS uses NSOutlineView; iOS/tvOS/visionOS/
+// watchOS/Android/Windows/GTK4 stub the FFI today (selection always returns
+// undefined). Out of scope this iteration: drag-and-drop, lazy children
+// loader, multi-select, inline rename, icons.
+// ---------------------------------------------------------------------------
+
+export function TreeNode(id: string, label: string): Widget;
+export function treeNodeAddChild(parent: Widget, child: Widget): void;
+export function TreeView(rootNode: Widget, onSelect: (id: string) => void): Widget;
+export function treeViewExpandAll(widget: Widget): void;
+export function treeViewCollapseAll(widget: Widget): void;
+export function treeViewGetSelectedId(widget: Widget): string;
+
+// ---------------------------------------------------------------------------
+// Calendar widget (issue #481, v1) — month-grid date picker. macOS uses
+// NSDatePicker in graphical / clock-and-calendar style, elements limited
+// to year-month-day so the clock face is hidden. iOS / tvOS / visionOS /
+// watchOS / Android / Windows / GTK4 stub the FFI today (returns 0 on
+// create, undefined on get-date).
+//
+// Out of scope v1: event blocks / dot indicators, week / day views,
+// drag-to-create / drag-to-resize, overlap layout. The base widget
+// plumbing lands first; richer modes follow in #481 follow-ups.
+//
+// `onChange` receives the selected date as an ISO `yyyy-MM-dd` string
+// (POSIX-locale formatter, stable across user locales).
+// ---------------------------------------------------------------------------
+
+export function Calendar(year: number, month: number, onChange: (isoDate: string) => void): Widget;
+export function calendarSetDate(widget: Widget, year: number, month: number, day: number): void;
+export function calendarGetSelectedDate(widget: Widget): string;
+
+// ---------------------------------------------------------------------------
+// Chart widget (issue #474, v1) — line / bar / pie via CoreGraphics on macOS.
+// `kind` is 0=line, 1=bar, 2=pie. iOS / tvOS / visionOS / watchOS / Android /
+// Windows / GTK4 stub the FFI today (returns 0 on create, no-op on data
+// updates). Apple Charts framework / SwiftUI Charts integration on iOS 16+ is
+// a follow-up.
+//
+// Out of scope v1 (per #474 scope): multi-series line, grouped/stacked bars,
+// donut, area, axis labels, legend, hover/tap tooltips, animated transitions,
+// color theming. The base widget plumbing lands first; richer modes follow
+// once the surface is used in TS apps.
+// ---------------------------------------------------------------------------
+
+export function Chart(kind: number, width: number, height: number): Widget;
+export function chartAddDataPoint(widget: Widget, label: string, value: number): void;
+export function chartClearData(widget: Widget): void;
+export function chartSetTitle(widget: Widget, title: string): void;
+export function chartReload(widget: Widget): void;
+
+// ---------------------------------------------------------------------------
+// Command palette (issue #477, v1) — ⌘K-style fuzzy command launcher.
+// macOS: floating NSPanel with NSSearchField + NSTableView. iOS / tvOS /
+// visionOS / watchOS / Android / Windows / GTK4 stub the FFI today.
+//
+// Out of scope v1: fuzzy ranking (substring match for now), recent /
+// frequently-used boost, async command sources, command groups / section
+// headers, OS-native menu-bar integration. Bind `commandPaletteShow()`
+// to ⌘K via `addKeyboardShortcut` to wire the default hotkey.
+// ---------------------------------------------------------------------------
+
+export function commandPaletteRegister(
+    id: string,
+    label: string,
+    subtitle: string,
+    onRun: () => void,
+): void;
+export function commandPaletteUnregister(id: string): void;
+export function commandPaletteClear(): void;
+export function commandPaletteShow(): void;
+export function commandPaletteHide(): void;
+
+// ---------------------------------------------------------------------------
+// Map widget (issue #517) — MKMapView on macOS / iOS / visionOS, stubs
+// elsewhere. Pin styling is the default red drop-pin (MKPointAnnotation);
+// custom annotation views are a follow-up.
+//
+// `mapType` enum: 0=standard, 1=satellite, 2=hybrid (matches MKMapType).
+// `latSpan`/`lonSpan` are degrees — smaller = more zoomed in. A 0.05 span
+// is roughly city-block scale; 1.0 span is a whole region.
+//
+// Out of scope this iteration: user-location tracking, custom annotation
+// views, polylines/polygons, route directions, region-change callbacks.
+// ---------------------------------------------------------------------------
+
+export function MapView(width: number, height: number): Widget;
+export function mapViewSetRegion(
+    widget: Widget,
+    lat: number,
+    lon: number,
+    latSpan: number,
+    lonSpan: number,
+): void;
+export function mapViewAddPin(widget: Widget, lat: number, lon: number, title: string): void;
+export function mapViewClearPins(widget: Widget): void;
+export function mapViewSetMapType(widget: Widget, style: number): void;
+
+// ---------------------------------------------------------------------------
+// PDF viewer widget (issue #516) — wraps `PDFView` from PDFKit on macOS.
+// `loadFile` returns 1 on success, 0 on failure (couldn't open path or
+// PDFKit unavailable). Scale is a multiplier — 1.0 = 100%.
+//
+// Out of scope this iteration: programmatic PDF generation
+// (`Pdf.create({...}).save(path)` style API), text-search highlighting,
+// annotation editing, print-friendly rendering. Filed back into #516
+// for follow-ups.
+// ---------------------------------------------------------------------------
+
+export function PdfView(width: number, height: number): Widget;
+export function pdfViewLoadFile(widget: Widget, path: string): number;
+export function pdfViewGetPageCount(widget: Widget): number;
+export function pdfViewGoToPage(widget: Widget, pageIndex: number): void;
+export function pdfViewGetCurrentPage(widget: Widget): number;
+export function pdfViewSetScale(widget: Widget, scale: number): void;
+
+// ---------------------------------------------------------------------------
+// Rich text editor (issue #478, v1) — NSTextView with NSAttributedString
+// storage. Plain-text + HTML round-trip cover persistence; bold/italic/
+// underline cover inline formatting via NSResponder actions. Markdown
+// round-trip, block formatting (headings/lists/blockquotes/code blocks),
+// configurable toolbar, paste handling are #478 follow-ups.
+// macOS: native NSTextView. iOS / tvOS / visionOS / watchOS / Android /
+// Windows / GTK4 stub the FFI today.
+// `setHtml` returns 1 on success, 0 on failure (e.g. malformed HTML).
+// ---------------------------------------------------------------------------
+
+export function RichTextEditor(
+    width: number,
+    height: number,
+    onChange: (text: string) => void,
+): Widget;
+export function richTextSetString(widget: Widget, text: string): void;
+export function richTextGetString(widget: Widget): string;
+export function richTextSetHtml(widget: Widget, html: string): number;
+export function richTextGetHtml(widget: Widget): string;
+export function richTextToggleBold(widget: Widget): void;
+export function richTextToggleItalic(widget: Widget): void;
+export function richTextToggleUnderline(widget: Widget): void;
 export function widgetSetControlSize(widget: Widget, size: number): void;
 export function widgetSetEdgeInsets(widget: Widget, top: number, left: number, bottom: number, right: number): void;
 export function widgetSetBorderColor(widget: Widget, r: number, g: number, b: number, a: number): void;
@@ -723,6 +890,40 @@ export function tableSetOnRowSelect(table: Widget, callback: (row: number) => vo
 
 /** Return the index of the currently selected row, or `-1` if none. */
 export function tableGetSelectedRow(table: Widget): number;
+
+// ---------------------------------------------------------------------------
+// Data-table sort + filter + multi-select extensions (issue #473).
+// macOS: NSTableView.sortDescriptors + selectedRowIndexes (real impls);
+// other platforms: stubs returning safe defaults.
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a sort callback fired when the user clicks a column header.
+ * Installing the callback also turns on per-column sort indicators.
+ * `ascending` is `1` for ascending, `0` for descending.
+ */
+export function tableSetOnSortChange(
+    table: Widget,
+    callback: (colIndex: number, ascending: number) => void,
+): void;
+
+/** Toggle multi-row selection (⌘ / ⇧ click). `allow` is `1` to enable. */
+export function tableSetAllowsMultipleSelection(table: Widget, allow: number): void;
+
+/** Number of currently-selected rows in a multi-select table. */
+export function tableGetSelectedRowsCount(table: Widget): number;
+
+/** Index of the n-th selected row (0-based). Returns `-1` for out-of-range. */
+export function tableGetSelectedRowAt(table: Widget, n: number): number;
+
+/**
+ * Store a filter text on the table. Passive — the user's TS code reads
+ * this back via `tableGetFilterText` and adjusts `tableUpdateRowCount`
+ * accordingly. Keeps the active row-hiding logic on the user side so
+ * any reactive store can drive it.
+ */
+export function tableSetFilterText(table: Widget, text: string): void;
+export function tableGetFilterText(table: Widget): string;
 
 // ---------------------------------------------------------------------------
 // Camera (issue #191)

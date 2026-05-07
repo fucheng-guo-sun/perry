@@ -768,6 +768,278 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         ret: ReturnKind::Void,
     },
     MethodRow {
+        method: "widgetSetRichTooltip",
+        runtime: "perry_ui_widget_set_rich_tooltip",
+        args: &[ArgKind::Widget, ArgKind::Widget, ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
+    // ---- Combobox (issue #475) ----
+    MethodRow {
+        method: "Combobox",
+        runtime: "perry_ui_combobox_create",
+        args: &[ArgKind::Str, ArgKind::Closure],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "comboboxAddItem",
+        runtime: "perry_ui_combobox_add_item",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "comboboxSetValue",
+        runtime: "perry_ui_combobox_set_value",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "comboboxGetValue",
+        runtime: "perry_ui_combobox_get_value",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Str,
+    },
+    // ---- TreeView (issue #480) ----
+    MethodRow {
+        method: "TreeNode",
+        runtime: "perry_ui_tree_node_create",
+        args: &[ArgKind::Str, ArgKind::Str],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "treeNodeAddChild",
+        runtime: "perry_ui_tree_node_add_child",
+        args: &[ArgKind::Widget, ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "TreeView",
+        runtime: "perry_ui_tree_view_create",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "treeViewExpandAll",
+        runtime: "perry_ui_tree_view_expand_all",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "treeViewCollapseAll",
+        runtime: "perry_ui_tree_view_collapse_all",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "treeViewGetSelectedId",
+        runtime: "perry_ui_tree_view_get_selected_id",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Str,
+    },
+    // ---- Calendar (issue #481) ----
+    MethodRow {
+        method: "Calendar",
+        runtime: "perry_ui_calendar_create",
+        args: &[ArgKind::I64Raw, ArgKind::I64Raw, ArgKind::Closure],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "calendarSetDate",
+        runtime: "perry_ui_calendar_set_date",
+        args: &[ArgKind::Widget, ArgKind::I64Raw, ArgKind::I64Raw, ArgKind::I64Raw],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "calendarGetSelectedDate",
+        runtime: "perry_ui_calendar_get_selected_date",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Str,
+    },
+    // ---- Chart (issue #474) ----
+    MethodRow {
+        method: "Chart",
+        runtime: "perry_ui_chart_create",
+        args: &[ArgKind::I64Raw, ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "chartAddDataPoint",
+        runtime: "perry_ui_chart_add_data_point",
+        args: &[ArgKind::Widget, ArgKind::Str, ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "chartClearData",
+        runtime: "perry_ui_chart_clear_data",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "chartSetTitle",
+        runtime: "perry_ui_chart_set_title",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "chartReload",
+        runtime: "perry_ui_chart_reload",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    // ---- Command palette (issue #477) ----
+    MethodRow {
+        method: "commandPaletteRegister",
+        runtime: "perry_ui_command_palette_register",
+        args: &[ArgKind::Str, ArgKind::Str, ArgKind::Str, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "commandPaletteUnregister",
+        runtime: "perry_ui_command_palette_unregister",
+        args: &[ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "commandPaletteClear",
+        runtime: "perry_ui_command_palette_clear",
+        args: &[],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "commandPaletteShow",
+        runtime: "perry_ui_command_palette_show",
+        args: &[],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "commandPaletteHide",
+        runtime: "perry_ui_command_palette_hide",
+        args: &[],
+        ret: ReturnKind::Void,
+    },
+    // ---- MapView (issue #517) ----
+    MethodRow {
+        method: "MapView",
+        runtime: "perry_ui_map_view_create",
+        args: &[ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "mapViewSetRegion",
+        runtime: "perry_ui_map_view_set_region",
+        args: &[
+            ArgKind::Widget,
+            ArgKind::F64,
+            ArgKind::F64,
+            ArgKind::F64,
+            ArgKind::F64,
+        ],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "mapViewAddPin",
+        runtime: "perry_ui_map_view_add_pin",
+        args: &[ArgKind::Widget, ArgKind::F64, ArgKind::F64, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "mapViewClearPins",
+        runtime: "perry_ui_map_view_clear_pins",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "mapViewSetMapType",
+        runtime: "perry_ui_map_view_set_map_type",
+        args: &[ArgKind::Widget, ArgKind::I64Raw],
+        ret: ReturnKind::Void,
+    },
+    // ---- PdfView (issue #516) ----
+    MethodRow {
+        method: "PdfView",
+        runtime: "perry_ui_pdf_view_create",
+        args: &[ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "pdfViewLoadFile",
+        runtime: "perry_ui_pdf_view_load_file",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "pdfViewGetPageCount",
+        runtime: "perry_ui_pdf_view_get_page_count",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "pdfViewGoToPage",
+        runtime: "perry_ui_pdf_view_go_to_page",
+        args: &[ArgKind::Widget, ArgKind::I64Raw],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "pdfViewGetCurrentPage",
+        runtime: "perry_ui_pdf_view_get_current_page",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "pdfViewSetScale",
+        runtime: "perry_ui_pdf_view_set_scale",
+        args: &[ArgKind::Widget, ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
+    // ---- Rich text editor (issue #478) ----
+    MethodRow {
+        method: "RichTextEditor",
+        runtime: "perry_ui_rich_text_create",
+        args: &[ArgKind::F64, ArgKind::F64, ArgKind::Closure],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "richTextSetString",
+        runtime: "perry_ui_rich_text_set_string",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "richTextGetString",
+        runtime: "perry_ui_rich_text_get_string",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Str,
+    },
+    MethodRow {
+        method: "richTextSetHtml",
+        runtime: "perry_ui_rich_text_set_html",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "richTextGetHtml",
+        runtime: "perry_ui_rich_text_get_html",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Str,
+    },
+    MethodRow {
+        method: "richTextToggleBold",
+        runtime: "perry_ui_rich_text_toggle_bold",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "richTextToggleItalic",
+        runtime: "perry_ui_rich_text_toggle_italic",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "richTextToggleUnderline",
+        runtime: "perry_ui_rich_text_toggle_underline",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
         method: "widgetSetControlSize",
         runtime: "perry_ui_widget_set_control_size",
         args: &[ArgKind::Widget, ArgKind::I64Raw],
@@ -1307,6 +1579,43 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         runtime: "perry_ui_table_get_selected_row",
         args: &[ArgKind::Widget],
         ret: ReturnKind::I64AsF64,
+    },
+    // Issue #473 — sort + filter + multi-select extensions
+    MethodRow {
+        method: "tableSetOnSortChange",
+        runtime: "perry_ui_table_set_on_sort_change",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "tableSetAllowsMultipleSelection",
+        runtime: "perry_ui_table_set_allows_multiple_selection",
+        args: &[ArgKind::Widget, ArgKind::I64Raw],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "tableGetSelectedRowsCount",
+        runtime: "perry_ui_table_get_selected_rows_count",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "tableGetSelectedRowAt",
+        runtime: "perry_ui_table_get_selected_row_at",
+        args: &[ArgKind::Widget, ArgKind::I64Raw],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "tableSetFilterText",
+        runtime: "perry_ui_table_set_filter_text",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "tableGetFilterText",
+        runtime: "perry_ui_table_get_filter_text",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Str,
     },
     // ---- Camera (issue #191) ----
     // Live camera preview widget. Real implementations live in

@@ -751,6 +751,22 @@ pub extern "C" fn perry_ui_widget_set_tooltip(handle: i64, text_ptr: i64) {
     widgets::set_tooltip(handle, text_ptr as *const u8);
 }
 
+/// Rich tooltip (issue #479) — real GTK4 impl via GtkPopover anchored
+/// on the host widget, shown after `hover_delay_ms` of hover.
+#[no_mangle]
+pub extern "C" fn perry_ui_widget_set_rich_tooltip(
+    handle: i64,
+    content_handle: i64,
+    hover_delay_ms: f64,
+) {
+    let delay = if hover_delay_ms.is_nan() || hover_delay_ms < 0.0 {
+        500
+    } else {
+        hover_delay_ms as u32
+    };
+    widgets::rich_tooltip::set_rich_tooltip(handle, content_handle, delay);
+}
+
 /// Set hidden state.
 #[no_mangle]
 pub extern "C" fn perry_ui_set_widget_hidden(handle: i64, hidden: i64) {
@@ -1352,6 +1368,187 @@ pub extern "C" fn perry_ui_navstack_pop(handle: i64) {
 // =============================================================================
 
 /// Create a Picker (dropdown).
+#[no_mangle]
+// Issue #478 — Rich text editor — real GTK4 impl via GtkTextView + tags.
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_create(w: f64, h: f64, cb: f64) -> i64 {
+    widgets::rich_text::create(w, h, cb)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_string(h: i64, t: i64) {
+    widgets::rich_text::set_string(h, t as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_string(h: i64) -> f64 {
+    widgets::rich_text::get_string(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_html(h: i64, html: i64) -> i64 {
+    widgets::rich_text::set_html(h, html as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_html(h: i64) -> f64 {
+    widgets::rich_text::get_html(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_bold(h: i64) {
+    widgets::rich_text::toggle_bold(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_italic(h: i64) {
+    widgets::rich_text::toggle_italic(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_underline(h: i64) {
+    widgets::rich_text::toggle_underline(h)
+}
+
+// Issue #516 — PdfView stubs. Linux — Poppler (libpoppler-glib) is a
+// future iteration.
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_create(_w: f64, _h: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_load_file(_h: i64, _p: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_page_count(_h: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_go_to_page(_h: i64, _i: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_current_page(_h: i64) -> i64 { -1 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_set_scale(_h: i64, _s: f64) {}
+
+// Issue #517 — MapView stubs. Linux — libshumate (GTK4 map widget) is
+// a future iteration.
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_create(_w: f64, _h: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_region(_h: i64, _lat: f64, _lon: f64, _ls: f64, _os: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_add_pin(_h: i64, _lat: f64, _lon: f64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_clear_pins(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_map_type(_h: i64, _s: i64) {}
+
+// Issue #477 — Command palette — real GTK4 impl via floating GtkWindow.
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_register(id: i64, l: i64, s: i64, cb: f64) {
+    widgets::command_palette::register(id as *const u8, l as *const u8, s as *const u8, cb)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_unregister(id: i64) {
+    widgets::command_palette::unregister(id as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_clear() {
+    widgets::command_palette::clear()
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_show() {
+    widgets::command_palette::show()
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_hide() {
+    widgets::command_palette::hide()
+}
+
+// Issue #474 — Chart widget — real GTK4 impl via Cairo on GtkDrawingArea.
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_create(kind: i64, w: f64, h: f64) -> i64 {
+    widgets::chart::create(kind, w, h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_add_data_point(h: i64, l: i64, v: f64) {
+    widgets::chart::add_data_point(h, l as *const u8, v)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_clear_data(h: i64) {
+    widgets::chart::clear_data(h)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_set_title(h: i64, t: i64) {
+    widgets::chart::set_title(h, t as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_reload(h: i64) {
+    widgets::chart::reload(h)
+}
+
+// Issue #481 — Calendar widget — real impl on GTK4 via GtkCalendar.
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_create(year: i64, month: i64, on_change: f64) -> i64 {
+    widgets::calendar::create(year, month, on_change)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_set_date(h: i64, y: i64, m: i64, d: i64) {
+    widgets::calendar::set_date(h, y, m, d)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_get_selected_date(h: i64) -> f64 {
+    widgets::calendar::get_selected_date(h)
+}
+
+// Issue #473 — table sort/filter/multi-select stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_on_sort_change(_h: i64, _cb: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_allows_multiple_selection(_h: i64, _allow: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_rows_count(_h: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_row_at(_h: i64, _n: i64) -> i64 { -1 }
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_filter_text(_h: i64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_filter_text(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+/// TreeView (#480) — real GTK4 impl via GtkTreeView + GtkTreeStore.
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_create(id_ptr: i64, label_ptr: i64) -> i64 {
+    widgets::tree_view::node_create(id_ptr as *const u8, label_ptr as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_add_child(parent: i64, child: i64) {
+    widgets::tree_view::node_add_child(parent, child)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_create(root: i64, on_select: f64) -> i64 {
+    widgets::tree_view::create(root, on_select)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_expand_all(handle: i64) {
+    widgets::tree_view::expand_all(handle)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_collapse_all(handle: i64) {
+    widgets::tree_view::collapse_all(handle)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_get_selected_id(handle: i64) -> f64 {
+    widgets::tree_view::get_selected_id(handle)
+}
+
+/// Combobox (#475) — real GTK4 impl via `GtkEntry` + `EntryCompletion`.
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_create(initial_ptr: i64, on_change: f64) -> i64 {
+    widgets::combobox::create(initial_ptr as *const u8, on_change)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_add_item(handle: i64, value_ptr: i64) {
+    widgets::combobox::add_item(handle, value_ptr as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_set_value(handle: i64, value_ptr: i64) {
+    widgets::combobox::set_value(handle, value_ptr as *const u8)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_get_value(handle: i64) -> f64 {
+    widgets::combobox::get_value(handle)
+}
+
 #[no_mangle]
 pub extern "C" fn perry_ui_picker_create(label_ptr: i64, on_change: f64, style: i64) -> i64 {
     widgets::picker::create(label_ptr as *const u8, on_change, style)

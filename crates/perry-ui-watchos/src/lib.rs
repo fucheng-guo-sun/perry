@@ -827,6 +827,138 @@ pub extern "C" fn perry_ui_canvas_fill_gradient(
 #[no_mangle]
 pub extern "C" fn perry_ui_widget_set_tooltip(_h: i64, _t: i64) {}
 #[no_mangle]
+pub extern "C" fn perry_ui_widget_set_rich_tooltip(_h: i64, _content: i64, _delay_ms: f64) {}
+
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_create(initial: i64, on_change: f64) -> i64 {
+    perry_ui_textfield_create(initial, on_change)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_add_item(_h: i64, _v: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_set_value(_h: i64, _v: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_combobox_get_value(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+// Issue #478 — Rich text editor stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_create(_w: f64, _h: f64, _cb: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_string(_h: i64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_string(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_set_html(_h: i64, _html: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_get_html(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_bold(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_italic(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_rich_text_toggle_underline(_h: i64) {}
+
+// Issue #516 — PdfView stubs (watchOS not a realistic PDF target).
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_create(_w: f64, _h: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_load_file(_h: i64, _p: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_page_count(_h: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_go_to_page(_h: i64, _i: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_get_current_page(_h: i64) -> i64 { -1 }
+#[no_mangle]
+pub extern "C" fn perry_ui_pdf_view_set_scale(_h: i64, _s: f64) {}
+
+// Issue #517 — MapView stubs (watchOS has MKMapView but screen real
+// estate makes a generic widget impractical for now).
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_create(_w: f64, _h: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_region(_h: i64, _lat: f64, _lon: f64, _ls: f64, _os: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_add_pin(_h: i64, _lat: f64, _lon: f64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_clear_pins(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_map_view_set_map_type(_h: i64, _s: i64) {}
+
+// Issue #477 — Command palette stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_register(_id: i64, _l: i64, _s: i64, _cb: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_unregister(_id: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_clear() {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_show() {}
+#[no_mangle]
+pub extern "C" fn perry_ui_command_palette_hide() {}
+
+// Issue #474 — Chart widget stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_create(_kind: i64, _w: f64, _h: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_add_data_point(_h: i64, _l: i64, _v: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_clear_data(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_set_title(_h: i64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_chart_reload(_h: i64) {}
+
+// Issue #481 — Calendar widget stubs (watchOS screen real estate
+// makes a month grid impractical).
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_create(_y: i64, _m: i64, _cb: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_set_date(_h: i64, _y: i64, _m: i64, _d: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_calendar_get_selected_date(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+// Issue #473 — table sort/filter/multi-select stubs.
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_on_sort_change(_h: i64, _cb: f64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_allows_multiple_selection(_h: i64, _a: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_rows_count(_h: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_selected_row_at(_h: i64, _n: i64) -> i64 { -1 }
+#[no_mangle]
+pub extern "C" fn perry_ui_table_set_filter_text(_h: i64, _t: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_table_get_filter_text(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+// TreeView (#480) — watchOS screen real estate makes hierarchical
+// outline impractical; stubs only.
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_create(_id: i64, _label: i64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_node_add_child(_p: i64, _c: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_create(_root: i64, _on_select: f64) -> i64 { 0 }
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_expand_all(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_collapse_all(_h: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_ui_tree_view_get_selected_id(_h: i64) -> f64 {
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+#[no_mangle]
 pub extern "C" fn perry_ui_widget_set_control_size(_h: i64, _s: i64) {}
 #[no_mangle]
 pub extern "C" fn perry_ui_widget_set_on_hover(_h: i64, _cb: f64) {}
