@@ -3679,31 +3679,41 @@ fn lower_module_decl(
                         let name = get_binding_name(&decl.name)?;
                         let ty = extract_binding_type(&decl.name);
                         if let Some(init) = &decl.init {
-                            // Check if this is a native class instantiation and register it
+                            // Check if this is a native class instantiation and register it.
+                            // Mirrors the destructuring.rs path: first try the
+                            // general `lookup_native_module` (covers any class
+                            // imported from a known native module), then fall
+                            // back to a small hardcoded map for global-style
+                            // names. Pool/Client/MongoClient are intentionally
+                            // NOT in the fallback — those names collide with
+                            // user classes and TS-source npm packages (e.g.
+                            // `@perryts/mysql` exports its own `Pool`); the
+                            // legitimate `import { Pool } from "pg"` flow is
+                            // caught by the general lookup above. (Issue #536.)
                             if let ast::Expr::New(new_expr) = init.as_ref() {
                                 if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
                                     let class_name = class_ident.sym.as_ref();
-                                    // Map class names to their modules
-                                    let module_name = match class_name {
-                                        "EventEmitter" => Some("events"),
-                                        "AsyncLocalStorage" => Some("async_hooks"),
-                                        "WebSocket" | "WebSocketServer" => Some("ws"),
-                                        "Redis" => Some("ioredis"),
-                                        "LRUCache" => Some("lru-cache"),
-                                        "Command" => Some("commander"),
-                                        "Big" => Some("big.js"),
-                                        "Decimal" => Some("decimal.js"),
-                                        "BigNumber" => Some("bignumber.js"),
-                                        // Database clients
-                                        "Pool" => Some("pg"),
-                                        "Client" => Some("pg"),
-                                        "MongoClient" => Some("mongodb"),
-                                        _ => None,
-                                    };
+                                    let module_name: Option<String> =
+                                        if let Some((m, _)) = ctx.lookup_native_module(class_name) {
+                                            Some(m.to_string())
+                                        } else {
+                                            match class_name {
+                                                "EventEmitter" => Some("events".to_string()),
+                                                "AsyncLocalStorage" => Some("async_hooks".to_string()),
+                                                "WebSocket" | "WebSocketServer" => Some("ws".to_string()),
+                                                "Redis" => Some("ioredis".to_string()),
+                                                "LRUCache" => Some("lru-cache".to_string()),
+                                                "Command" => Some("commander".to_string()),
+                                                "Big" => Some("big.js".to_string()),
+                                                "Decimal" => Some("decimal.js".to_string()),
+                                                "BigNumber" => Some("bignumber.js".to_string()),
+                                                _ => None,
+                                            }
+                                        };
                                     if let Some(native_module) = module_name {
                                         ctx.register_native_instance(
                                             name.clone(),
-                                            native_module.to_string(),
+                                            native_module,
                                             class_name.to_string(),
                                         );
                                     }
@@ -3716,27 +3726,28 @@ fn lower_module_decl(
                                     if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref()
                                     {
                                         let class_name = class_ident.sym.as_ref();
-                                        // Map class names to their modules
-                                        let module_name = match class_name {
-                                            "EventEmitter" => Some("events"),
-                                            "AsyncLocalStorage" => Some("async_hooks"),
-                                            "WebSocket" | "WebSocketServer" => Some("ws"),
-                                            "Redis" => Some("ioredis"),
-                                            "LRUCache" => Some("lru-cache"),
-                                            "Command" => Some("commander"),
-                                            "Big" => Some("big.js"),
-                                            "Decimal" => Some("decimal.js"),
-                                            "BigNumber" => Some("bignumber.js"),
-                                            // Database clients
-                                            "Pool" => Some("pg"),
-                                            "Client" => Some("pg"),
-                                            "MongoClient" => Some("mongodb"),
-                                            _ => None,
+                                        let module_name: Option<String> = if let Some((m, _)) =
+                                            ctx.lookup_native_module(class_name)
+                                        {
+                                            Some(m.to_string())
+                                        } else {
+                                            match class_name {
+                                                "EventEmitter" => Some("events".to_string()),
+                                                "AsyncLocalStorage" => Some("async_hooks".to_string()),
+                                                "WebSocket" | "WebSocketServer" => Some("ws".to_string()),
+                                                "Redis" => Some("ioredis".to_string()),
+                                                "LRUCache" => Some("lru-cache".to_string()),
+                                                "Command" => Some("commander".to_string()),
+                                                "Big" => Some("big.js".to_string()),
+                                                "Decimal" => Some("decimal.js".to_string()),
+                                                "BigNumber" => Some("bignumber.js".to_string()),
+                                                _ => None,
+                                            }
                                         };
                                         if let Some(native_module) = module_name {
                                             ctx.register_native_instance(
                                                 name.clone(),
-                                                native_module.to_string(),
+                                                native_module,
                                                 class_name.to_string(),
                                             );
                                         }

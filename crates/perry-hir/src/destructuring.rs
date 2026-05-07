@@ -1033,7 +1033,18 @@ pub(crate) fn lower_var_decl_with_destructuring(
                         {
                             Some(m.to_string())
                         } else {
-                            // Fallback to hardcoded map for known classes
+                            // Fallback to hardcoded map for known classes.
+                            // Pool/Client/MongoClient are intentionally NOT
+                            // listed here: those names collide with user
+                            // classes and TS-source npm packages (e.g.
+                            // `@perryts/mysql` exports its own `Pool`), so
+                            // an unconditional mapping misclassified them
+                            // as `pg`/`mongodb` and routed `.query()` /
+                            // `.end()` to `js_pg_*` runtime symbols that
+                            // don't exist in user TS code, failing at link
+                            // time. The legitimate `import { Pool } from
+                            // "pg"` flow is caught by the general lookup
+                            // above. (Issue #536.)
                             match class_name {
                                 "EventEmitter" => Some("events".to_string()),
                                 "AsyncLocalStorage" => Some("async_hooks".to_string()),
@@ -1044,10 +1055,6 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                 "Big" => Some("big.js".to_string()),
                                 "Decimal" => Some("decimal.js".to_string()),
                                 "BigNumber" => Some("bignumber.js".to_string()),
-                                // Database clients
-                                "Pool" => Some("pg".to_string()),
-                                "Client" => Some("pg".to_string()),
-                                "MongoClient" => Some("mongodb".to_string()),
                                 _ => None,
                             }
                         };
@@ -1068,7 +1075,10 @@ pub(crate) fn lower_var_decl_with_destructuring(
                     if let ast::Expr::New(new_expr) = await_expr.arg.as_ref() {
                         if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
                             let class_name = class_ident.sym.as_ref();
-                            // First try the general native module lookup
+                            // First try the general native module lookup.
+                            // Pool/Client/MongoClient are intentionally NOT
+                            // in the fallback map — see the sync `new` arm
+                            // above for the rationale (issue #536).
                             let module_name =
                                 if let Some((m, _)) = ctx.lookup_native_module(class_name) {
                                     Some(m.to_string())
@@ -1083,9 +1093,6 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                         "Big" => Some("big.js".to_string()),
                                         "Decimal" => Some("decimal.js".to_string()),
                                         "BigNumber" => Some("bignumber.js".to_string()),
-                                        "Pool" => Some("pg".to_string()),
-                                        "Client" => Some("pg".to_string()),
-                                        "MongoClient" => Some("mongodb".to_string()),
                                         _ => None,
                                     }
                                 };
