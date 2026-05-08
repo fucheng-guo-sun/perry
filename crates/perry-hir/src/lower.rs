@@ -4425,6 +4425,40 @@ fn lower_module_decl(
                             }
                         }
 
+                        // Fix #588: parallel of the class arm above for function
+                        // decls. `function drizzle() {}` followed by `export {
+                        // drizzle }` was lowered with `is_exported = false` and
+                        // never landed in `module.exported_functions`. The CLI
+                        // driver's `exported_func_param_counts` lookup at
+                        // compile.rs:1907 filters on `func.is_exported`, and
+                        // its fallback at compile.rs:1921 iterates only
+                        // `exported_functions` — both miss this function.
+                        // Importers then fall back to `args.len()` in
+                        // `lower_call.rs:767` and declare the cross-module
+                        // function with the wrong arity. The ABI mismatch
+                        // causes trailing default-defaulted params to read
+                        // stale register state (typically a small
+                        // f64::from_bits(N) value, e.g. 1.26e-321), so the
+                        // body's `if (p === undefined) p = default` desugar
+                        // never fires.
+                        if let Some(func_id) = ctx.lookup_func(&local) {
+                            for func in module.functions.iter_mut() {
+                                if func.id == func_id {
+                                    func.is_exported = true;
+                                    break;
+                                }
+                            }
+                            if !module
+                                .exported_functions
+                                .iter()
+                                .any(|(n, _)| n == &exported)
+                            {
+                                module
+                                    .exported_functions
+                                    .push((exported.clone(), func_id));
+                            }
+                        }
+
                         // Check if the variable is a closure or other exportable object
                         // by looking through init statements. For #460: also catch let
                         // bindings whose init is a function-reference value
