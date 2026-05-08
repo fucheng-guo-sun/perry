@@ -344,6 +344,91 @@ pub extern "C" fn js_ws_close(handle: i64) {
 }
 
 /// # Safety
+// `js_ws_send_to_client_i64` / `js_ws_close_client_i64` /
+// `js_ws_on_client_i64` are the Phase 4 receiver-method variants.
+// Receivers from NATIVE_MODULE_TABLE dispatch arrive as raw i64
+// (already unboxed via the POINTER_TAG mask), so these helpers
+// take `i64` directly — same shape as `js_ws_send` / `js_ws_close`
+// / `js_ws_on` but they exist as separate symbols so the codegen
+// dispatch table can pin Client-class entries without colliding
+// with the existing receiver-less / module-method-call entries.
+
+/// Issue #577 Phase 4 — `wsId.send(msg)` on an upgrade-path Client.
+///
+/// # Safety
+/// `message_ptr` must be null or a Perry-runtime `StringHeader`.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_send_client_i64(handle: i64, message_ptr: *const StringHeader) {
+    let Some(msg) = read_str(message_ptr) else {
+        return;
+    };
+    let id = handle as usize;
+    if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+        let _ = c.sender.send(WsCommand::Send(msg));
+    }
+}
+
+/// Issue #577 Phase 4 — `wsId.close()` on an upgrade-path Client.
+#[no_mangle]
+pub extern "C" fn js_ws_close_client_i64(handle: i64) {
+    let id = handle as usize;
+    if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&id) {
+        let _ = c.sender.send(WsCommand::Close);
+        c.is_open = false;
+    }
+}
+
+/// Issue #577 Phase 4 — `wsId.on(event, cb)` on an upgrade-path Client.
+///
+/// # Safety
+/// `event_name_ptr` must be null or a Perry-runtime `StringHeader`.
+#[no_mangle]
+pub unsafe extern "C" fn js_ws_on_client_i64(
+    handle: i64,
+    event_name_ptr: *const StringHeader,
+    callback_ptr: i64,
+) -> i64 {
+    ensure_gc_scanner_registered();
+    let Some(event_name) = read_str(event_name_ptr) else {
+        return handle;
+    };
+    if callback_ptr == 0 {
+        return handle;
+    }
+    let ws_id = handle as usize;
+    {
+        let mut g = WS_CLIENT_LISTENERS.lock().unwrap();
+        let entry = g.entry(ws_id).or_insert_with(|| WsClientListeners {
+            listeners: HashMap::new(),
+        });
+        entry
+            .listeners
+            .entry(event_name.clone())
+            .or_insert_with(Vec::new)
+            .push(callback_ptr);
+    }
+    // Issue #577 Phase 4 — drain any messages that arrived before this
+    // listener was registered (race window: IO loop reads frames as
+    // soon as the WS handshake completes, but TS-side
+    // `wsId.on('message', cb)` only runs once the upgrade event
+    // fires). Republish queued messages as PendingWsEvents so the
+    // next `js_ws_process_pending` tick fires this freshly-registered
+    // listener against them.
+    if event_name == "message" {
+        let queued: Vec<String> = if let Some(c) =
+            WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id)
+        {
+            std::mem::take(&mut c.messages)
+        } else {
+            Vec::new()
+        };
+        for msg in queued {
+            push_ws_event(PendingWsEvent::Message(ws_id, msg));
+        }
+    }
+    handle
+}
+
 /// `message_ptr` must be null or a Perry-runtime `StringHeader`.
 #[no_mangle]
 pub unsafe extern "C" fn js_ws_send_to_client(handle_f64: f64, message_ptr: *const StringHeader) {
@@ -599,15 +684,51 @@ fn drive_server_client_io<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // Issue #577 Phase 4 — when called via the upgrade-from-http
+    // path (`register_external_ws_stream`), the caller is already
+    // inside a tokio runtime task, so `Handle::current().block_on(fut)`
+    // would panic with "Cannot start a runtime from within a runtime".
+    // Schedule the IO loop as a sibling task on the existing runtime
+    // instead. (The original standalone `WebSocketServer({port})`
+    // path also called us from inside `spawn_blocking_with_reactor`'s
+    // worker context — block_on worked there because that worker
+    // happened not to be inside a runtime task, but the upgrade
+    // path is. `tokio::spawn` works correctly in BOTH contexts.)
     spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async move {
+        tokio::spawn(async move {
             let (mut write, mut read) = ws_stream.split();
             loop {
                 tokio::select! {
                     msg_result = read.next() => {
                         match msg_result {
                             Some(Ok(Message::Text(text))) => {
-                                push_ws_event(PendingWsEvent::Message(ws_id, text.to_string()));
+                                // Issue #577 Phase 4 — race between
+                                // `register_external_ws_stream` (which spawns
+                                // this IO loop and starts reading immediately)
+                                // and the main-thread `'upgrade'` event firing
+                                // (which is where user code registers
+                                // `wsId.on('message', cb)`). If the client
+                                // sends a frame fast enough, the IO loop
+                                // pushes it to WS_PENDING_EVENTS before the
+                                // listener exists, then `js_ws_process_pending`
+                                // drops it silently. Mirror the client-side
+                                // logic at line 268: only push as a pending
+                                // event when a listener is already registered;
+                                // otherwise queue on `c.messages` so the
+                                // listener-registration site can drain it
+                                // synchronously.
+                                let text_str = text.to_string();
+                                let has_listener = WS_CLIENT_LISTENERS
+                                    .lock()
+                                    .unwrap()
+                                    .get(&ws_id)
+                                    .map(|l| l.listeners.get("message").map(|v| !v.is_empty()).unwrap_or(false))
+                                    .unwrap_or(false);
+                                if has_listener {
+                                    push_ws_event(PendingWsEvent::Message(ws_id, text_str));
+                                } else if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
+                                    c.messages.push(text_str);
+                                }
                             }
                             Some(Ok(Message::Binary(b))) => {
                                 let s = String::from_utf8_lossy(&b).to_string();

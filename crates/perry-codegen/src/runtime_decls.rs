@@ -925,6 +925,13 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     // operands before unboxing. Takes a NaN-boxed f64, returns
     // 1 if it points at a GC_TYPE_PROMISE allocation else 0.
     module.declare_function("js_value_is_promise", I32, &[DOUBLE]);
+    // Issue #586: ECMAScript thenable assimilation for `await`. Takes a
+    // NaN-boxed f64; returns either the same value (real Promise / non-
+    // thenable) or a fresh wrapper Promise that the await loop polls
+    // (when the operand is an object whose class chain has a `.then`
+    // method). Caller must call this before the `js_value_is_promise`
+    // branch so `await thenable` enters the polling path.
+    module.declare_function("js_assimilate_thenable", DOUBLE, &[DOUBLE]);
     module.declare_function("js_promise_run_microtasks", I32, &[]);
     // Drain stdlib's tokio async queue (fetch, DB, etc.). Lives in
     // perry-runtime as a thin function-pointer trampoline so it's
@@ -1465,13 +1472,13 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
     module.declare_function("js_node_http_res_write_processing", VOID, &[I64]);
     module.declare_function("js_node_http_res_on", DOUBLE, &[I64, I64, I64]);
     // node:https server (TLS via rustls):
-    module.declare_function("js_node_https_create_server", I64, &[I64, I64, I32, I64]);
+    module.declare_function("js_node_https_create_server", I64, &[DOUBLE, I64]);
     module.declare_function("js_node_https_server_listen", VOID, &[I64, DOUBLE, I64]);
     module.declare_function("js_node_https_server_close", VOID, &[I64, I64]);
     module.declare_function("js_node_https_server_address_json", I64, &[I64]);
     module.declare_function("js_node_https_server_on", DOUBLE, &[I64, I64, I64]);
     // node:http2 secure server (HTTP/2 with ALPN):
-    module.declare_function("js_node_http2_create_secure_server", I64, &[I64, I64, I64]);
+    module.declare_function("js_node_http2_create_secure_server", I64, &[DOUBLE, I64]);
     module.declare_function("js_node_http2_server_listen", VOID, &[I64, DOUBLE, I64]);
     module.declare_function("js_node_http2_server_close", VOID, &[I64, I64]);
     module.declare_function("js_node_http2_server_address_json", I64, &[I64]);
@@ -1747,6 +1754,22 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
     module.declare_function("js_ws_on", I64, &[I64, I64, I64]);
     module.declare_function("js_ws_receive", I64, &[I64]);
     module.declare_function("js_ws_send", VOID, &[I64, I64]);
+    // Issue #577 Phase 4 — `js_ws_send_to_client` takes the handle
+    // as f64 so a TS-side numeric ws_id (received from the
+    // `Server.on('upgrade', (req, wsId, head) => ...)` callback)
+    // round-trips cleanly without the i64-bits dance js_ws_send
+    // requires.
+    module.declare_function("js_ws_send_to_client", VOID, &[DOUBLE, I64]);
+    module.declare_function("js_ws_close_client", VOID, &[DOUBLE]);
+    // Issue #577 Phase 4 — receiver-method variants for Client class.
+    // Take the handle as i64 (post-unbox_to_i64 from NATIVE_MODULE_TABLE
+    // dispatch). Separate symbols so the dispatch table can pin
+    // `class_filter: Some("Client")` entries without colliding with
+    // the existing receiver-less / module-method `js_ws_send` /
+    // `js_ws_on` / `js_ws_close` entries.
+    module.declare_function("js_ws_send_client_i64", VOID, &[I64, I64]);
+    module.declare_function("js_ws_close_client_i64", VOID, &[I64]);
+    module.declare_function("js_ws_on_client_i64", I64, &[I64, I64, I64]);
     module.declare_function("js_ws_server_close", VOID, &[I64]);
     module.declare_function("js_ws_server_new", I64, &[DOUBLE]);
     module.declare_function("js_ws_wait_for_message", I64, &[I64, DOUBLE]);

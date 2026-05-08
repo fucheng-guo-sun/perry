@@ -5934,6 +5934,49 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         args: &[],
         ret: NR_VOID,
     },
+    // Issue #577 Phase 4 — `("ws", "Client")` instance methods.
+    // The wsId delivered to `Server.on('upgrade', (req, wsId, head) => …)`
+    // is NaN-boxed POINTER_TAG so unbox_to_i64 (called by the dispatch
+    // helper) extracts the original integer ws_id; user code writing
+    // `wsId.send("…")` / `wsId.on("message", cb)` / `wsId.close()`
+    // dispatches via these class-filtered entries to the dedicated
+    // i64-taking Client variants.
+    NativeModSig {
+        module: "ws",
+        has_receiver: true,
+        method: "send",
+        class_filter: Some("Client"),
+        runtime: "js_ws_send_client_i64",
+        args: &[NA_STR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "ws",
+        has_receiver: true,
+        method: "close",
+        class_filter: Some("Client"),
+        runtime: "js_ws_close_client_i64",
+        args: &[],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "ws",
+        has_receiver: true,
+        method: "on",
+        class_filter: Some("Client"),
+        runtime: "js_ws_on_client_i64",
+        args: &[NA_STR, NA_PTR],
+        ret: NR_PTR,
+    },
+    NativeModSig {
+        module: "ws",
+        has_receiver: true,
+        method: "addListener",
+        class_filter: Some("Client"),
+        runtime: "js_ws_on_client_i64",
+        args: &[NA_STR, NA_PTR],
+        ret: NR_PTR,
+    },
     // Server-side helpers — the user receives a client handle as a plain
     // f64 number from `wss.on('connection', (handle) => …)`, then passes
     // it back to these free functions to write/close that specific peer.
@@ -8056,12 +8099,12 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
     NativeModSig { module: "http", has_receiver: true, method: "__get_writableEnded", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_writable_ended", args: &[], ret: NR_I32 },
     NativeModSig { module: "http", has_receiver: true, method: "__get_writableFinished", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_writable_finished", args: &[], ret: NR_I32 },
     // ========== node:https server (issue #577 Phase 2) ==========
-    NativeModSig { module: "https", has_receiver: false, method: "createServer", class_filter: None, runtime: "js_node_https_create_server", args: &[NA_STR, NA_STR, NA_F64, NA_PTR], ret: NR_PTR },
+    NativeModSig { module: "https", has_receiver: false, method: "createServer", class_filter: None, runtime: "js_node_https_create_server", args: &[NA_F64, NA_PTR], ret: NR_PTR },
     NativeModSig { module: "https", has_receiver: true, method: "listen", class_filter: Some("HttpsServer"), runtime: "js_node_https_server_listen", args: &[NA_F64, NA_PTR], ret: NR_VOID },
     NativeModSig { module: "https", has_receiver: true, method: "close", class_filter: Some("HttpsServer"), runtime: "js_node_https_server_close", args: &[NA_PTR], ret: NR_VOID },
     NativeModSig { module: "https", has_receiver: true, method: "on", class_filter: Some("HttpsServer"), runtime: "js_node_https_server_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
     // ========== node:http2 server (issue #577 Phase 3) ==========
-    NativeModSig { module: "http2", has_receiver: false, method: "createSecureServer", class_filter: None, runtime: "js_node_http2_create_secure_server", args: &[NA_STR, NA_STR, NA_PTR], ret: NR_PTR },
+    NativeModSig { module: "http2", has_receiver: false, method: "createSecureServer", class_filter: None, runtime: "js_node_http2_create_secure_server", args: &[NA_F64, NA_PTR], ret: NR_PTR },
     NativeModSig { module: "http2", has_receiver: true, method: "listen", class_filter: Some("Http2SecureServer"), runtime: "js_node_http2_server_listen", args: &[NA_F64, NA_PTR], ret: NR_VOID },
     NativeModSig { module: "http2", has_receiver: true, method: "close", class_filter: Some("Http2SecureServer"), runtime: "js_node_http2_server_close", args: &[NA_PTR], ret: NR_VOID },
     NativeModSig { module: "http2", has_receiver: true, method: "on", class_filter: Some("Http2SecureServer"), runtime: "js_node_http2_server_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },

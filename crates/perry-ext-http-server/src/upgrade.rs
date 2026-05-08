@@ -79,7 +79,13 @@ pub(crate) fn fire_upgrade_listeners(
     }
 
     let req_f64 = handle_to_pointer_f64(im_handle);
-    let ws_id_f64 = ws_id as f64;
+    // Encode ws_id as NaN-boxed POINTER_TAG so `unbox_to_i64` (the
+    // codegen helper used at every NATIVE_MODULE_TABLE receiver
+    // call site — `wsId.send(...)` / `wsId.on(...)`) extracts the
+    // low-48 bits as the original ws_id. A plain `ws_id as f64`
+    // (1.0_f64) would have bits 0x3FF0_…, which `unbox_to_i64`
+    // AND-masks to 0, missing the WS_CONNECTIONS lookup entirely.
+    let ws_id_f64 = f64::from_bits(POINTER_TAG | (ws_id as u64 & PTR_MASK));
     let head_str = if head_data.is_empty() {
         f64::from_bits(TAG_UNDEFINED)
     } else {

@@ -29,6 +29,49 @@ use crate::request::{
 use crate::response::{alloc_server_response, HyperResponseShape};
 use crate::server::{HttpPendingRequest, HttpServer};
 use crate::tls::{build_server_config, parse_cert_chain, parse_private_key};
+
+/// Decode `{ key, cert, alpnProtocols? }` from a NaN-boxed JsValue
+/// object literal into Rust strings + a flag for whether to advertise
+/// `h2` in ALPN. Falls back to empty PEMs (which the cert-chain
+/// parser then rejects) on any extraction failure so the user sees
+/// a clear bind error.
+unsafe fn parse_https_opts(opts_f64: f64) -> (String, String, bool) {
+    use perry_ffi::JsValue;
+    let v = JsValue::from_bits(opts_f64.to_bits());
+    if !v.is_pointer() {
+        return (String::new(), String::new(), true);
+    }
+    let json = match perry_ffi::json_stringify(v) {
+        Some(j) => j,
+        None => return (String::new(), String::new(), true),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(p) => p,
+        Err(_) => return (String::new(), String::new(), true),
+    };
+    let key_pem = parsed
+        .get("key")
+        .and_then(|k| k.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let cert_pem = parsed
+        .get("cert")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .to_string();
+    // Default ALPN to `[http/1.1]` only — node:https is HTTP/1.1
+    // by spec; users wanting HTTP/2 should reach for node:http2's
+    // createSecureServer instead. Opt-in via `alpnProtocols: ["h2", "http/1.1"]`.
+    // Without this, an HTTP/2-aware client (curl --http2) negotiates h2
+    // via ALPN against our http1::Builder accept loop and the request
+    // hangs because we never speak h2 frames back.
+    let enable_h2 = parsed
+        .get("alpnProtocols")
+        .and_then(|a| a.as_array())
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some("h2")))
+        .unwrap_or(false);
+    (key_pem, cert_pem, enable_h2)
+}
 use crate::types::{
     extract_host, extract_port, js_gc_enter_unsafe_zone, read_string_header, POINTER_TAG, PTR_MASK,
 };
@@ -37,20 +80,18 @@ use crate::types::{
 /// (PEM strings) plus optional `passphrase`/`ca`. `handler` is the
 /// usual `(req, res) => …` closure.
 ///
-/// `key_pem_ptr` and `cert_pem_ptr` are the PEM bytes themselves;
-/// the TS-side wrapper extracts these from the opts object before
-/// the FFI call. Same for `enable_http2_alpn` (bool 0/1).
+/// `opts_f64` is the NaN-boxed `{ key, cert, alpnProtocols? }` object
+/// the TS user passes to `https.createServer(opts, handler)`. Read
+/// via `json_stringify` so binary cert data has to fit through a
+/// PEM round-trip — fine since key + cert PEM are both ASCII.
 #[no_mangle]
 pub unsafe extern "C" fn js_node_https_create_server(
-    key_pem_ptr: *const StringHeader,
-    cert_pem_ptr: *const StringHeader,
-    enable_http2_alpn: i32,
+    opts_f64: f64,
     handler: i64,
 ) -> i64 {
     ensure_gc_scanner_registered();
 
-    let key_pem = read_string_header(key_pem_ptr as *mut _).unwrap_or_default();
-    let cert_pem = read_string_header(cert_pem_ptr as *mut _).unwrap_or_default();
+    let (key_pem, cert_pem, enable_http2_alpn) = parse_https_opts(opts_f64);
 
     let cert_chain = parse_cert_chain(cert_pem.as_bytes());
     let private_key = match parse_private_key(key_pem.as_bytes()) {
@@ -76,7 +117,7 @@ pub unsafe extern "C" fn js_node_https_create_server(
             });
         }
     };
-    let tls_config = match build_server_config(cert_chain, private_key, enable_http2_alpn != 0) {
+    let tls_config = match build_server_config(cert_chain, private_key, enable_http2_alpn) {
         Ok(c) => Some(c),
         Err(e) => {
             eprintln!("[node:https] {}", e);
@@ -149,8 +190,7 @@ pub unsafe extern "C" fn js_node_https_server_listen(
     let acceptor = TlsAcceptor::from(tls_config);
 
     perry_ffi::spawn_blocking_with_reactor(move || {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async move {
+        tokio::spawn(async move {
             let bind_str = format!("{}:{}", host_for_spawn, port);
             let addr: SocketAddr = match bind_str.parse() {
                 Ok(a) => a,

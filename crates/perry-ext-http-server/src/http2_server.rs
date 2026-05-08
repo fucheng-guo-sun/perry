@@ -39,6 +39,36 @@ use crate::request::{
 use crate::response::{alloc_server_response, HyperResponseShape};
 use crate::server::{synthesize_default_response_if_needed, HttpPendingRequest, HttpServer};
 use crate::tls::{build_server_config, parse_cert_chain, parse_private_key};
+
+/// Decode `{ key, cert }` from a NaN-boxed JsValue object. Mirrors
+/// the helper in `https_server.rs` but omits the alpnProtocols flag
+/// since http2 server always advertises `[h2, http/1.1]`.
+unsafe fn parse_h2_opts(opts_f64: f64) -> (String, String) {
+    use perry_ffi::JsValue;
+    let v = JsValue::from_bits(opts_f64.to_bits());
+    if !v.is_pointer() {
+        return (String::new(), String::new());
+    }
+    let json = match perry_ffi::json_stringify(v) {
+        Some(j) => j,
+        None => return (String::new(), String::new()),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(p) => p,
+        Err(_) => return (String::new(), String::new()),
+    };
+    let key_pem = parsed
+        .get("key")
+        .and_then(|k| k.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let cert_pem = parsed
+        .get("cert")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .to_string();
+    (key_pem, cert_pem)
+}
 use crate::types::{
     extract_host, extract_port, js_gc_enter_unsafe_zone, js_is_promise, js_promise_run_microtasks,
     js_promise_value, read_string_header, wait_for_promise, Promise, POINTER_TAG, PTR_MASK,
@@ -58,14 +88,12 @@ pub struct Http2SecureServer {
 /// Node's behavior with `allowHTTP1: true`, default in Node 14+).
 #[no_mangle]
 pub unsafe extern "C" fn js_node_http2_create_secure_server(
-    key_pem_ptr: *const StringHeader,
-    cert_pem_ptr: *const StringHeader,
+    opts_f64: f64,
     handler: i64,
 ) -> i64 {
     ensure_gc_scanner_registered();
 
-    let key_pem = read_string_header(key_pem_ptr as *mut _).unwrap_or_default();
-    let cert_pem = read_string_header(cert_pem_ptr as *mut _).unwrap_or_default();
+    let (key_pem, cert_pem) = parse_h2_opts(opts_f64);
     let cert_chain = parse_cert_chain(cert_pem.as_bytes());
     let private_key = parse_private_key(key_pem.as_bytes());
 
@@ -138,8 +166,24 @@ pub unsafe extern "C" fn js_node_http2_server_listen(
     let host_for_spawn = host.clone();
     let acceptor = TlsAcceptor::from(tls_config);
 
-    perry_ffi::spawn_blocking_with_reactor(move || {
-        let handle = tokio::runtime::Handle::current();
+    // Issue #577 Phase 3 — `tokio::spawn` from inside
+    // `spawn_blocking_with_reactor`'s closure panics with
+    // "no reactor running" specifically on the http2 binary because
+    // the auto::Builder dep set somehow ends up with the ambient
+    // tokio runtime context unset by the time the closure runs.
+    // Workaround: use `perry_ffi::spawn_blocking` (no reactor) +
+    // `Handle::current().block_on` — same pattern perry-ext-fastify
+    // uses. The plain spawn_blocking variant runs the closure on a
+    // tokio blocking-pool thread that does NOT have a runtime
+    // context, so calling `block_on(fut)` is legal there (it spins
+    // up a fresh current_thread runtime to drive the future). The
+    // I/O reactor IS available because the inner runtime is built
+    // with `enable_all`.
+    perry_ffi::spawn_blocking(move || {
+        let handle = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create http2 accept-loop runtime");
         handle.block_on(async move {
             let bind_str = format!("{}:{}", host_for_spawn, port);
             let addr: SocketAddr = match bind_str.parse() {

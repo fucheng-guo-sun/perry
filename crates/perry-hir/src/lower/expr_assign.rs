@@ -279,6 +279,39 @@ pub(super) fn lower_assign(ctx: &mut LoweringContext, assign: &ast::AssignExpr) 
                 }
             }
 
+            // Issue #577 — `res.statusCode = 200` / `res.statusMessage = "OK"`
+            // on a registered ServerResponse native instance. Rewrite to
+            // a `__set_<name>` NativeMethodCall so codegen dispatches
+            // through the http NATIVE_MODULE_TABLE entries.
+            if let ast::Expr::Ident(obj_ident) = member.obj.as_ref() {
+                let obj_name = obj_ident.sym.to_string();
+                let native_instance = ctx
+                    .lookup_native_instance(&obj_name)
+                    .map(|(m, c)| (m.to_string(), c.to_string()));
+                if let Some((module_name, class_name)) = native_instance {
+                    if module_name == "http" {
+                        if let ast::MemberProp::Ident(prop_ident) = &member.prop {
+                            let prop = prop_ident.sym.to_string();
+                            let setter_method = match (class_name.as_str(), prop.as_str()) {
+                                ("ServerResponse", "statusCode") => Some("__set_statusCode"),
+                                ("ServerResponse", "statusMessage") => Some("__set_statusMessage"),
+                                _ => None,
+                            };
+                            if let Some(method) = setter_method {
+                                let object_expr = lower_expr(ctx, &member.obj)?;
+                                return Ok(Expr::NativeMethodCall {
+                                    module: module_name,
+                                    class_name: Some(class_name),
+                                    object: Some(Box::new(object_expr)),
+                                    method: method.to_string(),
+                                    args: vec![*value],
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             // regex.lastIndex = N → RegExpSetLastIndex
             if let ast::MemberProp::Ident(prop_ident) = &member.prop {
                 if prop_ident.sym.as_ref() == "lastIndex" {

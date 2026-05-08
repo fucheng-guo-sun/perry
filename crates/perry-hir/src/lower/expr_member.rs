@@ -400,11 +400,15 @@ pub(super) fn lower_member(ctx: &mut LoweringContext, member: &ast::MemberExpr) 
     // Check for native instance property access (e.g., response.status, response.ok)
     if let ast::Expr::Ident(obj_ident) = member.obj.as_ref() {
         let obj_name = obj_ident.sym.to_string();
-        // Clone module_name early to avoid borrow issues
+        // Clone module_name + class_name early to avoid borrow issues.
+        // Issue #577 — preserve class_name in the lowered NativeMethodCall
+        // so the codegen NATIVE_MODULE_TABLE class_filter dispatch fires
+        // for getters like `req.method` / `res.statusCode` that have
+        // class_filter = Some("IncomingMessage" / "ServerResponse").
         let native_instance = ctx
             .lookup_native_instance(&obj_name)
-            .map(|(m, _c)| m.to_string());
-        if let Some(module_name) = native_instance {
+            .map(|(m, c)| (m.to_string(), c.to_string()));
+        if let Some((module_name, class_name)) = native_instance {
             if let ast::MemberProp::Ident(prop_ident) = &member.prop {
                 let property_name = prop_ident.sym.to_string();
                 // Issue #562: stream subclass instances (e.g.
@@ -431,12 +435,46 @@ pub(super) fn lower_member(ctx: &mut LoweringContext, member: &ast::MemberExpr) 
                     // Fall through — let the regular member access path
                     // below handle the user-declared subclass field.
                 } else {
+                    // Issue #577 — `req.method` / `res.statusCode` etc.
+                    // get rewritten to `__get_<name>` so the property
+                    // read dispatches through NATIVE_MODULE_TABLE entries
+                    // with class_filter = Some("IncomingMessage" |
+                    // "ServerResponse"). Mapping table is the set of
+                    // properties exposed via per-class FFI getters in
+                    // perry-ext-http-server. Anything not in the set
+                    // falls back to the existing bare-method-name
+                    // dispatch (covers `request.headers` on fastify
+                    // and similar).
+                    let property_name = if module_name == "http" {
+                        match (class_name.as_str(), property_name.as_str()) {
+                            ("IncomingMessage", "method")
+                            | ("IncomingMessage", "url")
+                            | ("IncomingMessage", "httpVersion")
+                            | ("IncomingMessage", "complete")
+                            | ("IncomingMessage", "aborted")
+                            | ("IncomingMessage", "destroyed")
+                            | ("ServerResponse", "statusCode")
+                            | ("ServerResponse", "headersSent")
+                            | ("ServerResponse", "writableEnded")
+                            | ("ServerResponse", "writableFinished") => {
+                                format!("__get_{}", property_name)
+                            }
+                            _ => property_name,
+                        }
+                    } else {
+                        property_name
+                    };
+                    let class_filter = if module_name == "http" {
+                        Some(class_name.clone())
+                    } else {
+                        None
+                    };
                     // For properties that map to FFI functions, generate a NativeMethodCall
                     // with no args (property getter)
                     let object_expr = lower_expr(ctx, &member.obj)?;
                     return Ok(Expr::NativeMethodCall {
                         module: module_name,
-                        class_name: None,
+                        class_name: class_filter,
                         object: Some(Box::new(object_expr)),
                         method: property_name,
                         args: Vec::new(),

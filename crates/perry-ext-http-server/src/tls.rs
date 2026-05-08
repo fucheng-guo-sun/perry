@@ -36,6 +36,26 @@ pub fn parse_private_key(pem_bytes: &[u8]) -> Option<PrivateKeyDer<'static>> {
     None
 }
 
+/// rustls 0.23 requires explicit selection of a CryptoProvider when
+/// multiple providers are linked into the binary (perry transitively
+/// pulls in both `ring` via our direct dep and `aws-lc-rs` via
+/// reqwest's rustls-tls feature). Without an explicit install,
+/// `ServerConfig::builder()` panics with "Could not automatically
+/// determine the process-level CryptoProvider". Idempotent — the
+/// `Once` makes repeated calls safe across multiple createServer
+/// invocations within a single process.
+fn ensure_crypto_provider_installed() {
+    use std::sync::Once;
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        // Best-effort install. If a provider was already installed
+        // by another crate (or by user code), `install_default()`
+        // returns Err; we ignore it because in that case the
+        // existing provider is already usable.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Build a rustls `ServerConfig` ready for `tokio_rustls::TlsAcceptor`.
 /// `alpn_protocols` is set to `[h2, http/1.1]` so an HTTP/2-aware
 /// negotiator can pick the upgraded transport on the same port —
@@ -48,6 +68,7 @@ pub fn build_server_config(
     if cert_chain.is_empty() {
         return Err("https.createServer: empty certificate chain".to_string());
     }
+    ensure_crypto_provider_installed();
     let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(cert_chain, private_key)

@@ -422,6 +422,12 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("ws", "on", true, None),
     method("ws", "send", true, None),
     method("ws", "close", true, None),
+    // Issue #577 Phase 4 — Client-class methods for the upgrade-path wsId.
+    method("ws", "on", true, Some("Client")),
+    method("ws", "addListener", true, Some("Client")),
+    method("ws", "send", true, Some("Client")),
+    method("ws", "close", true, Some("Client")),
+    class("ws", "Client"),
     method_sig(
         "ws",
         "sendToClient",

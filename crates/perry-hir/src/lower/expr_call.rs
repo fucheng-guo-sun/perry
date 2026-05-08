@@ -21,7 +21,7 @@ use swc_ecma_ast as ast;
 use crate::ir::*;
 use crate::lower_patterns::{
     detect_native_instance_expr, pre_scan_fastify_handler_params,
-    pre_scan_node_http_create_server_params,
+    pre_scan_node_http_create_server_params, pre_scan_node_http_upgrade_params,
 };
 use crate::lower_types::extract_ts_type_with_ctx;
 
@@ -148,6 +148,19 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
             res_name,
             "http".to_string(),
             "ServerResponse".to_string(),
+        );
+    }
+
+    // Issue #577 Phase 4 — `httpServer.on('upgrade', (req, wsId, head) => …)`
+    // — register `wsId` as a `("ws", "Client")` native instance BEFORE
+    // the arrow body is lowered, so `wsId.send(...)` / `wsId.on(...)` /
+    // `wsId.close()` inside the handler dispatch via the Client-class
+    // entries in NATIVE_MODULE_TABLE.
+    if let Some(ws_id_name) = pre_scan_node_http_upgrade_params(ctx, call) {
+        ctx.register_native_instance(
+            ws_id_name,
+            "ws".to_string(),
+            "Client".to_string(),
         );
     }
 

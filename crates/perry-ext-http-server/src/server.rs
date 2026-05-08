@@ -143,9 +143,15 @@ pub unsafe extern "C" fn js_node_http_server_listen(
     let upgrade_tx_for_spawn = upgrade_tx.clone();
     let host_for_spawn = host.clone();
 
+    // The closure passed to `spawn_blocking_with_reactor` runs INSIDE
+    // a tokio worker task (perry-stdlib's shim wraps it in
+    // `runtime().spawn(async { invoke(...) })`), so calling
+    // `Handle::current().block_on(fut)` would panic with
+    // "Cannot start a runtime from within a runtime". Spawn the
+    // accept loop as a separate async task on the existing runtime
+    // and let the closure return immediately.
     perry_ffi::spawn_blocking_with_reactor(move || {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async move {
+        tokio::spawn(async move {
             let bind_str = format!("{}:{}", host_for_spawn, port);
             let addr: SocketAddr = match bind_str.parse() {
                 Ok(a) => a,
@@ -482,9 +488,18 @@ async fn handle_websocket_upgrade(
 /// returns; the process exits when the user invokes `process.exit`
 /// or hits a top-level error.
 fn event_loop(server_handle: i64) {
+    extern "C" {
+        // perry-ext-ws's main-thread pump — drains pending WS
+        // events (message / close / error) and dispatches to user
+        // listeners. Without this call here, WebSocket connections
+        // routed in via the Phase 4 upgrade path queue events
+        // forever and `ws.on('message', ...)` listeners never fire.
+        fn js_ws_process_pending() -> i32;
+    }
     loop {
         unsafe {
             js_promise_run_microtasks();
+            js_ws_process_pending();
         }
         // Drain any ready upgrade events first so they don't get
         // starved by a busy request stream.
