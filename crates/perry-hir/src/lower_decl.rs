@@ -2076,6 +2076,9 @@ pub(crate) fn lower_constructor(
     let mut params = Vec::new();
     // Track TsParamProp params so we can synthesize `this.field = param` assignments
     let mut param_prop_assignments: Vec<(LocalId, String)> = Vec::new();
+    // Issue #572: track destructuring patterns on plain `Param` ctor args so
+    // the body sees the destructured names (TsParamProp can't be a destructure).
+    let mut destructuring_params: Vec<(LocalId, ast::Pat)> = Vec::new();
     for param in &ctor.params {
         match param {
             ast::ParamOrTsParamProp::Param(p) => {
@@ -2091,6 +2094,14 @@ pub(crate) fn lower_constructor(
                     default: param_default,
                     is_rest,
                 });
+                let inner_pat = if let ast::Pat::Assign(assign) = &p.pat {
+                    assign.left.as_ref()
+                } else {
+                    &p.pat
+                };
+                if is_destructuring_pattern(inner_pat) {
+                    destructuring_params.push((param_id, inner_pat.clone()));
+                }
             }
             ast::ParamOrTsParamProp::TsParamProp(ts_prop) => {
                 // Handle parameter properties (e.g., constructor(public x: number))
@@ -2124,6 +2135,16 @@ pub(crate) fn lower_constructor(
         }
     }
 
+    // Issue #572: generate destructuring extractions BEFORE lowering the
+    // body so destructured names are in scope for identifier resolution.
+    let mut destructuring_stmts: Vec<Stmt> = Vec::new();
+    if !destructuring_params.is_empty() {
+        for (param_id, pat) in &destructuring_params {
+            let stmts = generate_param_destructuring_stmts(ctx, pat, *param_id)?;
+            destructuring_stmts.extend(stmts);
+        }
+    }
+
     // Lower body — issue #569; constructor body may contain hoisted
     // inner function declarations that need PreallocateBoxes for sibling
     // captures.
@@ -2148,6 +2169,13 @@ pub(crate) fn lower_constructor(
         // Prepend synthetic assignments before the user-written constructor body
         synthetic_stmts.append(&mut body);
         body = synthetic_stmts;
+    }
+
+    // Issue #572: prepend destructuring extractions for ctor params (the
+    // stmts were generated before body lowering so locals are in scope).
+    if !destructuring_stmts.is_empty() {
+        destructuring_stmts.append(&mut body);
+        body = destructuring_stmts;
     }
 
     // Prepend defaulted-parameter application: for every param with a
@@ -2413,6 +2441,10 @@ pub(crate) fn lower_class_method(
 
     // Lower parameters with type extraction (using context for type param resolution)
     let mut params = Vec::new();
+    // Issue #572: track destructuring patterns so the body sees real bindings
+    // rather than reading from a synthetic `__obj_destruct_*` local that the
+    // method body can't reach by name.
+    let mut destructuring_params: Vec<(LocalId, ast::Pat)> = Vec::new();
     for param in &method.function.params {
         let param_name = get_pat_name(&param.pat)?;
         let param_type = extract_param_type_with_ctx(&param.pat, Some(ctx));
@@ -2426,6 +2458,16 @@ pub(crate) fn lower_class_method(
             default: param_default,
             is_rest,
         });
+        // Mirror the lower_fn_decl shape: an `Assign` pattern can wrap a
+        // destructure (e.g. `({ a } = {}) => ...`). Unwrap before testing.
+        let inner_pat = if let ast::Pat::Assign(assign) = &param.pat {
+            assign.left.as_ref()
+        } else {
+            &param.pat
+        };
+        if is_destructuring_pattern(inner_pat) {
+            destructuring_params.push((param_id, inner_pat.clone()));
+        }
     }
 
     // Extract return type (with context). Phase 4: when the method has no
@@ -2451,12 +2493,30 @@ pub(crate) fn lower_class_method(
         }
     }
 
+    // Issue #572: generate destructuring extractions BEFORE lowering the
+    // body, so the destructured names land in `ctx.locals` and identifier
+    // references inside the body resolve to those LocalIds (matching the
+    // order used by lower_fn_decl). Doing this after body lowering would
+    // produce "unknown identifier" warnings + GlobalGet(0) refs.
+    let mut destructuring_stmts: Vec<Stmt> = Vec::new();
+    if !destructuring_params.is_empty() {
+        for (param_id, pat) in &destructuring_params {
+            let stmts = generate_param_destructuring_stmts(ctx, pat, *param_id)?;
+            destructuring_stmts.extend(stmts);
+        }
+    }
+
     // Lower body — see issue #569.
     let mut body = if let Some(ref block) = method.function.body {
         lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
+
+    if !destructuring_stmts.is_empty() {
+        destructuring_stmts.append(&mut body);
+        body = destructuring_stmts;
+    }
 
     // Issue #235: prepend `if (param === undefined) param = default;` for
     // every default-value param so a caller passing fewer args (which
@@ -2613,6 +2673,8 @@ pub(crate) fn lower_setter_method(
 
     // Setters have exactly one parameter
     let mut params = Vec::new();
+    // Issue #572: setter param can be a destructuring pattern (`set v({ x }) {...}`).
+    let mut destructuring_params: Vec<(LocalId, ast::Pat)> = Vec::new();
     for param in &method.function.params {
         let param_name = get_pat_name(&param.pat)?;
         let param_type = extract_param_type_with_ctx(&param.pat, Some(ctx));
@@ -2624,14 +2686,34 @@ pub(crate) fn lower_setter_method(
             default: None,
             is_rest: false,
         });
+        let inner_pat = if let ast::Pat::Assign(assign) = &param.pat {
+            assign.left.as_ref()
+        } else {
+            &param.pat
+        };
+        if is_destructuring_pattern(inner_pat) {
+            destructuring_params.push((param_id, inner_pat.clone()));
+        }
+    }
+
+    // Generate destructuring stmts BEFORE body lowering (issue #572).
+    let mut destructuring_stmts: Vec<Stmt> = Vec::new();
+    for (param_id, pat) in &destructuring_params {
+        let stmts = generate_param_destructuring_stmts(ctx, pat, *param_id)?;
+        destructuring_stmts.extend(stmts);
     }
 
     // Lower body — see issue #569.
-    let body = if let Some(ref block) = method.function.body {
+    let mut body = if let Some(ref block) = method.function.body {
         lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
+
+    if !destructuring_stmts.is_empty() {
+        destructuring_stmts.append(&mut body);
+        body = destructuring_stmts;
+    }
 
     ctx.exit_scope(scope_mark);
 
@@ -2737,6 +2819,9 @@ pub(crate) fn lower_private_method(
 
     // Lower parameters with type extraction
     let mut params = Vec::new();
+    // Issue #572 — private methods follow the same destructure-extraction shape
+    // as public methods.
+    let mut destructuring_params: Vec<(LocalId, ast::Pat)> = Vec::new();
     for param in &method.function.params {
         let param_name = get_pat_name(&param.pat)?;
         let param_type = extract_param_type_with_ctx(&param.pat, Some(ctx));
@@ -2750,6 +2835,14 @@ pub(crate) fn lower_private_method(
             default: param_default,
             is_rest,
         });
+        let inner_pat = if let ast::Pat::Assign(assign) = &param.pat {
+            assign.left.as_ref()
+        } else {
+            &param.pat
+        };
+        if is_destructuring_pattern(inner_pat) {
+            destructuring_params.push((param_id, inner_pat.clone()));
+        }
     }
 
     // Extract return type
@@ -2760,12 +2853,27 @@ pub(crate) fn lower_private_method(
         .map(|rt| extract_ts_type_with_ctx(&rt.type_ann, Some(ctx)))
         .unwrap_or(Type::Any);
 
+    // Issue #572: generate destructuring stmts BEFORE body lowering so the
+    // destructured names land in `ctx.locals` for identifier resolution.
+    let mut destructuring_stmts: Vec<Stmt> = Vec::new();
+    if !destructuring_params.is_empty() {
+        for (param_id, pat) in &destructuring_params {
+            let stmts = generate_param_destructuring_stmts(ctx, pat, *param_id)?;
+            destructuring_stmts.extend(stmts);
+        }
+    }
+
     // Lower body — see issue #569.
-    let body = if let Some(ref block) = method.function.body {
+    let mut body = if let Some(ref block) = method.function.body {
         lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
+
+    if !destructuring_stmts.is_empty() {
+        destructuring_stmts.append(&mut body);
+        body = destructuring_stmts;
+    }
 
     ctx.exit_scope(scope_mark);
     ctx.exit_type_param_scope();
@@ -2841,6 +2949,7 @@ pub(crate) fn lower_private_setter(
     ctx.define_local("this".to_string(), Type::Any);
 
     let mut params = Vec::new();
+    let mut destructuring_params: Vec<(LocalId, ast::Pat)> = Vec::new();
     for param in &method.function.params {
         let param_name = get_pat_name(&param.pat)?;
         let param_type = extract_param_type_with_ctx(&param.pat, Some(ctx));
@@ -2852,13 +2961,33 @@ pub(crate) fn lower_private_setter(
             default: None,
             is_rest: false,
         });
+        let inner_pat = if let ast::Pat::Assign(assign) = &param.pat {
+            assign.left.as_ref()
+        } else {
+            &param.pat
+        };
+        if is_destructuring_pattern(inner_pat) {
+            destructuring_params.push((param_id, inner_pat.clone()));
+        }
     }
 
-    let body = if let Some(ref block) = method.function.body {
+    // Issue #572 — generate destructuring stmts before body lowering.
+    let mut destructuring_stmts: Vec<Stmt> = Vec::new();
+    for (param_id, pat) in &destructuring_params {
+        let stmts = generate_param_destructuring_stmts(ctx, pat, *param_id)?;
+        destructuring_stmts.extend(stmts);
+    }
+
+    let mut body = if let Some(ref block) = method.function.body {
         lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
+
+    if !destructuring_stmts.is_empty() {
+        destructuring_stmts.append(&mut body);
+        body = destructuring_stmts;
+    }
 
     ctx.exit_scope(scope_mark);
 

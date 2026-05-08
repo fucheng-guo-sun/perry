@@ -882,6 +882,47 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         // string handle ("number", "string", "boolean", "undefined",
         // "object", "function"). The result is NaN-boxed with STRING_TAG.
         Expr::TypeOf(operand) => {
+            // Issue #574: short-circuit known compile-time shapes that
+            // `js_value_typeof` would misclassify because the runtime
+            // representation collides with a different tag:
+            //
+            //   * Namespace ExternFuncRef (`import * as Lib from "./m"`)
+            //     lowers as a TAG_TRUE sentinel → typeof reads "boolean".
+            //     Emit "object" instead.
+            //   * Class refs (local `Expr::ClassRef` and imported
+            //     `Expr::ExternFuncRef` resolving via `class_ids`, plus
+            //     the namespace-member class case `Lib.A`) lower as
+            //     INT32-tagged class ids → typeof reads "number". Emit
+            //     "function" to match JS spec for class objects.
+            let typeof_short_circuit: Option<&'static str> = match operand.as_ref() {
+                Expr::ExternFuncRef { name, .. } if ctx.namespace_imports.contains(name) => {
+                    Some("object")
+                }
+                Expr::ExternFuncRef { name, .. } if ctx.class_ids.contains_key(name) => {
+                    Some("function")
+                }
+                Expr::ClassRef(_) => Some("function"),
+                Expr::PropertyGet { object, property } => {
+                    if let Expr::ExternFuncRef { name, .. } = object.as_ref() {
+                        if ctx.namespace_imports.contains(name)
+                            && ctx.class_ids.contains_key(property)
+                        {
+                            Some("function")
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(s) = typeof_short_circuit {
+                let idx = ctx.strings.intern(s);
+                let entry = ctx.strings.entry(idx);
+                let handle_global = format!("@{}", entry.handle_global);
+                return Ok(ctx.block().load(DOUBLE, &handle_global));
+            }
             let v = lower_expr(ctx, operand)?;
             let blk = ctx.block();
             let handle = blk.call(I64, "js_value_typeof", &[(DOUBLE, &v)]);
@@ -3230,6 +3271,23 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // (the registry duplication bug was the first).
             if let Expr::ExternFuncRef { name, .. } = object.as_ref() {
                 if ctx.namespace_imports.contains(name) {
+                    // Issue #574: when the namespace member is itself a class
+                    // (`import * as Lib from "./lib"; new Lib.A()` /
+                    // `class B extends Lib.A {}`), the export-walk above
+                    // registered "A" in both `class_ids` and
+                    // `import_function_prefixes`. The function-getter
+                    // path below would emit `perry_fn_<src>__A` — but
+                    // classes don't have a per-export getter symbol, so
+                    // the call returns undefined (silent miss) and
+                    // `typeof Lib.A` is "undefined", `Lib.A` reads as
+                    // undefined too. Resolve the class reference inline
+                    // (mirrors the `Expr::ExternFuncRef` arm at the
+                    // bottom of this function): emit the INT32-tagged
+                    // class-id NaN-box that `Expr::ClassRef` produces.
+                    if let Some(&cid) = ctx.class_ids.get(property) {
+                        let bits = crate::nanbox::INT32_TAG | (cid as u64 & 0xFFFF_FFFF);
+                        return Ok(double_literal(f64::from_bits(bits)));
+                    }
                     if let Some(source_prefix) = ctx.import_function_prefixes.get(property).cloned()
                     {
                         let getter = format!("perry_fn_{}__{}", source_prefix, property);
@@ -4501,6 +4559,84 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
 
                 ctx.locals = saved_locals;
                 ctx.local_types = saved_local_types;
+            } else if let Some(error_kind) = {
+                // Issue #573: walk the chain from `effective_parent_class`
+                // upward; if it terminates at an Error-like built-in,
+                // emit the same Error init the no-parent-class branch
+                // does (sets this.message + this.name). Without this,
+                // `class C extends Error {}; class D extends C { ctor(m){
+                // super(m); } }` reaches here with `effective_parent_class
+                // = C` (no own ctor) and a parent of "Error" (not in
+                // ctx.classes), so neither inline nor cross-module-ctor
+                // path fires and `super(msg)` becomes a no-op.
+                let mut found: Option<String> = None;
+                let mut cur = Some(effective_parent_name.clone());
+                let mut depth = 0usize;
+                while let Some(pname) = cur {
+                    if matches!(
+                        pname.as_str(),
+                        "Error"
+                            | "TypeError"
+                            | "RangeError"
+                            | "ReferenceError"
+                            | "SyntaxError"
+                            | "URIError"
+                            | "EvalError"
+                            | "AggregateError"
+                    ) {
+                        found = Some(pname);
+                        break;
+                    }
+                    cur = ctx
+                        .classes
+                        .get(pname.as_str())
+                        .and_then(|c| c.extends_name.clone());
+                    depth += 1;
+                    if depth > 32 {
+                        break;
+                    }
+                }
+                found
+            } {
+                let this_slot = ctx.this_stack.last().cloned();
+                if let Some(this_slot) = this_slot {
+                    let blk = ctx.block();
+                    let this_box = blk.load(DOUBLE, &this_slot);
+                    let this_bits = blk.bitcast_double_to_i64(&this_box);
+                    let this_handle = blk.and(I64, &this_bits, POINTER_MASK_I64);
+                    if let Some(msg_val) = lowered_args.first() {
+                        let key_idx = ctx.strings.intern("message");
+                        let key_handle_global =
+                            format!("@{}", ctx.strings.entry(key_idx).handle_global);
+                        let blk = ctx.block();
+                        let key_box = blk.load(DOUBLE, &key_handle_global);
+                        let key_bits = blk.bitcast_double_to_i64(&key_box);
+                        let key_raw = blk.and(I64, &key_bits, POINTER_MASK_I64);
+                        blk.call_void(
+                            "js_object_set_field_by_name",
+                            &[(I64, &this_handle), (I64, &key_raw), (DOUBLE, msg_val)],
+                        );
+                    }
+                    let name_idx = ctx.strings.intern("name");
+                    let name_handle_global =
+                        format!("@{}", ctx.strings.entry(name_idx).handle_global);
+                    let name_val_idx = ctx.strings.intern(&error_kind);
+                    let name_val_global =
+                        format!("@{}", ctx.strings.entry(name_val_idx).handle_global);
+                    let blk = ctx.block();
+                    let name_key_box = blk.load(DOUBLE, &name_handle_global);
+                    let name_key_bits = blk.bitcast_double_to_i64(&name_key_box);
+                    let name_key_raw = blk.and(I64, &name_key_bits, POINTER_MASK_I64);
+                    let name_val_box = blk.load(DOUBLE, &name_val_global);
+                    blk.call_void(
+                        "js_object_set_field_by_name",
+                        &[
+                            (I64, &this_handle),
+                            (I64, &name_key_raw),
+                            (DOUBLE, &name_val_box),
+                        ],
+                    );
+                }
             } else if let Some((ctor_name, param_count)) = ctx
                 .imported_class_ctors
                 .get(&effective_parent_name)
@@ -5387,7 +5523,20 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 "Set" => 0xFFFF0023u32,
                 // `Array` — runtime detects via GC_TYPE_ARRAY at obj-8.
                 "Array" => 0xFFFF0024u32,
-                _ => ctx.class_ids.get(ty).copied().unwrap_or(0),
+                _ => ctx.class_ids.get(ty).copied().unwrap_or_else(|| {
+                    // Issue #574: `b instanceof Lib.A` where Lib is a
+                    // namespace import. The HIR captures the receiver
+                    // as a dotted `ty` ("Lib.A") which `class_ids`
+                    // doesn't have. Strip the namespace prefix and
+                    // re-lookup by the bare class name when the prefix
+                    // matches a known namespace import.
+                    if let Some((ns, cls)) = ty.split_once('.') {
+                        if ctx.namespace_imports.contains(ns) {
+                            return ctx.class_ids.get(cls).copied().unwrap_or(0);
+                        }
+                    }
+                    0
+                }),
             };
             let cid_str = cid.to_string();
             Ok(ctx

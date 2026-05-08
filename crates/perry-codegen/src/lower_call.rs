@@ -2815,6 +2815,7 @@ pub(crate) fn lower_new(ctx: &mut FnCtx<'_>, class_name: &str, args: &[Expr]) ->
         // `class Child extends Parent {}` auto-forwards constructor
         // arguments to the parent constructor.
         let mut parent_name = class.extends_name.as_deref();
+        let mut found_inherited_ctor = false;
         while let Some(pname) = parent_name {
             if let Some(parent_class) = ctx.classes.get(pname).copied() {
                 if let Some(parent_ctor) = &parent_class.constructor {
@@ -2856,11 +2857,113 @@ pub(crate) fn lower_new(ctx: &mut FnCtx<'_>, class_name: &str, args: &[Expr]) ->
 
                     ctx.locals = saved_locals;
                     ctx.local_types = saved_local_types;
+                    found_inherited_ctor = true;
                     break; // Found and inlined the parent ctor.
                 }
                 parent_name = parent_class.extends_name.as_deref();
             } else {
                 break;
+            }
+        }
+        // Issue #573: if the parent walk reached an Error-like built-in
+        // without finding any user-class constructor, synthesize the JS
+        // spec default ctor `constructor(...args) { super(...args); }` —
+        // i.e. forward the first arg to Error's initialization, which
+        // sets `this.message` + `this.name`. Without this, `new MyError(
+        // "hello")` returns an object with `.message` / `.name`
+        // unset — the SIGABRT-on-property-read happens because the slot
+        // index lookup misses and downstream NaN-box decode reads
+        // garbage.
+        //
+        // Walk the chain to find the terminating Error-like name (so
+        // `class A extends Error {}; class B extends A {}` also flows
+        // through correctly). If found, set `this.message = args[0]`
+        // and `this.name = <error_kind>` directly, mirroring the
+        // SuperCall Error-like arm in expr.rs.
+        //
+        // BUT: if `class_name` is an imported stub with a cross-module
+        // ctor that has REAL params, defer to that path — the source
+        // module's ctor body knows the real param order
+        // (e.g. `constructor(public statusCode, msg)` where args[0] is
+        // statusCode, not message). Running Error-init here would
+        // assign the wrong arg to `message` and corrupt the instance.
+        // When the imported ctor's param_count is 0, the source had no
+        // own ctor (codegen synthesized an empty 0-param ctor for the
+        // bare-extends-Error case), so calling it is a no-op and we
+        // still need Error-init to populate `this.message` / `this.name`.
+        let imported_ctor_has_real_params = ctx
+            .imported_class_ctors
+            .get(class_name)
+            .map(|(_, n)| *n > 0)
+            .unwrap_or(false);
+        if !found_inherited_ctor && !imported_ctor_has_real_params {
+            // Trace the chain to find the first Error-like ancestor name.
+            let mut error_kind: Option<String> = None;
+            let mut cur = class.extends_name.clone();
+            let mut depth = 0usize;
+            while let Some(pname) = cur {
+                if matches!(
+                    pname.as_str(),
+                    "Error"
+                        | "TypeError"
+                        | "RangeError"
+                        | "ReferenceError"
+                        | "SyntaxError"
+                        | "URIError"
+                        | "EvalError"
+                        | "AggregateError"
+                ) {
+                    error_kind = Some(pname);
+                    break;
+                }
+                cur = ctx
+                    .classes
+                    .get(pname.as_str())
+                    .and_then(|c| c.extends_name.clone());
+                depth += 1;
+                if depth > 32 {
+                    break;
+                }
+            }
+            if let Some(kind) = error_kind {
+                let this_slot_for_err = ctx.this_stack.last().cloned().unwrap_or_default();
+                let blk = ctx.block();
+                let this_box = blk.load(DOUBLE, &this_slot_for_err);
+                let this_bits = blk.bitcast_double_to_i64(&this_box);
+                let this_handle = blk.and(I64, &this_bits, POINTER_MASK_I64);
+                if let Some(msg_val) = lowered_args.first() {
+                    let key_idx = ctx.strings.intern("message");
+                    let key_handle_global =
+                        format!("@{}", ctx.strings.entry(key_idx).handle_global);
+                    let blk = ctx.block();
+                    let key_box = blk.load(DOUBLE, &key_handle_global);
+                    let key_bits = blk.bitcast_double_to_i64(&key_box);
+                    let key_raw = blk.and(I64, &key_bits, POINTER_MASK_I64);
+                    blk.call_void(
+                        "js_object_set_field_by_name",
+                        &[(I64, &this_handle), (I64, &key_raw), (DOUBLE, msg_val)],
+                    );
+                }
+                let name_idx = ctx.strings.intern("name");
+                let name_handle_global =
+                    format!("@{}", ctx.strings.entry(name_idx).handle_global);
+                let name_val_idx = ctx.strings.intern(&kind);
+                let name_val_global =
+                    format!("@{}", ctx.strings.entry(name_val_idx).handle_global);
+                let blk = ctx.block();
+                let name_key_box = blk.load(DOUBLE, &name_handle_global);
+                let name_key_bits = blk.bitcast_double_to_i64(&name_key_box);
+                let name_key_raw = blk.and(I64, &name_key_bits, POINTER_MASK_I64);
+                let name_val_box = blk.load(DOUBLE, &name_val_global);
+                blk.call_void(
+                    "js_object_set_field_by_name",
+                    &[
+                        (I64, &this_handle),
+                        (I64, &name_key_raw),
+                        (DOUBLE, &name_val_box),
+                    ],
+                );
+                found_inherited_ctor = true; // skip the imported-ctor fallback below
             }
         }
         // If no parent constructor was found (imported class with no
@@ -2871,6 +2974,7 @@ pub(crate) fn lower_new(ctx: &mut FnCtx<'_>, class_name: &str, args: &[Expr]) ->
         // PgSerial needs to dispatch to Column_constructor (forwarding the
         // ctor args). Without this walk, `new PgSerial(table, config)`
         // produced an empty object since none of the chain's bodies ran.
+        if !found_inherited_ctor {
         let lookup_class = class_name.to_string();
         let mut effective_class_name = lookup_class.clone();
         let mut effective_extends = class.extends_name.clone();
@@ -2940,6 +3044,7 @@ pub(crate) fn lower_new(ctx: &mut FnCtx<'_>, class_name: &str, args: &[Expr]) ->
                 .push((ctor_name.clone(), crate::types::VOID, ctor_param_types));
             ctx.block().call_void(&ctor_name, &ctor_args);
         }
+        } // end !found_inherited_ctor
     }
 
     // Now that the parent body chain has run (setting `this.config`, etc.),

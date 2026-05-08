@@ -3855,6 +3855,19 @@ pub(crate) fn collect_non_escaping_news(
             if class_uses_this_as_value(class, classes) {
                 escaped.insert(*id);
             }
+            // Issue #573: classes extending built-in Error / TypeError /
+            // etc. need the heap path so `lower_new`'s Error-init fallback
+            // can populate `this.message` / `this.name` via
+            // `js_object_set_field_by_name`. Scalar replacement allocates
+            // per-field allocas keyed by declared field names, but Error
+            // subclasses typically declare neither field — the runtime
+            // adds them via SuperCall / lower_new fallback. Without this
+            // check, `class MyError extends Error {}` skips the heap path
+            // and the scalar-replaced object has no slots for `message` /
+            // `name`, so reads return undefined or crash.
+            else if class_chain_extends_builtin_error(class, classes) {
+                escaped.insert(*id);
+            }
         }
     }
 
@@ -3924,6 +3937,44 @@ fn class_uses_this_as_value(
             }
             parent = pc.extends_name.as_deref();
         } else {
+            break;
+        }
+    }
+    false
+}
+
+/// Issue #573: walk the class's `extends_name` chain and return true if any
+/// ancestor name matches a built-in Error subclass — `Error`, `TypeError`,
+/// `RangeError`, etc. Such classes need real heap allocation so
+/// `lower_new`'s Error-init fallback (and the user-explicit `super(msg)`
+/// path) can populate `this.message` / `this.name` via the runtime field-
+/// setter. Scalar replacement only allocates allocas for declared fields,
+/// which Error subclasses typically don't declare.
+fn class_chain_extends_builtin_error(
+    class: &perry_hir::Class,
+    classes: &std::collections::HashMap<String, &perry_hir::Class>,
+) -> bool {
+    let mut cur = class.extends_name.as_deref().map(|s| s.to_string());
+    let mut depth = 0usize;
+    while let Some(name) = cur {
+        if matches!(
+            name.as_str(),
+            "Error"
+                | "TypeError"
+                | "RangeError"
+                | "ReferenceError"
+                | "SyntaxError"
+                | "URIError"
+                | "EvalError"
+                | "AggregateError"
+        ) {
+            return true;
+        }
+        cur = classes
+            .get(name.as_str())
+            .and_then(|c| c.extends_name.clone());
+        depth += 1;
+        if depth > 32 {
             break;
         }
     }
