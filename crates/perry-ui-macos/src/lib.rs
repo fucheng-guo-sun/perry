@@ -10,6 +10,7 @@ pub mod keychain;
 pub mod location;
 pub mod media_playback;
 pub mod menu;
+pub mod network;
 pub mod notifications;
 pub mod state;
 pub mod string_header;
@@ -1950,6 +1951,20 @@ pub extern "C" fn perry_system_image_picker_pick(
     callback: f64,
 ) {
     image_picker::pick(max_count, allow_multiple, callback);
+}
+
+// ---- Network reachability (issue #582) ----
+#[no_mangle]
+pub extern "C" fn perry_system_network_get_status(callback: f64) {
+    network::get_status(callback);
+}
+#[no_mangle]
+pub extern "C" fn perry_system_network_on_change(callback: f64) -> f64 {
+    network::on_change(callback)
+}
+#[no_mangle]
+pub extern "C" fn perry_system_network_stop_on_change(id: f64) {
+    network::stop_on_change(id);
 }
 
 // ---- perry/background (issue #538) — NSBackgroundActivityScheduler ----

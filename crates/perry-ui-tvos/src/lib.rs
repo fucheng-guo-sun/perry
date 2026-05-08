@@ -8,6 +8,7 @@ pub mod issue_552_stub;
 pub mod location;
 pub mod media_playback;
 pub mod menu;
+pub mod network_stub;
 pub mod screenshot;
 pub mod state;
 pub mod websocket;

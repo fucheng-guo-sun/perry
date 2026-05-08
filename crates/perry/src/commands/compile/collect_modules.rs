@@ -13,8 +13,8 @@ use anyhow::{anyhow, Result};
 use perry_hir::ModuleKind;
 use perry_transform::{
     gather_cross_module_anon_classes, gather_cross_module_methods,
-    gather_cross_module_methods_with_extern_imports, inline_functions,
-    transform_async_to_generator, transform_generators, MethodCandidate,
+    gather_cross_module_methods_with_extern_imports, inline_finally_into_returns,
+    inline_functions, transform_async_to_generator, transform_generators, MethodCandidate,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -645,6 +645,15 @@ pub(super) fn collect_modules(
         // to compile-time integer literals — see crates/perry-transform/
         // src/unroll.rs.
         perry_transform::unroll_static_loops(&mut hir_module);
+        // Inline `finally` bodies before each abrupt completion
+        // (`return` / `break` / `continue` / labeled-break / labeled-
+        // continue) reachable inside a `try { ... } finally { Y }`
+        // shape. Must run BEFORE `transform_async_to_generator` because
+        // the async transform flattens `try`/`finally` into a flat
+        // state-machine sequence — an abrupt completion in the body
+        // terminates the state, leaving the appended finally as dead
+        // code. Issue #536.
+        inline_finally_into_returns(&mut hir_module);
         transform_async_to_generator(&mut hir_module);
         transform_generators(&mut hir_module);
     }

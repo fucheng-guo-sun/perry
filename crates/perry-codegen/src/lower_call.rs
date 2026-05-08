@@ -8001,6 +8001,70 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         args: &[],
         ret: NR_PTR,
     },
+
+    // ========== node:http server (issue #577) ==========
+    // Module-level: `import { createServer } from "node:http"; createServer(handler)`
+    NativeModSig { module: "http", has_receiver: false, method: "createServer", class_filter: None, runtime: "js_node_http_create_server", args: &[NA_PTR], ret: NR_PTR },
+    // HttpServer instance methods (class_filter: HttpServer)
+    NativeModSig { module: "http", has_receiver: true, method: "listen", class_filter: Some("HttpServer"), runtime: "js_node_http_server_listen", args: &[NA_F64, NA_PTR], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "close", class_filter: Some("HttpServer"), runtime: "js_node_http_server_close", args: &[NA_PTR], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "closeAllConnections", class_filter: Some("HttpServer"), runtime: "js_node_http_server_close_all_connections", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "closeIdleConnections", class_filter: Some("HttpServer"), runtime: "js_node_http_server_close_idle_connections", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "on", class_filter: Some("HttpServer"), runtime: "js_node_http_server_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    NativeModSig { module: "http", has_receiver: true, method: "addListener", class_filter: Some("HttpServer"), runtime: "js_node_http_server_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    // IncomingMessage instance methods
+    NativeModSig { module: "http", has_receiver: true, method: "on", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    NativeModSig { module: "http", has_receiver: true, method: "addListener", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    NativeModSig { module: "http", has_receiver: true, method: "pause", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_pause", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "resume", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_resume", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "destroy", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_destroy", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "read", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_read", args: &[], ret: NR_F64 },
+    // ServerResponse instance methods
+    NativeModSig { module: "http", has_receiver: true, method: "setHeader", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_set_header", args: &[NA_STR, NA_STR], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "getHeader", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_get_header", args: &[NA_STR], ret: NR_F64 },
+    NativeModSig { module: "http", has_receiver: true, method: "removeHeader", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_remove_header", args: &[NA_STR], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "hasHeader", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_has_header", args: &[NA_STR], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "writeHead", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_write_head", args: &[NA_F64, NA_STR, NA_STR], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "write", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_write", args: &[NA_F64], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "end", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_end", args: &[NA_F64], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "flushHeaders", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_flush_headers", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "writeContinue", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_write_continue", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "writeProcessing", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_write_processing", args: &[], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "on", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    NativeModSig { module: "http", has_receiver: true, method: "addListener", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    // Method-call aliases for property-style accessors. Until the
+    // HIR-level PropertyGet→__get_<name> rewrite lands (followup),
+    // user code must use the method-call form: `req.method()` (calls
+    // js_node_http_im_method) instead of `req.method` (property
+    // read). Same shape as fastify's `request.method()` / `request.url()`.
+    NativeModSig { module: "http", has_receiver: true, method: "method", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_method", args: &[], ret: NR_STR },
+    NativeModSig { module: "http", has_receiver: true, method: "url", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_url", args: &[], ret: NR_STR },
+    NativeModSig { module: "http", has_receiver: true, method: "httpVersion", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_http_version", args: &[], ret: NR_STR },
+    NativeModSig { module: "http", has_receiver: true, method: "setStatus", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_set_status", args: &[NA_F64], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "getStatus", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_get_status", args: &[], ret: NR_F64 },
+    // Property accessors as `__get_<name>` / `__set_<name>` synthetic methods
+    NativeModSig { module: "http", has_receiver: true, method: "__get_method", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_method", args: &[], ret: NR_STR },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_url", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_url", args: &[], ret: NR_STR },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_httpVersion", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_http_version", args: &[], ret: NR_STR },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_complete", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_complete", args: &[], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_aborted", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_aborted", args: &[], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_destroyed", class_filter: Some("IncomingMessage"), runtime: "js_node_http_im_destroyed", args: &[], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_statusCode", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_get_status", args: &[], ret: NR_F64 },
+    NativeModSig { module: "http", has_receiver: true, method: "__set_statusCode", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_set_status", args: &[NA_F64], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "__set_statusMessage", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_set_status_message", args: &[NA_STR], ret: NR_VOID },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_headersSent", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_headers_sent", args: &[], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_writableEnded", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_writable_ended", args: &[], ret: NR_I32 },
+    NativeModSig { module: "http", has_receiver: true, method: "__get_writableFinished", class_filter: Some("ServerResponse"), runtime: "js_node_http_res_writable_finished", args: &[], ret: NR_I32 },
+    // ========== node:https server (issue #577 Phase 2) ==========
+    NativeModSig { module: "https", has_receiver: false, method: "createServer", class_filter: None, runtime: "js_node_https_create_server", args: &[NA_STR, NA_STR, NA_F64, NA_PTR], ret: NR_PTR },
+    NativeModSig { module: "https", has_receiver: true, method: "listen", class_filter: Some("HttpsServer"), runtime: "js_node_https_server_listen", args: &[NA_F64, NA_PTR], ret: NR_VOID },
+    NativeModSig { module: "https", has_receiver: true, method: "close", class_filter: Some("HttpsServer"), runtime: "js_node_https_server_close", args: &[NA_PTR], ret: NR_VOID },
+    NativeModSig { module: "https", has_receiver: true, method: "on", class_filter: Some("HttpsServer"), runtime: "js_node_https_server_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
+    // ========== node:http2 server (issue #577 Phase 3) ==========
+    NativeModSig { module: "http2", has_receiver: false, method: "createSecureServer", class_filter: None, runtime: "js_node_http2_create_secure_server", args: &[NA_STR, NA_STR, NA_PTR], ret: NR_PTR },
+    NativeModSig { module: "http2", has_receiver: true, method: "listen", class_filter: Some("Http2SecureServer"), runtime: "js_node_http2_server_listen", args: &[NA_F64, NA_PTR], ret: NR_VOID },
+    NativeModSig { module: "http2", has_receiver: true, method: "close", class_filter: Some("Http2SecureServer"), runtime: "js_node_http2_server_close", args: &[NA_PTR], ret: NR_VOID },
+    NativeModSig { module: "http2", has_receiver: true, method: "on", class_filter: Some("Http2SecureServer"), runtime: "js_node_http2_server_on", args: &[NA_STR, NA_PTR], ret: NR_F64 },
 ];
 
 /// Walk a statement to collect LocalIds declared inside a closure body —

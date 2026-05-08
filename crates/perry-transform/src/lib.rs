@@ -8,6 +8,7 @@
 
 pub mod async_to_generator;
 pub mod closure;
+pub mod finally_inline;
 pub mod generator;
 pub mod i18n;
 pub mod inline;
@@ -17,6 +18,7 @@ pub mod unroll;
 // Re-export main transformation functions
 pub use async_to_generator::transform_async_to_generator;
 pub use closure::convert_closures;
+pub use finally_inline::inline_finally_into_returns;
 pub use generator::transform_generators;
 pub use i18n::{apply_i18n, I18nDiagnostic, I18nStringTable};
 pub use inline::{

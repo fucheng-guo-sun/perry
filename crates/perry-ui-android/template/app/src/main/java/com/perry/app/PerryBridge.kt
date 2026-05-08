@@ -623,6 +623,126 @@ object PerryBridge {
         }
     }
 
+    // --- Network reachability (issue #582) ---
+
+    private val networkListeners = mutableMapOf<Long, Long>()  // listenerId -> callbackKey
+    private var nextNetworkListenerId: Long = 1L
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var lastNetworkConnected: Boolean = false
+    private var lastNetworkKind: String = "unknown"
+    private var networkInitialized: Boolean = false
+
+    private fun classifyNetwork(caps: android.net.NetworkCapabilities?): Pair<Boolean, String> {
+        if (caps == null) return Pair(false, "none")
+        val internet = caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        val validated =
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        if (!internet) return Pair(false, "none")
+        val kind = when {
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "unknown"
+        }
+        // Treat presence-of-INTERNET as connected; VALIDATED is a stronger
+        // guarantee but absence (e.g. captive portal) shouldn't make us claim
+        // offline — leave that distinction to the app layer.
+        return Pair(validated || internet, kind)
+    }
+
+    private fun ensureNetworkMonitorStarted() {
+        if (networkCallback != null) return
+        val cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager ?: return
+
+        // Seed cached state from the active network so the first
+        // networkGetStatus call has a real value to return without waiting
+        // for the first callback fire.
+        try {
+            val active = cm.activeNetwork
+            val caps = if (active != null) cm.getNetworkCapabilities(active) else null
+            val (c, k) = classifyNetwork(caps)
+            lastNetworkConnected = c
+            lastNetworkKind = k
+            networkInitialized = true
+        } catch (_: Exception) {}
+
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(
+                network: android.net.Network,
+                caps: android.net.NetworkCapabilities
+            ) {
+                val (c, k) = classifyNetwork(caps)
+                deliver(c, k)
+            }
+            override fun onLost(network: android.net.Network) {
+                deliver(false, "none")
+            }
+            override fun onAvailable(network: android.net.Network) {
+                // onCapabilitiesChanged usually fires right after onAvailable
+                // with the real type — stay quiet here unless we have nothing.
+                if (!networkInitialized) {
+                    deliver(true, "unknown")
+                }
+            }
+            private fun deliver(connected: Boolean, kind: String) {
+                lastNetworkConnected = connected
+                lastNetworkKind = kind
+                networkInitialized = true
+                val snapshot = networkListeners.values.toList()
+                uiHandler.post {
+                    for (key in snapshot) {
+                        nativeInvokeNetworkCallback(key, connected, kind)
+                    }
+                }
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        } catch (_: Exception) {
+            // ACCESS_NETWORK_STATE missing or registration failed — leave
+            // the cache at unknown / disconnected; getStatus still resolves.
+        }
+    }
+
+    @JvmStatic
+    fun networkGetStatus(callbackKey: Long) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            uiHandler.post { networkGetStatus(callbackKey) }
+            return
+        }
+        ensureNetworkMonitorStarted()
+        nativeInvokeNetworkCallback(callbackKey, lastNetworkConnected, lastNetworkKind)
+    }
+
+    @JvmStatic
+    fun networkOnChange(callbackKey: Long): Long {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            val latch = CountDownLatch(1)
+            var result: Long = 0
+            uiHandler.post {
+                result = networkOnChange(callbackKey)
+                latch.countDown()
+            }
+            latch.await()
+            return result
+        }
+        ensureNetworkMonitorStarted()
+        val id = nextNetworkListenerId++
+        networkListeners[id] = callbackKey
+        return id
+    }
+
+    @JvmStatic
+    fun networkStopOnChange(id: Long) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            uiHandler.post { networkStopOnChange(id) }
+            return
+        }
+        networkListeners.remove(id)
+    }
+
     // --- Image picker (issue #552) ---
 
     @JvmStatic
@@ -1230,6 +1350,10 @@ object PerryBridge {
 
     @JvmStatic
     external fun nativeInvokeCallbackWithString(key: Long, text: String)
+
+    // Issue #582: network reachability — `(connected, kind)` argument pair.
+    @JvmStatic
+    external fun nativeInvokeNetworkCallback(key: Long, connected: Boolean, kind: String)
 
     // =====================================================================
     // MapView (issue #517) — Google Maps SDK for Android.

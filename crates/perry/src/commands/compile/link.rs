@@ -1036,6 +1036,8 @@ pub(super) fn build_and_run_link(
             .arg("PDFKit") // perry/ui PdfView (#516) — PDFView
             .arg("-framework")
             .arg("BackgroundTasks") // perry/background BGTaskScheduler (#538)
+            .arg("-framework")
+            .arg("Network") // perry/system network reachability (#582)
             .arg("-liconv")
             .arg("-lresolv")
             .arg("-lobjc")
@@ -1511,6 +1513,8 @@ pub(super) fn build_and_run_link(
                     // also exposes the PDFDocument / PDFPage classes used for
                     // page-count + page-navigation queries.
                     cmd.arg("-framework").arg("PDFKit");
+                    // perry/system network reachability (#582) — NWPathMonitor.
+                    cmd.arg("-framework").arg("Network");
                 }
             }
 

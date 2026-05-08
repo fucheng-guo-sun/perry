@@ -303,6 +303,76 @@ fn pat_ident_name(pat: &ast::Pat) -> Option<String> {
     }
 }
 
+/// Pre-scan for `http.createServer((req, res) => ...)` and
+/// `createServer((req, res) => ...)` (named import from node:http).
+/// Issue #577 mirror of `pre_scan_fastify_handler_params`. Returns
+/// the (request_local, response_local) names so the caller can
+/// register them as `("http", "IncomingMessage")` and
+/// `("http", "ServerResponse")` native instances BEFORE the arrow
+/// body is lowered — that way `req.method` / `res.end(...)` inside
+/// the handler dispatch through NATIVE_MODULE_TABLE.
+///
+/// Returns `None` for any other call shape.
+pub(crate) fn pre_scan_node_http_create_server_params(
+    ctx: &crate::lower::LoweringContext,
+    call: &ast::CallExpr,
+) -> Option<(String, String)> {
+    use ast::Callee;
+    let callee_expr = match &call.callee {
+        Callee::Expr(e) => e,
+        _ => return None,
+    };
+
+    let (module_name, method_name) = match callee_expr.as_ref() {
+        ast::Expr::Member(member) => {
+            let obj_ident = match member.obj.as_ref() {
+                ast::Expr::Ident(i) => i,
+                _ => return None,
+            };
+            let obj_name = obj_ident.sym.to_string();
+            let (module, _) = ctx.lookup_native_module(&obj_name)?;
+            let method = match &member.prop {
+                ast::MemberProp::Ident(i) => i.sym.to_string(),
+                _ => return None,
+            };
+            (module.to_string(), method)
+        }
+        ast::Expr::Ident(ident) => {
+            let func_name = ident.sym.to_string();
+            let (module, method_opt) = ctx.lookup_native_module(&func_name)?;
+            let method = method_opt?.to_string();
+            (module.to_string(), method)
+        }
+        _ => return None,
+    };
+
+    let _matched = match (module_name.as_str(), method_name.as_str()) {
+        ("http", "createServer") => true,
+        ("https", "createServer") => true,
+        ("http2", "createSecureServer") => true,
+        _ => return None,
+    };
+
+    let handler_arg = call.args.last()?;
+    if handler_arg.spread.is_some() {
+        return None;
+    }
+    let arrow = match handler_arg.expr.as_ref() {
+        ast::Expr::Arrow(a) => a,
+        _ => return None,
+    };
+    let req_name = arrow.params.first().and_then(pat_ident_name)?;
+    let res_name = arrow
+        .params
+        .get(1)
+        .and_then(pat_ident_name)
+        .unwrap_or_default();
+    if res_name.is_empty() {
+        return None;
+    }
+    Some((req_name, res_name))
+}
+
 /// Detect if an expression represents a native handle instance (Big, Decimal, etc.)
 /// Returns the module name if it does.
 pub(crate) fn detect_native_instance_expr(expr: &ast::Expr) -> Option<&'static str> {

@@ -267,6 +267,7 @@ fn drive_client_io<S>(
                                     .get(&ws_id)
                                     .map(|l| l.listeners.get("message").map(|v| !v.is_empty()).unwrap_or(false))
                                     .unwrap_or(false);
+                                let text = text.to_string();
                                 if has_listeners {
                                     push_ws_event(PendingWsEvent::Message(ws_id, text));
                                 } else if let Some(c) = WS_CONNECTIONS.lock().unwrap().get_mut(&ws_id) {
@@ -657,6 +658,47 @@ pub extern "C" fn js_ws_server_close(handle: i64) {
             let _ = tx.send(());
         }
     }
+}
+
+/// Register an externally-provided WebSocket stream as a perry-ext-ws
+/// connection — used by perry-ext-http-server's upgrade path so that
+/// `Server.on('upgrade', ...)` integration flows through the same
+/// per-client IO loop and listener registry as standalone
+/// `WebSocketServer({port})` connections (issue #577 Phase 4).
+///
+/// Returns the assigned `ws_id` (`usize`-shaped, fits in `i64`)
+/// that user code consumes via `js_ws_send` / `js_ws_close` / `js_ws_on`.
+/// The caller is responsible for firing whatever 'connection' /
+/// 'upgrade' event listeners are appropriate; this function does not
+/// push a `PendingWsEvent::Connection`.
+pub fn register_external_ws_stream<S>(
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+) -> i64
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    ensure_gc_scanner_registered();
+    let mut id_guard = NEXT_WS_ID.lock().unwrap();
+    let ws_id = *id_guard;
+    *id_guard += 1;
+    drop(id_guard);
+    let (tx, rx) = mpsc::unbounded_channel::<WsCommand>();
+    WS_CONNECTIONS.lock().unwrap().insert(
+        ws_id,
+        WsConnection {
+            sender: tx,
+            messages: Vec::new(),
+            is_open: true,
+        },
+    );
+    WS_CLIENT_LISTENERS.lock().unwrap().insert(
+        ws_id,
+        WsClientListeners {
+            listeners: HashMap::new(),
+        },
+    );
+    drive_server_client_io(ws_id, ws_stream, rx);
+    ws_id as i64
 }
 
 // ── Event-loop tick ───────────────────────────────────────────────

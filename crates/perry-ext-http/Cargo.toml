@@ -10,6 +10,12 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 perry-ffi.workspace = true
+# Server-side surface (issue #577) lives in perry-ext-http-server. Pulling
+# it in as an rlib dep makes the `js_node_http_*` / `js_node_https_*` /
+# `js_node_http2_*` symbols flow through into libperry_ext_http.a so a
+# single staticlib registration in well_known_bindings.toml covers
+# both client and server. The crate split keeps the source layered.
+perry-ext-http-server = { path = "../perry-ext-http-server" }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "http2"], default-features = false }
 tokio = { workspace = true }
 serde_json = "1"

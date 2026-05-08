@@ -274,3 +274,30 @@ pub extern "C" fn Java_com_perry_app_PerryBridge_nativeInvokeCallbackWithStringA
     invoke_with_string_array(key as i64, &rust_paths);
     pump_microtasks();
 }
+
+/// JNI entry point for the issue #582 network reachability callback. Java
+/// signature: `nativeInvokeNetworkCallback(long key, boolean connected, String kind)`.
+/// Builds the NaN-boxed `(connected, kind)` argument pair and dispatches to
+/// the registered Perry closure. `kind` is one of `"wifi" | "cellular" |
+/// "ethernet" | "none" | "unknown"`.
+#[no_mangle]
+pub extern "C" fn Java_com_perry_app_PerryBridge_nativeInvokeNetworkCallback(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    key: jni::sys::jlong,
+    connected: jni::sys::jboolean,
+    kind: jni::objects::JString,
+) {
+    const TAG_FALSE: u64 = 0x7FFC_0000_0000_0003;
+    const TAG_TRUE: u64 = 0x7FFC_0000_0000_0004;
+    let connected_jsval =
+        f64::from_bits(if connected != 0 { TAG_TRUE } else { TAG_FALSE });
+    let kind_str: String = env.get_string(&kind).map(|s| s.into()).unwrap_or_default();
+    let bytes = kind_str.as_bytes();
+    let kind_jsval = unsafe {
+        let str_ptr = js_string_from_bytes(bytes.as_ptr(), bytes.len() as i64);
+        js_nanbox_string(str_ptr as i64)
+    };
+    invoke2(key as i64, connected_jsval, kind_jsval);
+    pump_microtasks();
+}

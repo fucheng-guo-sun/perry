@@ -19,7 +19,10 @@ use perry_types::{LocalId, Type};
 use swc_ecma_ast as ast;
 
 use crate::ir::*;
-use crate::lower_patterns::{detect_native_instance_expr, pre_scan_fastify_handler_params};
+use crate::lower_patterns::{
+    detect_native_instance_expr, pre_scan_fastify_handler_params,
+    pre_scan_node_http_create_server_params,
+};
 use crate::lower_types::extract_ts_type_with_ctx;
 
 use super::{
@@ -123,6 +126,29 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                 "Reply".to_string(),
             );
         }
+    }
+
+    // Issue #577 — `http.createServer((req, res) => …)` /
+    // `https.createServer({...}, (req, res) => …)` /
+    // `http2.createSecureServer({...}, (req, res) => …)`. Register
+    // the (req, res) handler params as IncomingMessage /
+    // ServerResponse native instances BEFORE the arrow body is
+    // lowered, so `req.method` / `res.end(...)` inside the handler
+    // dispatch through NATIVE_MODULE_TABLE instead of falling
+    // through to generic property access.
+    if let Some((req_name, res_name)) =
+        pre_scan_node_http_create_server_params(ctx, call)
+    {
+        ctx.register_native_instance(
+            req_name,
+            "http".to_string(),
+            "IncomingMessage".to_string(),
+        );
+        ctx.register_native_instance(
+            res_name,
+            "http".to_string(),
+            "ServerResponse".to_string(),
+        );
     }
 
     // perry/ui reactive Text: `Text(\`...${state.value}...\`)` where at least one

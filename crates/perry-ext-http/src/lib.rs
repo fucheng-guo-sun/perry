@@ -5,6 +5,16 @@
 //! Both `http` and `https` flow through the same wrapper — reqwest
 //! handles TLS based on URL scheme.
 //!
+//! # Server-side surface (issue #577)
+//!
+//! `perry-ext-http-server` ships the server-side counterpart —
+//! `http.createServer`, `https.createServer`, `http2.createSecureServer`.
+//! It's pulled in here as an rlib dep so its `js_node_http_*` /
+//! `js_node_https_*` / `js_node_http2_*` symbols flow into
+//! `libperry_ext_http.a`. Don't remove the `extern crate` declaration
+//! after this docblock — it keeps the linker from dead-stripping the
+//! server symbols when no client-side code happens to reference them.
+//!
 //! # Architecture (mirrors perry-ext-cron + perry-stdlib's http.rs)
 //!
 //! - `js_http_request(opts, cb)` / `js_http_get(...)` synchronously
@@ -31,6 +41,9 @@
 //! buffer (matches perry-stdlib's existing copy). True streaming is
 //! a v0.6.0 followup that needs a cooperative `spawn_async` surface
 //! on perry-ffi (today's surface is sync-via-blocking-pool only).
+
+#[allow(unused_imports)]
+extern crate perry_ext_http_server as _server_link;
 
 use lazy_static::lazy_static;
 use perry_ffi::{

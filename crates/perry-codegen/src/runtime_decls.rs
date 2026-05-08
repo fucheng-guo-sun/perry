@@ -593,6 +593,16 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_regexp_new", I64, &[I64, I64]);
     module.declare_function("js_regexp_test", I32, &[I64, I64]);
     module.declare_function("js_get_string_pointer_unified", I64, &[DOUBLE]);
+    // Closes #580: alias-on-copy refcount bump for string locals. The
+    // call site at `crates/perry-codegen/src/stmt.rs:725` was added by
+    // v0.5.667 (#536) to mark the source string as shared (refcount=0)
+    // so `js_string_append`'s in-place fast path won't mutate a
+    // still-aliased buffer when codegen detects `let y = x;` with a
+    // string-typed source. Without this matching declare, every
+    // `try { const y = x; ... } finally {...}` shape with a string
+    // local failed clang with "use of undefined value
+    // @js_string_addref" — pure linker-visible declaration fix.
+    module.declare_function("js_string_addref", VOID, &[I64]);
     module.declare_function("js_bigint_from_string", I64, &[PTR, I32]);
     module.declare_function("js_bigint_from_f64", I64, &[DOUBLE]);
     module.declare_function("js_bigint_cmp", I32, &[I64, I64]);
@@ -1403,6 +1413,69 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
     // ========== HTTPS ==========
     module.declare_function("js_https_get", I64, &[DOUBLE, I64]);
     module.declare_function("js_https_request", I64, &[DOUBLE, I64]);
+
+    // ========== node:http / node:https / node:http2 SERVER (issue #577) ==========
+    // perry-ext-http-server — handler-push HTTP/1.1 + HTTP/2 + TLS via rustls.
+    // Symbols are linked through perry-ext-http (rlib dep), so the
+    // existing `bindings.http` / `bindings.https` / `bindings.http2`
+    // entries in well_known_bindings.toml route imports here.
+    // Server / lifecycle:
+    module.declare_function("js_node_http_create_server", I64, &[I64]);
+    module.declare_function("js_node_http_server_listen", VOID, &[I64, DOUBLE, I64]);
+    module.declare_function("js_node_http_server_close", VOID, &[I64, I64]);
+    module.declare_function("js_node_http_server_close_all_connections", VOID, &[I64]);
+    module.declare_function("js_node_http_server_close_idle_connections", VOID, &[I64]);
+    module.declare_function("js_node_http_server_address_json", I64, &[I64]);
+    module.declare_function("js_node_http_server_listening", I32, &[I64]);
+    module.declare_function("js_node_http_server_on", DOUBLE, &[I64, I64, I64]);
+    // IncomingMessage:
+    module.declare_function("js_node_http_im_method", I64, &[I64]);
+    module.declare_function("js_node_http_im_url", I64, &[I64]);
+    module.declare_function("js_node_http_im_http_version", I64, &[I64]);
+    module.declare_function("js_node_http_im_headers_json", I64, &[I64]);
+    module.declare_function("js_node_http_im_raw_headers_json", I64, &[I64]);
+    module.declare_function("js_node_http_im_complete", I32, &[I64]);
+    module.declare_function("js_node_http_im_aborted", I32, &[I64]);
+    module.declare_function("js_node_http_im_destroyed", I32, &[I64]);
+    module.declare_function("js_node_http_im_remote_address", I64, &[I64]);
+    module.declare_function("js_node_http_im_remote_port", DOUBLE, &[I64]);
+    module.declare_function("js_node_http_im_pause", VOID, &[I64]);
+    module.declare_function("js_node_http_im_resume", VOID, &[I64]);
+    module.declare_function("js_node_http_im_destroy", VOID, &[I64]);
+    module.declare_function("js_node_http_im_on", DOUBLE, &[I64, I64, I64]);
+    module.declare_function("js_node_http_im_read", DOUBLE, &[I64]);
+    // ServerResponse:
+    module.declare_function("js_node_http_res_set_status", VOID, &[I64, DOUBLE]);
+    module.declare_function("js_node_http_res_get_status", DOUBLE, &[I64]);
+    module.declare_function("js_node_http_res_set_status_message", VOID, &[I64, I64]);
+    module.declare_function("js_node_http_res_set_header", VOID, &[I64, I64, I64]);
+    module.declare_function("js_node_http_res_get_header", DOUBLE, &[I64, I64]);
+    module.declare_function("js_node_http_res_remove_header", VOID, &[I64, I64]);
+    module.declare_function("js_node_http_res_has_header", I32, &[I64, I64]);
+    module.declare_function("js_node_http_res_get_headers_json", I64, &[I64]);
+    module.declare_function("js_node_http_res_get_header_names_json", I64, &[I64]);
+    module.declare_function("js_node_http_res_headers_sent", I32, &[I64]);
+    module.declare_function("js_node_http_res_writable_ended", I32, &[I64]);
+    module.declare_function("js_node_http_res_writable_finished", I32, &[I64]);
+    module.declare_function("js_node_http_res_write_head", VOID, &[I64, DOUBLE, I64, I64]);
+    module.declare_function("js_node_http_res_write", I32, &[I64, DOUBLE]);
+    module.declare_function("js_node_http_res_end", VOID, &[I64, DOUBLE]);
+    module.declare_function("js_node_http_res_flush_headers", VOID, &[I64]);
+    module.declare_function("js_node_http_res_write_continue", VOID, &[I64]);
+    module.declare_function("js_node_http_res_write_processing", VOID, &[I64]);
+    module.declare_function("js_node_http_res_on", DOUBLE, &[I64, I64, I64]);
+    // node:https server (TLS via rustls):
+    module.declare_function("js_node_https_create_server", I64, &[I64, I64, I32, I64]);
+    module.declare_function("js_node_https_server_listen", VOID, &[I64, DOUBLE, I64]);
+    module.declare_function("js_node_https_server_close", VOID, &[I64, I64]);
+    module.declare_function("js_node_https_server_address_json", I64, &[I64]);
+    module.declare_function("js_node_https_server_on", DOUBLE, &[I64, I64, I64]);
+    // node:http2 secure server (HTTP/2 with ALPN):
+    module.declare_function("js_node_http2_create_secure_server", I64, &[I64, I64, I64]);
+    module.declare_function("js_node_http2_server_listen", VOID, &[I64, DOUBLE, I64]);
+    module.declare_function("js_node_http2_server_close", VOID, &[I64, I64]);
+    module.declare_function("js_node_http2_server_address_json", I64, &[I64]);
+    module.declare_function("js_node_http2_server_on", DOUBLE, &[I64, I64, I64]);
 
     // ========== PostgreSQL (pg) ==========
     module.declare_function("js_pg_client_connect", I64, &[I64]);

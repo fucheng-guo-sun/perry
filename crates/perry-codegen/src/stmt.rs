@@ -691,6 +691,37 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
                 };
                 let v = if !used_i32_init {
                     let v = lower_expr(ctx, init_expr)?;
+                    // String aliasing fix: `let y = x` (init is `LocalGet`
+                    // of a string-typed local) shares the same heap
+                    // pointer between `y` and `x`. A later
+                    // `x = x + suffix` would otherwise see refcount==1
+                    // and mutate the string in-place via
+                    // `js_string_append`'s fast path, also corrupting
+                    // `y`. Mark the underlying string as shared so the
+                    // next append allocates fresh. Pre-fix this didn't
+                    // surface in practice; the v0.5.667 finally-inline
+                    // pass (issue #536) introduced exactly this aliasing
+                    // shape via its `let __finally_ret_<id> = X` hoist
+                    // and `test_edge_error_handling`'s `finallyReturn`
+                    // started returning `start-try-finally` instead of
+                    // `start-try`.
+                    if let perry_hir::Expr::LocalGet(src_id) = init_expr {
+                        if matches!(
+                            ctx.local_types.get(src_id),
+                            Some(perry_types::Type::String)
+                        ) {
+                            let blk = ctx.block();
+                            let s_ptr = blk.call(
+                                crate::types::I64,
+                                "js_get_string_pointer_unified",
+                                &[(DOUBLE, &v)],
+                            );
+                            blk.call_void(
+                                "js_string_addref",
+                                &[(crate::types::I64, &s_ptr)],
+                            );
+                        }
+                    }
                     ctx.block().store(DOUBLE, &v, &slot);
                     v
                 } else {

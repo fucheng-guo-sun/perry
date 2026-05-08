@@ -11,6 +11,10 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 perry-ffi.workspace = true
 tokio = { workspace = true }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# Use the workspace pin so perry-ext-http-server (issue #577) and
+# perry-ext-ws agree on the WebSocketStream<S> type for the upgrade
+# handoff; mismatched versions split type identity and the
+# `register_external_ws_stream` re-export silently fails to compile.
+tokio-tungstenite = { workspace = true }
 futures-util = "0.3"
 lazy_static = "1.5"

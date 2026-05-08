@@ -3863,6 +3863,20 @@ fn lower_module_decl(
                                                         ("node-cron", "schedule") => {
                                                             Some("CronJob")
                                                         }
+                                                        // node:http server (issue #577) — `http.createServer(...)`
+                                                        // returns an HttpServer handle whose `.listen(...)` /
+                                                        // `.close()` / `.address()` / `.on(...)` dispatches via
+                                                        // the ("http", true, *) class_filter=Some("HttpServer")
+                                                        // entries in NATIVE_MODULE_TABLE.
+                                                        ("http", "createServer") => {
+                                                            Some("HttpServer")
+                                                        }
+                                                        ("https", "createServer") => {
+                                                            Some("HttpsServer")
+                                                        }
+                                                        ("http2", "createSecureServer") => {
+                                                            Some("Http2SecureServer")
+                                                        }
                                                         _ => None,
                                                     };
                                                     if let Some(class_name) = class_name {
@@ -3920,6 +3934,40 @@ fn lower_module_decl(
                                                     _ => {}
                                                 }
                                             }
+                                        }
+                                        // node:http server (issue #577) — named-import factory:
+                                        // `import { createServer } from "node:http"; const s = createServer(...)`.
+                                        // Resolve module + method up front to drop the immutable borrow
+                                        // on `ctx` before we mutate via register_native_instance + push.
+                                        let factory_class: Option<&'static str> = ctx
+                                            .lookup_native_module(func_name)
+                                            .and_then(|(m, method)| match (m, method) {
+                                                ("http", Some("createServer")) => Some("HttpServer"),
+                                                ("https", Some("createServer")) => {
+                                                    Some("HttpsServer")
+                                                }
+                                                ("http2", Some("createSecureServer")) => {
+                                                    Some("Http2SecureServer")
+                                                }
+                                                _ => None,
+                                            });
+                                        if let Some(class_name) = factory_class {
+                                            // Module name comes from `lookup_native_module` —
+                                            // re-look it up after the borrow ends.
+                                            let module = ctx
+                                                .lookup_native_module(func_name)
+                                                .map(|(m, _)| m.to_string())
+                                                .unwrap_or_default();
+                                            ctx.register_native_instance(
+                                                name.clone(),
+                                                module.clone(),
+                                                class_name.to_string(),
+                                            );
+                                            ctx.module_native_instances.push((
+                                                name.clone(),
+                                                module,
+                                                class_name.to_string(),
+                                            ));
                                         }
                                     }
                                 }
@@ -5438,6 +5486,32 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                                         cn.to_string(),
                                     );
                                     let _ = mod_name; // suppress unused on tls branch
+                                }
+                                // Issue #577 — node:http / node:https / node:http2 server
+                                // factories. `const s = createServer(...)` (named import)
+                                // and `const s = http.createServer(...)` (namespace import)
+                                // both lower to a receiver-less NativeMethodCall here, so
+                                // this arm covers both shapes.
+                                let http_class = match (mod_name.as_str(), method.as_str()) {
+                                    ("http", "createServer") => Some("HttpServer"),
+                                    ("https", "createServer") => Some("HttpsServer"),
+                                    ("http2", "createSecureServer") => {
+                                        Some("Http2SecureServer")
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(cn) = http_class {
+                                    let module_owned = mod_name.clone();
+                                    ctx.register_native_instance(
+                                        name.clone(),
+                                        module_owned.clone(),
+                                        cn.to_string(),
+                                    );
+                                    ctx.module_native_instances.push((
+                                        name.clone(),
+                                        module_owned,
+                                        cn.to_string(),
+                                    ));
                                 }
                             }
                             // User-defined factory wrappers: when the init is a
