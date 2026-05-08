@@ -908,23 +908,36 @@ fn transform_generator_function(
             }
             StateExit::Done => {
                 // Check if the body already has a return (from the user's `return expr`)
-                let has_return = case_body.iter().any(|s| matches!(s, Stmt::Return(_)));
+                // — at ANY depth, since user code can `return` inside `if` /
+                // `try` / `switch` etc. inside a state body. Without the
+                // recursion (#594), a user `return X` inside an
+                // `if (cond) { return X }` block fell through both rewrites
+                // — the bare `Return(X)` reached the iterator caller and
+                // `__step_r.done` access threw "Cannot read properties of
+                // undefined".
+                let has_return = body_contains_return(&case_body);
                 if has_return {
                     // Rewrite existing returns to iter results, and prepend done=true
-                    // Insert done=true BEFORE the return so it's reachable
-                    let mut new_body = Vec::new();
-                    for s in case_body.drain(..) {
-                        if matches!(s, Stmt::Return(_)) {
-                            new_body.push(Stmt::Expr(Expr::LocalSet(
-                                done_id,
-                                Box::new(Expr::Bool(true)),
-                            )));
-                        }
-                        new_body.push(s);
-                    }
-                    case_body = new_body;
+                    // Insert done=true BEFORE the return so it's reachable.
+                    // Both passes recurse through nested control flow so a
+                    // `return X` at any depth inside this state body is
+                    // covered.
+                    prepend_done_before_returns(&mut case_body, done_id);
                     rewrite_returns_as_done(&mut case_body);
-                    // Don't add trailing return — body already returns
+                    // The body still needs a trailing iter-result if NOT every
+                    // path returns (e.g. `if (cond) return X` falls through
+                    // when `cond` is false). Append a default
+                    // `__gen_done = true; return { value: undefined, done: true }`
+                    // unless the LAST stmt is unconditionally a Return.
+                    let last_is_return = matches!(case_body.last(), Some(Stmt::Return(_)));
+                    if !last_is_return {
+                        case_body.push(Stmt::Expr(Expr::LocalSet(
+                            done_id,
+                            Box::new(Expr::Bool(true)),
+                        )));
+                        case_body
+                            .push(Stmt::Return(Some(make_iter_result(Expr::Undefined, true))));
+                    }
                 } else {
                     // No explicit return: add done + default return
                     case_body.push(Stmt::Expr(Expr::LocalSet(
@@ -2186,7 +2199,12 @@ fn collect_vars_recursive(stmts: &[Stmt], vars: &mut Vec<(LocalId, String, Type)
     }
 }
 
-/// Rewrite Return(Some(expr)) to Return(Some({value: expr, done: true}))
+/// Rewrite Return(Some(expr)) to Return(Some({value: expr, done: true})).
+/// Recurses through If/While/DoWhile/For/Try/Switch/Labeled bodies so a
+/// user `return X` nested inside any control flow inside a state's body
+/// is wrapped — without this, `return X` inside an `if` then-branch
+/// inside the post-await tail of a state slipped through and the bare
+/// value got returned to the runtime's `__step_r.done` access (#594).
 fn rewrite_returns_as_done(stmts: &mut Vec<Stmt>) {
     for stmt in stmts.iter_mut() {
         match stmt {
@@ -2200,9 +2218,175 @@ fn rewrite_returns_as_done(stmts: &mut Vec<Stmt>) {
             Stmt::Return(None) => {
                 *stmt = Stmt::Return(Some(make_iter_result(Expr::Undefined, true)));
             }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                rewrite_returns_as_done(then_branch);
+                if let Some(eb) = else_branch {
+                    rewrite_returns_as_done(eb);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
+                rewrite_returns_as_done(body);
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                rewrite_returns_as_done(body);
+                if let Some(c) = catch {
+                    rewrite_returns_as_done(&mut c.body);
+                }
+                if let Some(f) = finally {
+                    rewrite_returns_as_done(f);
+                }
+            }
+            Stmt::Switch { cases, .. } => {
+                for case in cases.iter_mut() {
+                    rewrite_returns_as_done(&mut case.body);
+                }
+            }
+            Stmt::Labeled { body, .. } => {
+                let mut v = vec![std::mem::replace(body.as_mut(), Stmt::Break)];
+                rewrite_returns_as_done(&mut v);
+                **body = v.into_iter().next().unwrap();
+            }
             _ => {}
         }
     }
+}
+
+/// Walk `stmts` and prepend `LocalSet(done_id, true)` immediately before
+/// every `Stmt::Return` — at any depth. Mirrors `rewrite_returns_as_done`
+/// but inserts the done-flag set instead of rewriting the return value.
+/// Without this, a user `return X` inside an `if`/`try`/etc. nested
+/// block of a state body left `__gen_done` false, so the next call to
+/// `gen.next()` re-entered the state machine and ran the same state
+/// again — surfacing as the iterator producing the user's return value
+/// then hanging or producing `undefined` on subsequent ticks. (#594.)
+fn prepend_done_before_returns(stmts: &mut Vec<Stmt>, done_id: u32) {
+    let mut new_body: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    for s in stmts.drain(..) {
+        let mut s = s;
+        // First recurse so done-flag set lands at the deepest enclosing
+        // statement of each nested return.
+        match &mut s {
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                prepend_done_before_returns(then_branch, done_id);
+                if let Some(eb) = else_branch {
+                    prepend_done_before_returns(eb, done_id);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
+                prepend_done_before_returns(body, done_id);
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                prepend_done_before_returns(body, done_id);
+                if let Some(c) = catch {
+                    prepend_done_before_returns(&mut c.body, done_id);
+                }
+                if let Some(f) = finally {
+                    prepend_done_before_returns(f, done_id);
+                }
+            }
+            Stmt::Switch { cases, .. } => {
+                for case in cases.iter_mut() {
+                    prepend_done_before_returns(&mut case.body, done_id);
+                }
+            }
+            Stmt::Labeled { body, .. } => {
+                let mut v = vec![std::mem::replace(body.as_mut(), Stmt::Break)];
+                prepend_done_before_returns(&mut v, done_id);
+                **body = v.into_iter().next().unwrap();
+            }
+            _ => {}
+        }
+        if matches!(s, Stmt::Return(_)) {
+            new_body.push(Stmt::Expr(Expr::LocalSet(
+                done_id,
+                Box::new(Expr::Bool(true)),
+            )));
+        }
+        new_body.push(s);
+    }
+    *stmts = new_body;
+}
+
+/// True iff any nested statement is a `Stmt::Return(_)` at any depth
+/// (recurses through If/While/DoWhile/For/Try/Switch/Labeled). Used by
+/// the StateExit::Done arm to decide whether the state body already
+/// contains a user-level return that needs rewriting (#594).
+fn body_contains_return(stmts: &[Stmt]) -> bool {
+    for s in stmts {
+        match s {
+            Stmt::Return(_) => return true,
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if body_contains_return(then_branch) {
+                    return true;
+                }
+                if let Some(eb) = else_branch {
+                    if body_contains_return(eb) {
+                        return true;
+                    }
+                }
+            }
+            Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::For { body, .. } => {
+                if body_contains_return(body) {
+                    return true;
+                }
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                if body_contains_return(body) {
+                    return true;
+                }
+                if let Some(c) = catch {
+                    if body_contains_return(&c.body) {
+                        return true;
+                    }
+                }
+                if let Some(f) = finally {
+                    if body_contains_return(f) {
+                        return true;
+                    }
+                }
+            }
+            Stmt::Switch { cases, .. } => {
+                for case in cases {
+                    if body_contains_return(&case.body) {
+                        return true;
+                    }
+                }
+            }
+            Stmt::Labeled { body, .. } => {
+                if body_contains_return(std::slice::from_ref(body.as_ref())) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Check if an expression is already an iterator result object
