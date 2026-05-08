@@ -2092,6 +2092,25 @@ pub static PERRY_SYSTEM_TABLE: &[MethodRow] = &[
         args: &[ArgKind::F64, ArgKind::F64, ArgKind::Closure],
         ret: ReturnKind::Void,
     },
+    // ---- Network reachability (issue #582) ----
+    MethodRow {
+        method: "networkGetStatus",
+        runtime: "perry_system_network_get_status",
+        args: &[ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "networkOnChange",
+        runtime: "perry_system_network_on_change",
+        args: &[ArgKind::Closure],
+        ret: ReturnKind::F64,
+    },
+    MethodRow {
+        method: "networkStopOnChange",
+        runtime: "perry_system_network_stop_on_change",
+        args: &[ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
 ];
 
 /// perry/background — deferred / periodic background work (issue #538).

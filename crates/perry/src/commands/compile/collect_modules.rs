@@ -262,6 +262,9 @@ pub(super) fn collect_modules(
                             | "geolocationStopWatch"
                             | "geolocationRequestPermission"
                             | "imagePickerPick"
+                            | "networkGetStatus"
+                            | "networkOnChange"
+                            | "networkStopOnChange"
                     ),
                     // Namespace imports — opt in conservatively (covers
                     // `import * as system from "perry/system"; system.audioStartRecording()`).

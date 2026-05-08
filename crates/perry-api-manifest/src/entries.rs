@@ -1635,6 +1635,10 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("perry/system", "geolocationStopWatch", false, None),
     method("perry/system", "geolocationRequestPermission", false, None),
     method("perry/system", "imagePickerPick", false, None),
+    // --- perry/system network reachability (issue #582). ---
+    method("perry/system", "networkGetStatus", false, None),
+    method("perry/system", "networkOnChange", false, None),
+    method("perry/system", "networkStopOnChange", false, None),
     // --- perry/background (issue #538) — BGTaskScheduler / WorkManager. ---
     method("perry/background", "registerTask", false, None),
     method("perry/background", "schedule", false, None),

@@ -8,6 +8,7 @@ pub mod keychain;
 pub mod location;
 pub mod media_playback;
 pub mod menu;
+pub mod network_stub;
 pub mod sheet;
 pub mod state;
 pub mod system;

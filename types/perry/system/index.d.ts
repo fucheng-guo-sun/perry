@@ -290,3 +290,52 @@ export function imagePickerPick(
     allowMultiple: boolean,
     cb: (paths: string[]) => void,
 ): void;
+
+// -----------------------------------------------------------------------------
+// Network reachability (issue #582)
+//
+// `networkGetStatus` invokes `cb` synchronously with the current connection
+// state. `networkOnChange` subscribes to subsequent transitions; the returned
+// id is passed back to `networkStopOnChange` to unsubscribe.
+//
+// `connectionType` is one of:
+//   - "wifi"     — Wi-Fi
+//   - "cellular" — mobile data (iOS / Android)
+//   - "ethernet" — wired link (macOS / Android TV / desktop)
+//   - "none"     — explicitly offline
+//   - "unknown"  — connected but the OS didn't report a transport (or the
+//                  monitor hasn't fired its first event yet)
+//
+// iOS:     NWPathMonitor (Network framework, iOS 12+).
+// macOS:   NWPathMonitor (Network framework, 10.14+).
+// Android: ConnectivityManager.registerDefaultNetworkCallback (API 24+).
+//          Requires `<uses-permission android:name=
+//          "android.permission.ACCESS_NETWORK_STATE" />` in
+//          AndroidManifest.xml — the perry-ui-android template adds this
+//          automatically.
+// Other targets (tvOS / visionOS / watchOS / GTK4 / Windows): stub returns
+// `(connected = true, kind = "unknown")` and `onChange` is a no-op (returns 0).
+// -----------------------------------------------------------------------------
+
+/**
+ * Read the current network reachability state. The supplied callback fires
+ * synchronously with `(connected, connectionType)`. If the platform monitor
+ * hasn't observed its first event yet, `connected` may be `false` and
+ * `connectionType` `"unknown"` until the first transition arrives.
+ */
+export function networkGetStatus(
+    cb: (connected: boolean, connectionType: string) => void,
+): void;
+
+/**
+ * Subscribe to network reachability change events. The callback fires every
+ * time the OS reports a transition (typically Wi-Fi ↔ cellular, or
+ * connected ↔ disconnected). Returns a numeric id; pass it to
+ * `networkStopOnChange` to unsubscribe.
+ */
+export function networkOnChange(
+    cb: (connected: boolean, connectionType: string) => void,
+): number;
+
+/** Cancel a subscription started by `networkOnChange`. No-op on unknown ids. */
+export function networkStopOnChange(id: number): void;
