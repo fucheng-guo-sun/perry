@@ -8,3 +8,9 @@
 */node-out.txt
 */out
 */.last-skip
+# Backend-running fixtures (redis-pubsub, future: minio, mysql)
+*/redis-server.log
+*/dump.rdb
+*/minio.log
+*/mysqld.log
+*/.fixture-pid
