@@ -1639,6 +1639,86 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
                 let arg_slices: Vec<(crate::types::LlvmType, &str)> =
                     lowered_args.iter().map(|s| (DOUBLE, s.as_str())).collect();
 
+                // Issue #628 followup (#620 in dynamic-dispatch shape): probe
+                // own-property override BEFORE the class-id switch tower. The
+                // tower hard-codes the static method body for each known
+                // class id; when a user mutates `this.method = X` inside
+                // a method body (hono's SmartRouter rebinds itself on first
+                // call), the second call's dispatch must invoke the stored
+                // override, not the original method. The static-class fast
+                // path got this in v0.5.716 (#620). The dynamic-dispatch
+                // path needs the parallel fix.
+                let key_idx_probe = ctx.strings.intern(property);
+                let probe_entry = ctx.strings.entry(key_idx_probe);
+                let probe_bytes_global = format!("@{}", probe_entry.bytes_global);
+                let probe_name_len_str = probe_entry.byte_len.to_string();
+                let own_method_probe = ctx.block().call(
+                    DOUBLE,
+                    "js_object_get_own_field_or_undef",
+                    &[
+                        (DOUBLE, &recv_box),
+                        (crate::types::PTR, &probe_bytes_global),
+                        (I64, &probe_name_len_str),
+                    ],
+                );
+                let own_bits_probe = ctx.block().bitcast_double_to_i64(&own_method_probe);
+                let undef_bits_str = format!("{}", crate::nanbox::TAG_UNDEFINED as i64);
+                let is_undef_probe =
+                    ctx.block().icmp_eq(I64, &own_bits_probe, &undef_bits_str);
+                let probe_override_idx = ctx.new_block("idisp.override");
+                let probe_dispatch_idx = ctx.new_block("idisp.dispatch");
+                let probe_outer_merge_idx = ctx.new_block("idisp.outer_merge");
+                let probe_override_label = ctx.block_label(probe_override_idx);
+                let probe_dispatch_label = ctx.block_label(probe_dispatch_idx);
+                let probe_outer_merge_label = ctx.block_label(probe_outer_merge_idx);
+                ctx.block().cond_br(
+                    &is_undef_probe,
+                    &probe_dispatch_label,
+                    &probe_override_label,
+                );
+
+                // Override path: pack user args (skip recv at slot 0) and
+                // invoke via js_native_call_value. The stored value is
+                // typically an arrow function or `.bind()` closure whose
+                // `this` is captured/bound, so we don't pass the receiver
+                // as an extra arg — matches the static-class fast path's
+                // contract.
+                ctx.current_block = probe_override_idx;
+                let user_arg_count_probe = lowered_args.len().saturating_sub(1);
+                let (probe_args_ptr, probe_args_len_str) = if user_arg_count_probe == 0 {
+                    ("null".to_string(), "0".to_string())
+                } else {
+                    let buf_reg =
+                        ctx.func.alloca_entry_array(DOUBLE, user_arg_count_probe);
+                    for (i, a_val) in lowered_args.iter().skip(1).enumerate() {
+                        let slot = ctx
+                            .block()
+                            .gep(DOUBLE, &buf_reg, &[(I64, &format!("{}", i))]);
+                        ctx.block().store(DOUBLE, a_val, &slot);
+                    }
+                    let ptr_reg = ctx.block().next_reg();
+                    ctx.block().emit_raw(format!(
+                        "{} = getelementptr [{} x double], ptr {}, i64 0, i64 0",
+                        ptr_reg, user_arg_count_probe, buf_reg
+                    ));
+                    (ptr_reg, user_arg_count_probe.to_string())
+                };
+                let v_override_probe = ctx.block().call(
+                    DOUBLE,
+                    "js_native_call_value",
+                    &[
+                        (DOUBLE, &own_method_probe),
+                        (crate::types::PTR, &probe_args_ptr),
+                        (I64, &probe_args_len_str),
+                    ],
+                );
+                let after_override_probe = ctx.block().label.clone();
+                if !ctx.block().is_terminated() {
+                    ctx.block().br(&probe_outer_merge_label);
+                }
+
+                // Dispatch path: existing class-id switch tower.
+                ctx.current_block = probe_dispatch_idx;
                 let blk = ctx.block();
                 let recv_handle = unbox_to_i64(blk, &recv_box);
                 let cid = blk.call(I32, "js_object_get_class_id", &[(I64, &recv_handle)]);
@@ -1737,7 +1817,21 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
                     .iter()
                     .map(|(v, l)| (v.as_str(), l.as_str()))
                     .collect();
-                return Ok(ctx.block().phi(DOUBLE, &phi_args));
+                let v_dispatch_phi = ctx.block().phi(DOUBLE, &phi_args);
+                let after_dispatch_phi = ctx.block().label.clone();
+                if !ctx.block().is_terminated() {
+                    ctx.block().br(&probe_outer_merge_label);
+                }
+
+                // Outer merge: phi over override and dispatch values.
+                ctx.current_block = probe_outer_merge_idx;
+                return Ok(ctx.block().phi(
+                    DOUBLE,
+                    &[
+                        (v_override_probe.as_str(), after_override_probe.as_str()),
+                        (v_dispatch_phi.as_str(), after_dispatch_phi.as_str()),
+                    ],
+                ));
             }
         }
 
