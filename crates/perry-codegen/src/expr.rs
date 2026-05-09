@@ -3667,6 +3667,25 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             let not_closure = ctx.block().xor(I1, &is_closure, "true");
             let is_object = ctx.block().and(I1, &is_object, &not_closure);
 
+            // Issue #637: RegExpHeader / PromiseHeader / MapHeader / SetHeader
+            // / TypedArrayHeader / ... all share GC_TYPE_OBJECT but have
+            // different layouts than ObjectHeader. The first u32 of an
+            // ObjectHeader is `object_type = OBJECT_TYPE_REGULAR (=1)`;
+            // for these other headers the first 4 bytes are part of a
+            // pointer or method table, almost never 1. Without this check,
+            // a PIC site that learned a real ObjectHeader's [keys_array,
+            // slot] cache could spuriously hit on a regex/promise/etc.
+            // whose offset-16 happens to match (e.g. both null flags_ptr
+            // and uninitialized cache[0] are 0), and the hit path would
+            // load garbage from offset 24 of the non-Object header.
+            // Specific repro: `function f(): any { ... return new
+            // RegExp(...) } const r = f(); r.source` — fast path returns
+            // garbage f64 instead of routing through `js_regexp_get_source`.
+            let object_type_ptr = ctx.block().inttoptr(I64, &safe_obj_handle);
+            let object_type = ctx.block().load(I32, &object_type_ptr);
+            let object_type_ok = ctx.block().icmp_eq(I32, &object_type, "1");
+            let is_object = ctx.block().and(I1, &is_object, &object_type_ok);
+
             // Load obj->keys_array at offset 16 of ObjectHeader.
             let keys_addr = ctx.block().add(I64, &safe_obj_handle, "16");
             let keys_ptr_p = ctx.block().inttoptr(I64, &keys_addr);

@@ -31,6 +31,17 @@ thread_local! {
     /// the worst outcome is that a stale regex is treated as a string
     /// (safe) rather than the other way around (segfault).
     static REGEX_POINTERS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+
+    /// Issue #637: Owned copies of pattern and flags strings keyed by
+    /// the RegExpHeader pointer. The header's `pattern_ptr` / `flags_ptr`
+    /// fields hold raw `*const StringHeader` pointers to the input
+    /// strings — when those inputs are temporaries (e.g. the result of
+    /// a template-literal expression `\`^${p}\``), the GC frees them
+    /// after the function call returns and subsequent `.source` /
+    /// `.flags` reads dereference dangling memory. We side-table an
+    /// owned `String` copy at construction time; readers prefer this
+    /// over `pattern_ptr` whenever an entry exists.
+    static REGEX_SOURCE_TABLE: RefCell<HashMap<usize, (String, String)>> = RefCell::new(HashMap::new());
 }
 
 /// Check whether `ptr` is a RegExpHeader pointer that was allocated in
@@ -252,6 +263,15 @@ pub extern "C" fn js_regexp_new(
         // `s.split(regex)` without a dedicated runtime decl.
         REGEX_POINTERS.with(|s| {
             s.borrow_mut().insert(ptr as usize);
+        });
+
+        // Issue #637: side-table owned copies of pattern + flags so
+        // `.source` / `.flags` survive GC of the input StringHeaders.
+        REGEX_SOURCE_TABLE.with(|t| {
+            t.borrow_mut().insert(
+                ptr as usize,
+                (pattern_str.to_string(), flags_str.to_string()),
+            );
         });
 
         ptr
@@ -792,6 +812,13 @@ pub extern "C" fn js_regexp_get_source(re: *const RegExpHeader) -> *mut StringHe
     if !is_valid_regex_ptr(re) {
         return js_string_from_str("");
     }
+    // Issue #637: prefer the side-tabled owned copy so we survive GC
+    // of the input StringHeader (e.g. template-literal temporary).
+    if let Some(pat) =
+        REGEX_SOURCE_TABLE.with(|t| t.borrow().get(&(re as usize)).map(|(p, _)| p.clone()))
+    {
+        return js_string_from_str(&pat);
+    }
     unsafe {
         if is_valid_ptr((*re).pattern_ptr) {
             // Return a copy of the pattern string
@@ -808,6 +835,12 @@ pub extern "C" fn js_regexp_get_source(re: *const RegExpHeader) -> *mut StringHe
 pub extern "C" fn js_regexp_get_flags(re: *const RegExpHeader) -> *mut StringHeader {
     if !is_valid_regex_ptr(re) {
         return js_string_from_str("");
+    }
+    // Issue #637: prefer the side-tabled owned copy.
+    if let Some(flags) =
+        REGEX_SOURCE_TABLE.with(|t| t.borrow().get(&(re as usize)).map(|(_, f)| f.clone()))
+    {
+        return js_string_from_str(&flags);
     }
     unsafe {
         if is_valid_ptr((*re).flags_ptr) {
