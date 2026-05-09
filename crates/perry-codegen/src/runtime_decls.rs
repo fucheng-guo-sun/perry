@@ -310,6 +310,7 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_array_map", I64, &[I64, I64]);
     module.declare_function("js_array_filter", I64, &[I64, I64]);
     module.declare_function("js_array_concat", I64, &[I64, I64]);
+    module.declare_function("js_array_concat_new", I64, &[I64, I64]);
     module.declare_function("js_error_new", I64, &[]);
     module.declare_function("js_error_new_with_message", I64, &[I64]);
     // Issue #462: thrown by PropertyGet codegen on undefined/null receiver.

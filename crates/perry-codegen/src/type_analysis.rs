@@ -207,8 +207,25 @@ pub(crate) fn refine_type_from_init(ctx: &FnCtx<'_>, init: &Expr) -> Option<HirT
         // bit pattern, giving wrong results) and routes printing
         // through js_console_log_dynamic which dispatches on the
         // NaN tag to print "true"/"false" instead of "1"/"0".
-        Expr::Compare { .. } | Expr::Bool(_) | Expr::Logical { .. } => {
-            Some(HirType::Boolean)
+        Expr::Compare { .. } | Expr::Bool(_) => Some(HirType::Boolean),
+        // Issue #637: `a || b` / `a && b` produce the operand's value
+        // per JS spec, NOT a boolean. Only refine as Boolean when BOTH
+        // operands are statically known to be bool — otherwise the
+        // result inherits whatever truthy operand wins. Pre-fix,
+        // `let c = objA || objB` had `c` typed as Boolean, and
+        // subsequent `if (c)` / `!c` went through the bool fast-path
+        // `bits == TAG_TRUE_I64` which returned false for the
+        // NaN-boxed pointer (whose bits don't equal TAG_TRUE), so the
+        // `if (c)` branch was treated as falsy even though `c` was a
+        // real object reference. Repro: `const a = {x:1}; const b =
+        // {y:2}; const c = a || b; if (c) ...` — pre-fix took the
+        // else branch.
+        Expr::Logical { left, right, .. } => {
+            if is_bool_expr(ctx, left) && is_bool_expr(ctx, right) {
+                Some(HirType::Boolean)
+            } else {
+                None
+            }
         }
         Expr::IndexGet { object, .. } => {
             // arr[i] where arr is Array<T> → element type T.
