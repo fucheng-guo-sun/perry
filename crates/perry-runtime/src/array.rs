@@ -727,6 +727,61 @@ pub extern "C" fn js_array_set_string_key(
     arr
 }
 
+/// `arr[idx] = value` where idx may be a NaN-boxed string (numeric-string
+/// key) OR a number. Dispatches at runtime: string tags → parse and route
+/// to `js_array_set_string_key`; otherwise treat as numeric and route to
+/// `js_array_set_f64_extend`. Issue #637 followup: the array fast-path's
+/// `fptosi(idx_double, i32)` collapsed every NaN-boxed string to slot 0
+/// (NaN→i32 = 0 on most platforms), so `forEach((k) => arr[k] = ...)`
+/// over `["0","1","2"]` overwrote slot 0 three times. Codegen routes
+/// the array fast-path here when the index expression isn't statically
+/// numeric.
+#[no_mangle]
+pub extern "C" fn js_array_set_index_or_string(
+    arr: *mut ArrayHeader,
+    idx: f64,
+    value: f64,
+) -> *mut ArrayHeader {
+    if arr.is_null() {
+        return arr;
+    }
+    let bits = idx.to_bits();
+    let top16 = bits >> 48;
+    // STRING_TAG (0x7FFF) heap pointer — dispatch through the string-key
+    // helper which parses the numeric value and routes appropriately.
+    // SHORT_STRING_TAG (0x7FF9) is the SSO variant; same path via
+    // `js_get_string_pointer_unified` — handled inside `js_string_*` helpers.
+    if top16 == 0x7FFF {
+        let ptr = (bits & 0x0000_FFFF_FFFF_FFFF) as *const crate::StringHeader;
+        return js_array_set_string_key(arr, ptr, value);
+    }
+    if top16 == 0x7FF9 {
+        // SHORT_STRING_TAG (SSO). Materialize as a real StringHeader
+        // via `js_get_string_pointer_unified` so `js_array_set_string_key`
+        // can read the bytes through the standard layout.
+        let str_ptr = crate::value::js_get_string_pointer_unified(idx)
+            as *const crate::StringHeader;
+        return js_array_set_string_key(arr, str_ptr, value);
+    }
+    // Treat as numeric (covers Int32 / plain f64 / other tags).
+    let idx_i32 = idx as i32;
+    if idx_i32 < 0 {
+        // Negative numeric key: per JS spec, becomes a string property on
+        // the array's expando map. Stringify and delegate.
+        let s = idx_i32.to_string();
+        unsafe {
+            let key = crate::string::js_string_from_bytes(s.as_ptr(), s.len() as u32);
+            crate::object::js_object_set_field_by_name(
+                arr as *mut crate::object::ObjectHeader,
+                key,
+                value,
+            );
+        }
+        return arr;
+    }
+    js_array_set_f64_extend(arr, idx_i32 as u32, value)
+}
+
 /// Grow the array to at least the given capacity
 /// Returns a new pointer (the old one may be invalid after this)
 #[no_mangle]

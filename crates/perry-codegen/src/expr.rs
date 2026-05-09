@@ -2879,6 +2879,33 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 emit_write_barrier(ctx, &arr_bits, &val_bits);
                 return Ok(val_double);
             }
+            // Issue #637 followup: `arr[k] = X` where receiver is array
+            // but index is dynamically-typed (Any) — most commonly a
+            // forEach callback's `(item, k)` parameter where `k` could
+            // be a string (for-in over object keys, replace callback
+            // capture-group params, etc.). The array fast-path's
+            // `fptosi(double, i32)` collapses NaN-boxed strings to slot 0.
+            // Route to a runtime helper that detects the tag at runtime:
+            // string → parse + array-extend; numeric → fptosi + extend.
+            // Only fires when index isn't statically numeric (otherwise
+            // the existing fast path is correct and avoids the runtime
+            // dispatch overhead).
+            if is_array_expr(ctx, object) && !is_numeric_expr(ctx, index) {
+                let arr_box = lower_expr(ctx, object)?;
+                let idx_double = lower_expr(ctx, index)?;
+                let val_double = lower_expr(ctx, value)?;
+                let blk = ctx.block();
+                let arr_handle = unbox_to_i64(blk, &arr_box);
+                blk.call(
+                    I64,
+                    "js_array_set_index_or_string",
+                    &[(I64, &arr_handle), (DOUBLE, &idx_double), (DOUBLE, &val_double)],
+                );
+                let val_bits = ctx.block().bitcast_double_to_i64(&val_double);
+                let arr_bits = ctx.block().bitcast_double_to_i64(&arr_box);
+                emit_write_barrier(ctx, &arr_bits, &val_bits);
+                return Ok(val_double);
+            }
             // Same dispatch tree as IndexGet: known array → fast inline,
             // string key on dynamic receiver → object field set, otherwise
             // bail with a clear error.

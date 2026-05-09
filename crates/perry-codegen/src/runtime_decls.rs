@@ -1262,6 +1262,7 @@ pub fn declare_phase_b_arrays(module: &mut LlModule) {
     // caller must write back to the local slot.
     module.declare_function("js_array_set_f64_extend", I64, &[I64, I32, DOUBLE]);
     module.declare_function("js_array_set_string_key", I64, &[I64, I64, DOUBLE]);
+    module.declare_function("js_array_set_index_or_string", I64, &[I64, DOUBLE, DOUBLE]);
     module.declare_function("js_array_length", I32, &[I64]);
     // Array.isArray runtime dispatch for values with indeterminate
     // static type (e.g. JSON.parse results, closure captures, any/

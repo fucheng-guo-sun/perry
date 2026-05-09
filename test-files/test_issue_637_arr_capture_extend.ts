@@ -38,7 +38,6 @@ function build() {
 build();
 
 // Issue #637: arr[stringKey] = X coercion via direct closure call
-// (forEach version is a known followup — captures-array-typeinfo gap)
 function strKey() {
     const out: any[] = [];
     const fn = (k: string) => {
@@ -51,3 +50,18 @@ function strKey() {
     console.log("out:", JSON.stringify(out));
 }
 strKey();
+
+// Issue #637 followup: forEach-captured array, Any-typed param key.
+// Pre-fix the fast path's fptosi(NaN-string,i32) collapsed all writes
+// to slot 0; codegen now routes Any-keyed array IndexSet through
+// js_array_set_index_or_string which detects string tags at runtime.
+function forEachKey() {
+    const out: any[] = [];
+    const keys = ["0", "1", "2"];
+    keys.forEach((k) => {
+        out[k as any] = "fk" + k;
+    });
+    console.log("foreach out len:", out.length);
+    console.log("foreach out:", JSON.stringify(out));
+}
+forEachKey();
