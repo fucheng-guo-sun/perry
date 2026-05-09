@@ -3637,12 +3637,28 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     };
                                     match method_name {
                                         "join" => {
-                                            // arr.join(separator?) -> string
-                                            let separator = args.into_iter().next().map(Box::new);
-                                            return Ok(Expr::ArrayJoin {
-                                                array: Box::new(extern_ref),
-                                                separator,
-                                            });
+                                            // Issue #420 (drizzle): `sql.join(arr)` — `sql`
+                                            // is imported from drizzle-orm as a tag function
+                                            // with a custom `.join` static method. Pre-fix
+                                            // this path unconditionally folded to
+                                            // ArrayJoin, so `sql.join(valuesSqlList)` was
+                                            // dispatched as `js_array_join(sql, list)`
+                                            // (treating `sql` as the array, list as the
+                                            // separator). Result: empty string back.
+                                            //
+                                            // Only fold when the imported variable's
+                                            // return_type is statically Array. Otherwise
+                                            // fall through to generic dispatch which
+                                            // respects the imported's own `.join` method.
+                                            if matches!(extern_ref, Expr::ExternFuncRef { ref return_type, .. } if matches!(return_type, Type::Array(_))) {
+                                                let separator =
+                                                    args.into_iter().next().map(Box::new);
+                                                return Ok(Expr::ArrayJoin {
+                                                    array: Box::new(extern_ref),
+                                                    separator,
+                                                });
+                                            }
+                                            // Fall through.
                                         }
                                         "map" => {
                                             if !args.is_empty() {
@@ -4429,22 +4445,66 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                                 // Fall through to generic Call handling (could be a String.slice).
                             }
-                            // .join() is exclusively an Array method (strings don't have it),
-                            // so we can always safely lower to ArrayJoin regardless of the
-                            // receiver expression type. Previously this only matched specific
-                            // array-returning expressions, which caused .split().join() chains
-                            // to fall through to generic dispatch and produce wrong results.
-                            "join" if args.len() <= 1 => {
+                            // .join() folds to Array.join only when the receiver is
+                            // statically array-producing. Pre-fix the unconditional fold
+                            // misrouted drizzle's `sql.join(arr)` (the `sql` template tag
+                            // function has its own `.join` static method via
+                            // `sql2.join = join`) to `js_array_join(sql, arr)`, which
+                            // returned an empty string. Refs #420.
+                            //
+                            // Mirrors the "slice" arm above: fold only for array-producing
+                            // shapes (literals, .map/.filter/.split chains, etc.). Other
+                            // receivers fall through to generic dispatch which respects
+                            // user-defined `.join` methods.
+                            "join" if args.len() <= 1 && !recv_is_class => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
-                                let separator = if args.is_empty() {
-                                    None
+                                let is_array_producing = matches!(
+                                    &array_expr,
+                                    Expr::Array(_)
+                                        | Expr::ArrayMap { .. }
+                                        | Expr::ArrayFilter { .. }
+                                        | Expr::ArraySort { .. }
+                                        | Expr::ArraySlice { .. }
+                                        | Expr::ArraySpread(_)
+                                        | Expr::ArrayFrom(_)
+                                        | Expr::ArrayFromMapped { .. }
+                                        | Expr::ArrayFlat { .. }
+                                        | Expr::StringSplit(_, _)
+                                        | Expr::ArrayToReversed { .. }
+                                        | Expr::ArrayToSorted { .. }
+                                        | Expr::ArrayToSpliced { .. }
+                                        | Expr::ArrayWith { .. }
+                                        | Expr::ArrayEntries(_)
+                                        | Expr::ArrayKeys(_)
+                                        | Expr::ArrayValues(_)
+                                        | Expr::ObjectKeys(_)
+                                        | Expr::ObjectValues(_)
+                                        | Expr::ObjectEntries(_)
+                                        | Expr::ProcessArgv
+                                );
+                                // Also fold when the receiver is statically Array-typed
+                                // via `lookup_local_type` (e.g. `const arr: string[] = ...`).
+                                let is_array_local = if let ast::Expr::Ident(ident) = member.obj.as_ref() {
+                                    matches!(
+                                        ctx.lookup_local_type(ident.sym.as_ref()),
+                                        Some(Type::Array(_))
+                                    )
                                 } else {
-                                    Some(Box::new(args.into_iter().next().unwrap()))
+                                    false
                                 };
-                                return Ok(Expr::ArrayJoin {
-                                    array: Box::new(array_expr),
-                                    separator,
-                                });
+                                if is_array_producing || is_array_local {
+                                    let separator = if args.is_empty() {
+                                        None
+                                    } else {
+                                        Some(Box::new(args.into_iter().next().unwrap()))
+                                    };
+                                    return Ok(Expr::ArrayJoin {
+                                        array: Box::new(array_expr),
+                                        separator,
+                                    });
+                                }
+                                // Fall through to generic dispatch — could be a user
+                                // object's `.join` method (drizzle's sql.join, etc.).
                             }
                             "indexOf" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
