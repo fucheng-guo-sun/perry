@@ -63,37 +63,14 @@ fn sgr_transition(prev: SgrState, next: SgrState, out: &mut Vec<u8>) {
         out.extend_from_slice(b";7");
     }
     if next.fg != Color::Default {
-        out.extend_from_slice(b";");
-        let mut buf = [0u8; 3];
-        let s = format_u8(next.fg.fg_code(), &mut buf);
-        out.extend_from_slice(s);
+        out.push(b';');
+        next.fg.write_fg_sgr(out);
     }
     if next.bg != Color::Default {
-        out.extend_from_slice(b";");
-        let mut buf = [0u8; 3];
-        let s = format_u8(next.bg.bg_code(), &mut buf);
-        out.extend_from_slice(s);
+        out.push(b';');
+        next.bg.write_bg_sgr(out);
     }
     out.extend_from_slice(b"m");
-}
-
-/// Format a u8 (0..=255) into a 3-byte slice, returning the actual
-/// bytes written. Avoids the `itoa` dep — we only ever format SGR
-/// codes (max 3 digits) and CSI row/col coords.
-fn format_u8(n: u8, buf: &mut [u8; 3]) -> &[u8] {
-    if n >= 100 {
-        buf[0] = b'0' + (n / 100);
-        buf[1] = b'0' + ((n / 10) % 10);
-        buf[2] = b'0' + (n % 10);
-        &buf[..3]
-    } else if n >= 10 {
-        buf[0] = b'0' + (n / 10);
-        buf[1] = b'0' + (n % 10);
-        &buf[..2]
-    } else {
-        buf[0] = b'0' + n;
-        &buf[..1]
-    }
 }
 
 /// Build the ANSI move-to-position escape for (row, col), 1-based per
@@ -264,13 +241,16 @@ mod tests {
     }
 
     #[test]
-    fn format_u8_widths() {
-        let mut buf = [0u8; 3];
-        assert_eq!(format_u8(0, &mut buf), b"0");
-        assert_eq!(format_u8(9, &mut buf), b"9");
-        assert_eq!(format_u8(10, &mut buf), b"10");
-        assert_eq!(format_u8(99, &mut buf), b"99");
-        assert_eq!(format_u8(100, &mut buf), b"100");
-        assert_eq!(format_u8(255, &mut buf), b"255");
+    fn rgb_color_emits_truecolor_sgr() {
+        let mut g = Grid::new(2, 1);
+        g.back[0] = Cell {
+            ch: 'r',
+            fg: Color::Rgb(255, 136, 0),
+            bg: Color::Default,
+            style: Style::default(),
+        };
+        let bytes = diff(&g);
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.contains(";38;2;255;136;0"), "missing truecolor fg: {:?}", s);
     }
 }

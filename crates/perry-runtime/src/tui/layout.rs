@@ -15,10 +15,10 @@
 
 use std::collections::HashMap;
 
-use taffy::prelude::{auto, length, AvailableSpace, NodeId, Size, Style};
-use taffy::{Display, Rect as TaffyRect, TaffyTree};
+use taffy::prelude::{auto, length, percent, AvailableSpace, NodeId, Size, Style};
+use taffy::{Dimension, Display, LengthPercentage, Rect as TaffyRect, TaffyTree};
 
-use super::style::{AlignItems, BoxStyle, FlexDirection, JustifyContent};
+use super::style::{AlignItems, BoxStyle, Edges, FlexDirection, JustifyContent, Length as TuiLen};
 use super::tree::{lookup, Node};
 
 /// Computed pixel-rect for one widget. Cells, not points; integer
@@ -99,6 +99,35 @@ fn build_taffy_tree(
     }
 }
 
+/// Convert a `Length` to Taffy's `Dimension`. Used for size /
+/// flex-basis where the value can be auto / cells / percent.
+fn dim_from_length(l: Option<TuiLen>) -> Dimension {
+    match l {
+        None => auto(),
+        Some(TuiLen::Cells(n)) => length(n as f32),
+        Some(TuiLen::PercentBp(bp)) => percent(bp as f32 / 10000.0),
+    }
+}
+
+/// Convert a `Length` to Taffy's `LengthPercentage`. Used for
+/// padding / gap where `auto` isn't a valid value.
+fn lp_from_length(l: TuiLen) -> LengthPercentage {
+    match l {
+        TuiLen::Cells(n) => length(n as f32),
+        TuiLen::PercentBp(bp) => percent(bp as f32 / 10000.0),
+    }
+}
+
+/// Convert per-side cell counts to a Taffy padding rect.
+fn padding_from_edges(e: Edges) -> TaffyRect<LengthPercentage> {
+    TaffyRect {
+        top: length(e.top as f32),
+        right: length(e.right as f32),
+        bottom: length(e.bottom as f32),
+        left: length(e.left as f32),
+    }
+}
+
 /// Translate our compact BoxStyle into Taffy's flexbox Style.
 fn box_style_to_taffy(s: &BoxStyle) -> Style {
     let dir = match s.flex_direction {
@@ -118,26 +147,22 @@ fn box_style_to_taffy(s: &BoxStyle) -> Style {
         AlignItems::End => Some(taffy::AlignItems::End),
         AlignItems::Stretch => Some(taffy::AlignItems::Stretch),
     };
-    let pad_len = length(s.padding as f32);
     Style {
         display: Display::Flex,
         flex_direction: dir,
         justify_content: justify,
         align_items: align,
         flex_grow: s.flex_grow as f32,
+        flex_shrink: s.flex_shrink as f32,
+        flex_basis: dim_from_length(s.flex_basis),
         gap: Size {
-            width: length(s.gap as f32),
-            height: length(s.gap as f32),
+            width: lp_from_length(TuiLen::Cells(s.gap)),
+            height: lp_from_length(TuiLen::Cells(s.gap)),
         },
-        padding: TaffyRect {
-            left: pad_len,
-            right: pad_len,
-            top: pad_len,
-            bottom: pad_len,
-        },
+        padding: padding_from_edges(s.padding),
         size: Size {
-            width: s.width.map(|w| length(w as f32)).unwrap_or(auto()),
-            height: s.height.map(|h| length(h as f32)).unwrap_or(auto()),
+            width: dim_from_length(s.width),
+            height: dim_from_length(s.height),
         },
         ..Default::default()
     }
@@ -305,7 +330,7 @@ mod tests {
             style: Style::default(),
         });
         let mut s = BoxStyle::default();
-        s.padding = 2;
+        s.padding = Edges::all(2);
         let b = register(Node::Box {
             children: vec![],
             fg: Color::Default,
@@ -319,5 +344,65 @@ mod tests {
         // Padding 2 on every side → child starts at (2, 2).
         assert_eq!(r.row, 2);
         assert_eq!(r.col, 2);
+    }
+
+    #[test]
+    fn per_side_padding_only_offsets_specified_sides() {
+        let t = register(Node::Text {
+            content: "x".to_string(),
+            fg: Color::Default,
+            bg: Color::Default,
+            style: Style::default(),
+        });
+        let mut s = BoxStyle::default();
+        s.padding = Edges {
+            top: 1,
+            right: 0,
+            bottom: 0,
+            left: 4,
+        };
+        let b = register(Node::Box {
+            children: vec![],
+            fg: Color::Default,
+            bg: Color::Default,
+            style: s,
+        });
+        box_add_child(b, t);
+
+        let rects = compute_layout(b, 80, 24);
+        let r = rects[&t];
+        assert_eq!(r.row, 1);
+        assert_eq!(r.col, 4);
+    }
+
+    #[test]
+    fn percent_width_resolves_against_parent() {
+        let inner = register(Node::Box {
+            children: vec![],
+            fg: Color::Default,
+            bg: Color::Default,
+            style: BoxStyle {
+                width: Some(TuiLen::PercentBp(5000)),
+                height: Some(TuiLen::Cells(2)),
+                ..Default::default()
+            },
+        });
+        let outer = register(Node::Box {
+            children: vec![],
+            fg: Color::Default,
+            bg: Color::Default,
+            style: BoxStyle {
+                width: Some(TuiLen::Cells(40)),
+                height: Some(TuiLen::Cells(10)),
+                ..Default::default()
+            },
+        });
+        box_add_child(outer, inner);
+
+        let rects = compute_layout(outer, 80, 24);
+        let r = rects[&inner];
+        // 50% of 40 = 20.
+        assert_eq!(r.width, 20);
+        assert_eq!(r.height, 2);
     }
 }

@@ -6,8 +6,9 @@ use std::sync::OnceLock;
 use crate::string::StringHeader;
 
 use super::cell::Grid;
-use super::color::Color;
+use super::color::{parse_color, Color};
 use super::render;
+use super::style::{Edges, Length};
 use super::tree::{box_add_child, paint, register, Node};
 
 /// Singleton grid — sized to the current terminal at first render.
@@ -52,6 +53,31 @@ pub extern "C" fn js_perry_tui_text(content_ptr: *const StringHeader) -> i64 {
         fg: Color::Default,
         bg: Color::Default,
         style: super::cell::Style::default(),
+    })
+}
+
+/// `Text(content, { fg, bg, bold, italic, underline, reverse })` — same as
+/// `js_perry_tui_text` but with style props applied. `fg` / `bg` are
+/// strings (named palette like `"red"`, hex `#rrggbb`, or empty for
+/// default); `style_bits` packs the four boolean style flags into the
+/// existing `Style` u8. Used by the codegen when a Text call has a
+/// trailing options object literal. (#405 Phase 3.5.)
+#[no_mangle]
+pub extern "C" fn js_perry_tui_text_styled(
+    content_ptr: *const StringHeader,
+    fg_ptr: *const StringHeader,
+    bg_ptr: *const StringHeader,
+    style_bits: f64,
+) -> i64 {
+    let content = unsafe { read_string(content_ptr) };
+    let fg = parse_color(&unsafe { read_string(fg_ptr) });
+    let bg = parse_color(&unsafe { read_string(bg_ptr) });
+    let bits = style_bits.max(0.0) as u8;
+    register(Node::Text {
+        content,
+        fg,
+        bg,
+        style: super::cell::Style(bits),
     })
 }
 
@@ -125,21 +151,58 @@ pub extern "C" fn js_perry_tui_box_set_gap(handle: i64, gap: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn js_perry_tui_box_set_padding(handle: i64, padding: f64) -> f64 {
     let p = padding.max(0.0) as u16;
-    with_box_style_mut(handle, |style| style.padding = p);
+    with_box_style_mut(handle, |style| style.padding = Edges::all(p));
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+/// Per-side padding setter — emitted by codegen when the user passes
+/// `padding: { top, right, bottom, left }`. Missing fields default to
+/// 0 cells. (#405 Phase 3.5.)
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_set_padding_each(
+    handle: i64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    left: f64,
+) -> f64 {
+    let edges = Edges {
+        top: top.max(0.0) as u16,
+        right: right.max(0.0) as u16,
+        bottom: bottom.max(0.0) as u16,
+        left: left.max(0.0) as u16,
+    };
+    with_box_style_mut(handle, |style| style.padding = edges);
     f64::from_bits(0x7FFC_0000_0000_0001)
 }
 
 #[no_mangle]
 pub extern "C" fn js_perry_tui_box_set_width(handle: i64, width: f64) -> f64 {
     let w = width.max(0.0) as u16;
-    with_box_style_mut(handle, |style| style.width = Some(w));
+    with_box_style_mut(handle, |style| style.width = Some(Length::Cells(w)));
     f64::from_bits(0x7FFC_0000_0000_0001)
 }
 
 #[no_mangle]
 pub extern "C" fn js_perry_tui_box_set_height(handle: i64, height: f64) -> f64 {
     let h = height.max(0.0) as u16;
-    with_box_style_mut(handle, |style| style.height = Some(h));
+    with_box_style_mut(handle, |style| style.height = Some(Length::Cells(h)));
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+/// Percentage-of-parent width. `pct` is 0.0..=100.0; out-of-range
+/// values are clamped. (#405 Phase 3.5.)
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_set_width_pct(handle: i64, pct: f64) -> f64 {
+    let l = Length::percent(pct as f32);
+    with_box_style_mut(handle, |style| style.width = Some(l));
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_set_height_pct(handle: i64, pct: f64) -> f64 {
+    let l = Length::percent(pct as f32);
+    with_box_style_mut(handle, |style| style.height = Some(l));
     f64::from_bits(0x7FFC_0000_0000_0001)
 }
 
@@ -147,6 +210,27 @@ pub extern "C" fn js_perry_tui_box_set_height(handle: i64, height: f64) -> f64 {
 pub extern "C" fn js_perry_tui_box_set_flex_grow(handle: i64, grow: f64) -> f64 {
     let g = grow.max(0.0) as u16;
     with_box_style_mut(handle, |style| style.flex_grow = g);
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_set_flex_shrink(handle: i64, shrink: f64) -> f64 {
+    let s = shrink.max(0.0) as u16;
+    with_box_style_mut(handle, |style| style.flex_shrink = s);
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_set_flex_basis(handle: i64, cells: f64) -> f64 {
+    let n = cells.max(0.0) as u16;
+    with_box_style_mut(handle, |style| style.flex_basis = Some(Length::Cells(n)));
+    f64::from_bits(0x7FFC_0000_0000_0001)
+}
+
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_set_flex_basis_pct(handle: i64, pct: f64) -> f64 {
+    let l = Length::percent(pct as f32);
+    with_box_style_mut(handle, |style| style.flex_basis = Some(l));
     f64::from_bits(0x7FFC_0000_0000_0001)
 }
 

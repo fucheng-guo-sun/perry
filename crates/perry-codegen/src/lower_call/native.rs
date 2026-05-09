@@ -102,44 +102,67 @@ fn apply_box_style(ctx: &mut FnCtx<'_>, parent_slot: &str, style_arg: &Expr) -> 
                 );
             }
             "padding" => {
-                let v = lower_expr(ctx, val)?;
-                ctx.pending_declares.push((
-                    "js_perry_tui_box_set_padding".to_string(),
-                    DOUBLE,
-                    vec![I64, DOUBLE],
-                ));
-                ctx.block().call(
-                    DOUBLE,
-                    "js_perry_tui_box_set_padding",
-                    &[(I64, &parent_handle), (DOUBLE, &v)],
-                );
+                // Two shapes: a number (uniform), or an object literal
+                // `{ top, right, bottom, left }` (per-side, #405). The
+                // nested object literal lands as `Expr::New { class_name:
+                // __AnonShape_… }` after HIR lowering, so use
+                // `extract_options_fields` (which handles both shapes).
+                if let Some(fields) = extract_options_fields(ctx, val) {
+                    let pad_side = |key: &str| -> Expr {
+                        fields
+                            .iter()
+                            .find(|(k, _)| k == key)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or(Expr::Number(0.0))
+                    };
+                    let top = lower_expr(ctx, &pad_side("top"))?;
+                    let right = lower_expr(ctx, &pad_side("right"))?;
+                    let bottom = lower_expr(ctx, &pad_side("bottom"))?;
+                    let left = lower_expr(ctx, &pad_side("left"))?;
+                    ctx.pending_declares.push((
+                        "js_perry_tui_box_set_padding_each".to_string(),
+                        DOUBLE,
+                        vec![I64, DOUBLE, DOUBLE, DOUBLE, DOUBLE],
+                    ));
+                    ctx.block().call(
+                        DOUBLE,
+                        "js_perry_tui_box_set_padding_each",
+                        &[
+                            (I64, &parent_handle),
+                            (DOUBLE, &top),
+                            (DOUBLE, &right),
+                            (DOUBLE, &bottom),
+                            (DOUBLE, &left),
+                        ],
+                    );
+                } else {
+                    let v = lower_expr(ctx, val)?;
+                    ctx.pending_declares.push((
+                        "js_perry_tui_box_set_padding".to_string(),
+                        DOUBLE,
+                        vec![I64, DOUBLE],
+                    ));
+                    ctx.block().call(
+                        DOUBLE,
+                        "js_perry_tui_box_set_padding",
+                        &[(I64, &parent_handle), (DOUBLE, &v)],
+                    );
+                }
             }
-            "width" => {
-                let v = lower_expr(ctx, val)?;
-                ctx.pending_declares.push((
-                    "js_perry_tui_box_set_width".to_string(),
-                    DOUBLE,
-                    vec![I64, DOUBLE],
-                ));
-                ctx.block().call(
-                    DOUBLE,
-                    "js_perry_tui_box_set_width",
-                    &[(I64, &parent_handle), (DOUBLE, &v)],
-                );
-            }
-            "height" => {
-                let v = lower_expr(ctx, val)?;
-                ctx.pending_declares.push((
-                    "js_perry_tui_box_set_height".to_string(),
-                    DOUBLE,
-                    vec![I64, DOUBLE],
-                ));
-                ctx.block().call(
-                    DOUBLE,
-                    "js_perry_tui_box_set_height",
-                    &[(I64, &parent_handle), (DOUBLE, &v)],
-                );
-            }
+            "width" => emit_dim_setter(
+                ctx,
+                &parent_handle,
+                val,
+                "js_perry_tui_box_set_width",
+                "js_perry_tui_box_set_width_pct",
+            )?,
+            "height" => emit_dim_setter(
+                ctx,
+                &parent_handle,
+                val,
+                "js_perry_tui_box_set_height",
+                "js_perry_tui_box_set_height_pct",
+            )?,
             "flexGrow" => {
                 let v = lower_expr(ctx, val)?;
                 ctx.pending_declares.push((
@@ -153,9 +176,63 @@ fn apply_box_style(ctx: &mut FnCtx<'_>, parent_slot: &str, style_arg: &Expr) -> 
                     &[(I64, &parent_handle), (DOUBLE, &v)],
                 );
             }
+            "flexShrink" => {
+                let v = lower_expr(ctx, val)?;
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_set_flex_shrink".to_string(),
+                    DOUBLE,
+                    vec![I64, DOUBLE],
+                ));
+                ctx.block().call(
+                    DOUBLE,
+                    "js_perry_tui_box_set_flex_shrink",
+                    &[(I64, &parent_handle), (DOUBLE, &v)],
+                );
+            }
+            "flexBasis" => emit_dim_setter(
+                ctx,
+                &parent_handle,
+                val,
+                "js_perry_tui_box_set_flex_basis",
+                "js_perry_tui_box_set_flex_basis_pct",
+            )?,
             _ => {} // Unknown field — silently drop for forward-compat.
         }
     }
+    Ok(())
+}
+
+/// Emit a width / height / flex-basis setter call. If `val` is a
+/// string literal ending in `%`, parse the prefix and dispatch to the
+/// percent variant; otherwise lower as a number and dispatch to the
+/// cells variant. Other string shapes (e.g. dynamic strings) fall
+/// through the cells path with an undefined-as-NaN value — out of
+/// scope for this fix; users with dynamic dimensions pass numbers.
+/// (#405 Phase 3.5.)
+fn emit_dim_setter(
+    ctx: &mut FnCtx<'_>,
+    parent_handle: &str,
+    val: &Expr,
+    cells_fn: &str,
+    pct_fn: &str,
+) -> anyhow::Result<()> {
+    if let Expr::String(s) = val {
+        if let Some(rest) = s.strip_suffix('%') {
+            if let Ok(pct) = rest.trim().parse::<f64>() {
+                let lit = double_literal(pct);
+                ctx.pending_declares
+                    .push((pct_fn.to_string(), DOUBLE, vec![I64, DOUBLE]));
+                ctx.block()
+                    .call(DOUBLE, pct_fn, &[(I64, parent_handle), (DOUBLE, &lit)]);
+                return Ok(());
+            }
+        }
+    }
+    let v = lower_expr(ctx, val)?;
+    ctx.pending_declares
+        .push((cells_fn.to_string(), DOUBLE, vec![I64, DOUBLE]));
+    ctx.block()
+        .call(DOUBLE, cells_fn, &[(I64, parent_handle), (DOUBLE, &v)]);
     Ok(())
 }
 
@@ -201,6 +278,68 @@ pub(crate) fn lower_native_method_call(
     // HStack, etc.) are NOT dispatched yet so the body is the
     // zero-sentinel — the window appears with the right title/size but
     // no widget tree. Full widget dispatch is a separate followup.
+    // perry/tui Text(content, { fg, bg, bold, italic, underline, reverse }) —
+    // the second-arg options form for #405 Phase 3.5 styling. Dispatches to
+    // `js_perry_tui_text_styled` with the four-color/style args; the bare
+    // 1-arg `Text(content)` form keeps falling through to the regular
+    // PERRY_UI_TABLE dispatch which routes to `js_perry_tui_text`. Object
+    // literals reach this point as `Expr::New { class_name: __AnonShape_… }`
+    // — use `extract_options_fields` to pull the fields out either way.
+    if module == "perry/tui" && method == "Text" && object.is_none() && args.len() >= 2 {
+        if let Some(props) = extract_options_fields(ctx, &args[1]) {
+        let content_ptr = get_raw_string_ptr(ctx, &args[0])?;
+        let mut fg_str = Expr::String(String::new());
+        let mut bg_str = Expr::String(String::new());
+        let mut style_bits: u8 = 0;
+        for (key, val) in &props {
+            match key.as_str() {
+                "fg" | "color" => fg_str = val.clone(),
+                "bg" | "backgroundColor" => bg_str = val.clone(),
+                "bold" => {
+                    if matches!(val, Expr::Bool(true)) {
+                        style_bits |= 0b0001;
+                    }
+                }
+                "italic" => {
+                    if matches!(val, Expr::Bool(true)) {
+                        style_bits |= 0b0010;
+                    }
+                }
+                "underline" => {
+                    if matches!(val, Expr::Bool(true)) {
+                        style_bits |= 0b0100;
+                    }
+                }
+                "reverse" => {
+                    if matches!(val, Expr::Bool(true)) {
+                        style_bits |= 0b1000;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let fg_ptr = get_raw_string_ptr(ctx, &fg_str)?;
+        let bg_ptr = get_raw_string_ptr(ctx, &bg_str)?;
+        let bits_lit = double_literal(style_bits as f64);
+        ctx.pending_declares.push((
+            "js_perry_tui_text_styled".to_string(),
+            I64,
+            vec![I64, I64, I64, DOUBLE],
+        ));
+        let handle = ctx.block().call(
+            I64,
+            "js_perry_tui_text_styled",
+            &[
+                (I64, &content_ptr),
+                (I64, &fg_ptr),
+                (I64, &bg_ptr),
+                (DOUBLE, &bits_lit),
+            ],
+        );
+        return Ok(nanbox_pointer_inline(ctx.block(), &handle));
+        }
+    }
+
     // perry/tui Box — TS shapes:
     //   Box()                                — empty container
     //   Box([child, …])                      — children array (Phase 1)
