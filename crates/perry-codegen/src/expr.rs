@@ -8685,6 +8685,32 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             );
             Ok(nanbox_pointer_inline(blk, &buf_handle))
         }
+        // Issue #630: `Buffer.allocUnsafe(size)` — fast-path allocator
+        // (no zero-fill). The runtime helper returns a raw `*mut
+        // BufferHeader`; NaN-box with POINTER_TAG so downstream
+        // BUFFER_REGISTRY checks + `.length` paths recognize it as a
+        // buffer.
+        Expr::BufferAllocUnsafe(size) => {
+            let size_box = lower_expr(ctx, size)?;
+            let blk = ctx.block();
+            let size_i32 = blk.fptosi(DOUBLE, &size_box, I32);
+            let buf_handle = blk.call(I64, "js_buffer_alloc_unsafe", &[(I32, &size_i32)]);
+            Ok(nanbox_pointer_inline(blk, &buf_handle))
+        }
+        // Issue #630: `Buffer.byteLength(s, encoding?)` — UTF-8 byte
+        // count of `s`. The runtime helper currently honors UTF-8 only
+        // (matches the existing `BufferHeader.byte_len` field semantics);
+        // a `encoding === "hex"` / `"base64"` arg would need a separate
+        // helper but those aren't in the issue's repro. Returns i32;
+        // sitofp to f64 for the Number return.
+        Expr::BufferByteLength(s) => {
+            let s_box = lower_expr(ctx, s)?;
+            let blk = ctx.block();
+            let s_handle = blk.call(I64, "js_get_string_pointer_unified", &[(DOUBLE, &s_box)]);
+            let len_i32 = blk.call(I32, "js_buffer_byte_length", &[(I64, &s_handle)]);
+            Ok(blk.sitofp(I32, &len_i32, DOUBLE))
+        }
+
         Expr::BufferAlloc { size, fill } => {
             // Phase H: call js_buffer_alloc(size, fill) which returns
             // a raw *mut BufferHeader i64. NaN-box with POINTER_TAG
