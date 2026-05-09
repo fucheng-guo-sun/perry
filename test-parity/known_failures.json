@@ -1,7 +1,6 @@
 {
-  "test_edge_destructuring": "Pre-existing edge case in destructuring assignment lowering. Tracked as a non-blocking parity gap; fails on both v0.5.568 baseline and current.",
-  "test_edge_objects_records": "Pre-existing edge case in object/record property access. Tracked as a non-blocking parity gap; fails on both v0.5.568 baseline and current.",
-  "test_gap_object_methods": "Strict-mode property descriptor errors — perry doesn't throw TypeError on writes to non-writable properties (defineProperty / freeze / Object.preventExtensions paths). Pre-existing behavior gap; not a regression.",
+  "test_issue_462_nullish_property_access": "TypeError stack-trace format diverges from Node — see #616. Behavior is correct (TypeError thrown, UNREACHABLE never prints); only the framing differs (Node emits file:line header + source line + caret + file-URL stack frames; Perry emits `<Name>: <msg>` + `at <anonymous>`). Matching Node byte-for-byte requires source-text retention through the runtime.",
+  "test_issue_510_primitive_method_typeerror": "Same root cause as test_issue_462 — see #616. Behavior correct; framing differs. Regression vector: v0.5.702 (#596) routed throw helpers through js_throw which exposed the format gap.",
   "test_issue_422_socket_connect": "Net test passes locally with echo server running, fails on Linux CI (no echo fixture server). Environmental.",
   "test_net_min": "Net test passes locally with echo server running, fails on Linux CI (no echo fixture server). Environmental.",
   "test_net_socket": "Net test passes locally with echo server running, fails on Linux CI (no echo fixture server). Environmental.",

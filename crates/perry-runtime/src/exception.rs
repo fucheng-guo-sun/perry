@@ -175,13 +175,21 @@ fn print_uncaught(value: f64) {
                 } else {
                     &name_str
                 };
-                if msg_str.is_empty() {
-                    eprintln!("Uncaught exception: {}", name_display);
-                } else {
-                    eprintln!("Uncaught exception: {}: {}", name_display, msg_str);
-                }
+                // Issue #616: Node formats an uncaught throw as
+                //   <Name>: <message>
+                //       at <frame>
+                //       ...
+                // (no `Uncaught exception:` prefix). Perry's `stack` field
+                // already starts with `<Name>: <message>` per Error.stack
+                // convention, so emit just the stack — matches Node format
+                // for this header. When the stack is empty (defensive), fall
+                // back to the bare `<Name>: <message>` line.
                 if !stack_str.is_empty() {
                     eprintln!("{}", stack_str);
+                } else if msg_str.is_empty() {
+                    eprintln!("{}", name_display);
+                } else {
+                    eprintln!("{}: {}", name_display, msg_str);
                 }
                 return;
             }
