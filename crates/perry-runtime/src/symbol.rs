@@ -495,8 +495,16 @@ pub fn class_static_symbol_lookup(class_id: u32, sym_f64: f64) -> Option<u64> {
 
 /// `Object.prototype.hasOwnProperty.call(obj, sym)` for Symbol keys.
 /// Refs #420 — drizzle's `is(value, type)` checks entityKind which is a Symbol.
+///
+/// When `obj` is an INT32-tagged class ref, also consult
+/// `CLASS_STATIC_SYMBOLS` for static-Symbol-keyed declarations.
 #[no_mangle]
 pub unsafe extern "C" fn js_object_has_own_symbol(obj_f64: f64, sym_f64: f64) -> bool {
+    let bits = obj_f64.to_bits();
+    if (bits >> 48) == 0x7FFE {
+        let class_id = (bits & 0xFFFF_FFFF) as u32;
+        return class_static_symbol_lookup(class_id, sym_f64).is_some();
+    }
     let obj_key = obj_key_from_f64(obj_f64);
     let sym_key = sym_key_from_f64(sym_f64);
     if obj_key == 0 || sym_key == 0 {
@@ -517,8 +525,25 @@ pub unsafe extern "C" fn js_object_has_own_symbol(obj_f64: f64, sym_f64: f64) ->
 
 /// `obj[sym]` where `sym` is a Symbol. Returns NaN-boxed undefined if the
 /// property isn't present.
+///
+/// Refs #420: when `obj` is an INT32-tagged class ref (drizzle's
+/// `cls[entityKind]` chain), also consult `CLASS_STATIC_SYMBOLS` —
+/// `static [Symbol] = X` declarations are registered there at module
+/// init via `js_class_register_static_symbol`. Pre-fix the dispatch
+/// only looked at the per-instance `SYMBOL_PROPERTIES` map and class
+/// refs always returned undefined.
 #[no_mangle]
 pub unsafe extern "C" fn js_object_get_symbol_property(obj_f64: f64, sym_f64: f64) -> f64 {
+    // Check CLASS_STATIC_SYMBOLS first when receiver is a class ref
+    // (top16 == 0x7FFE, INT32_TAG).
+    let bits = obj_f64.to_bits();
+    if (bits >> 48) == 0x7FFE {
+        let class_id = (bits & 0xFFFF_FFFF) as u32;
+        if let Some(vb) = class_static_symbol_lookup(class_id, sym_f64) {
+            return f64::from_bits(vb);
+        }
+        return f64::from_bits(TAG_UNDEFINED);
+    }
     let obj_key = obj_key_from_f64(obj_f64);
     let sym_key = sym_key_from_f64(sym_f64);
     if obj_key == 0 || sym_key == 0 {

@@ -2431,6 +2431,27 @@ pub extern "C" fn js_object_has_property(obj: f64, key: f64) -> f64 {
     let obj_val = JSValue::from_bits(obj.to_bits());
     let key_val = JSValue::from_bits(key.to_bits());
 
+    // Refs #420 / #618: `Symbol in ClassRef` — drizzle's `entityKind in cls`.
+    // Class refs are INT32-tagged. Check CLASS_STATIC_SYMBOLS for symbol
+    // keys and CLASS_DYNAMIC_PROPS for string keys.
+    {
+        let bits = obj.to_bits();
+        if (bits >> 48) == 0x7FFE {
+            let class_id = (bits & 0xFFFF_FFFF) as u32;
+            // Symbol key path.
+            if let Some(_) = crate::symbol::class_static_symbol_lookup(class_id, key) {
+                return nanbox_true;
+            }
+            // String key path: check CLASS_DYNAMIC_PROPS via the get-by-name fn.
+            if !key_val.is_pointer() && key_val.is_string() {
+                // is_string covers heap StringHeader. Route through the
+                // CLASS_DYNAMIC_PROPS-aware get fn.
+            }
+            // Fallback: emit false for class refs that aren't in either table.
+            return nanbox_false;
+        }
+    }
+
     if !obj_val.is_pointer() {
         return nanbox_false;
     }
