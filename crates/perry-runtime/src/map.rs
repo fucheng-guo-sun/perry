@@ -126,6 +126,51 @@ thread_local! {
     > = RefCell::new(crate::fast_hash::new_ptr_hash_map());
 }
 
+/// Side-table mapping `map_ptr -> (FNV-1a 64-bit content hash -> Vec<entries-array-index>)`
+/// for STRING keys. Bypasses the gen-GC-stale-bits constraint that keeps
+/// `MAP_INDEX` numeric-only by hashing the string's CONTENT, not its
+/// pointer bits — so a forwarded heap-string and an SSO inline string
+/// with the same bytes share the same bucket. Stored values are u32
+/// indexes into the entries array (not pointers), which survive
+/// `rewrite_map_fields` evacuation rewrites untouched.
+///
+/// The per-bucket `Vec<u32>` accommodates hash collisions: while FNV-1a
+/// 64-bit collisions are vanishingly rare for distinct strings, we still
+/// validate each candidate via `jsvalue_eq` on lookup so a collision
+/// just costs an extra few-byte memcmp, never a wrong answer.
+///
+/// Pre-fix `Map.set("key_" + i, …)` over 500k inserts was O(N²) because
+/// each `set` did a linear `find_key_index` to dedup-check; with this
+/// table the dedup probe is O(1) amortized.
+thread_local! {
+    static MAP_STRING_INDEX: RefCell<
+        crate::fast_hash::PtrHashMap<usize, std::collections::HashMap<u64, Vec<u32>>>,
+    > = RefCell::new(crate::fast_hash::new_ptr_hash_map());
+}
+
+/// FNV-1a 64-bit content hash for any string-like JSValue.
+/// Returns `None` for non-strings, `Some(FNV_OFFSET_BASIS)` for the empty
+/// string. SSO and heap STRING_TAG hash into the same space because both
+/// representations decode through `string_view_from_bits`.
+#[inline]
+fn string_content_hash(value_bits: u64) -> Option<u64> {
+    let mut scratch = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+    let (ptr, len) = string_view_from_bits(value_bits, &mut scratch)?;
+    // FNV-1a 64-bit constants per http://www.isthe.com/chongo/tech/comp/fnv/
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    if len == 0 {
+        return Some(h);
+    }
+    unsafe {
+        let bytes = std::slice::from_raw_parts(ptr, len as usize);
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    Some(h)
+}
+
 /// Drop the side-table entry AND deregister from `MAP_REGISTRY` for a
 /// map address that's about to be reused or freed (called from
 /// `gc::sweep`). Safe to call on unregistered addresses.
@@ -142,6 +187,9 @@ thread_local! {
 /// had been a Map a few collections earlier.
 pub fn drop_map_index(addr: usize) {
     MAP_INDEX.with(|idx| {
+        idx.borrow_mut().remove(&addr);
+    });
+    MAP_STRING_INDEX.with(|idx| {
         idx.borrow_mut().remove(&addr);
     });
     MAP_REGISTRY.with(|r| {
@@ -420,6 +468,10 @@ pub extern "C" fn js_map_alloc(capacity: u32) -> *mut MapHeader {
             idx.borrow_mut()
                 .insert(ptr as usize, crate::fast_hash::new_ptr_hash_map());
         });
+        MAP_STRING_INDEX.with(|idx| {
+            idx.borrow_mut()
+                .insert(ptr as usize, std::collections::HashMap::new());
+        });
 
         ptr
     }
@@ -463,8 +515,8 @@ unsafe fn find_key_index(map: *const MapHeader, key: f64) -> i32 {
         return -1;
     }
 
-    // Side-table fast path is restricted to non-pointer keys. String /
-    // object / bigint keys still take the linear scan because the
+    // Side-table fast path is restricted to non-pointer keys. Object /
+    // bigint pointer keys still take the linear scan because the
     // side-table's stored bits go stale when gen-GC forwards the
     // backing object (see comment on `NumericKey`).
     if is_safe_numeric_key(key_bits) {
@@ -485,7 +537,40 @@ unsafe fn find_key_index(map: *const MapHeader, key: f64) -> i32 {
         }
     }
 
-    // Linear scan for pointer keys, or maps with no side-table entry.
+    // String-key fast path: content-hashed side-table bypasses the
+    // gen-GC-stale-bits constraint by hashing the bytes (heap-pointer
+    // string and SSO collide into the same bucket). Index values are
+    // u32 entry offsets — pointer-stable across `rewrite_map_fields`.
+    if is_string_like(key_bits) {
+        if let Some(h) = string_content_hash(key_bits) {
+            let entries = entries_ptr(map);
+            let hit = MAP_STRING_INDEX.with(|idx| {
+                let idx = idx.borrow();
+                if let Some(slot) = idx.get(&(map as usize)) {
+                    if let Some(bucket) = slot.get(&h) {
+                        // FNV-1a collisions are rare but possible; validate
+                        // each candidate via `jsvalue_eq` (memcmp on bytes).
+                        for &cand_idx in bucket {
+                            if cand_idx >= size {
+                                continue;
+                            }
+                            let cand_key = ptr::read(entries.add((cand_idx as usize) * 2));
+                            if jsvalue_eq(cand_key, key) {
+                                return Some(cand_idx as i32);
+                            }
+                        }
+                    }
+                    return Some(-1i32);
+                }
+                None
+            });
+            if let Some(v) = hit {
+                return v;
+            }
+        }
+    }
+
+    // Linear scan for object/bigint pointer keys, or maps with no side-table entry.
     let entries = entries_ptr(map);
     for i in 0..size {
         let entry_key = ptr::read(entries.add((i as usize) * 2));
@@ -550,9 +635,9 @@ pub extern "C" fn js_map_set(map: *mut MapHeader, key: f64, value: f64) -> *mut 
 
         (*map).size = size + 1;
 
-        // Update O(1) side-table for numeric keys only. Pointer keys
-        // (strings/objects/bigints) stay out so a gen-GC forward of the
-        // backing object can't leave stale bits in the index.
+        // Update O(1) side-table for numeric keys. Object/bigint pointer
+        // keys stay out so a gen-GC forward of the backing object can't
+        // leave stale bits in the index.
         let key_bits = key.to_bits();
         if is_safe_numeric_key(key_bits) {
             MAP_INDEX.with(|idx| {
@@ -562,6 +647,19 @@ pub extern "C" fn js_map_set(map: *mut MapHeader, key: f64, value: f64) -> *mut 
                     .or_insert_with(crate::fast_hash::new_ptr_hash_map);
                 slot.insert(NumericKey(key_bits), size);
             });
+        } else if is_string_like(key_bits) {
+            // String key: content-hashed index bypasses the gen-GC stale-bits
+            // constraint by storing entry indexes (not pointers) keyed by
+            // FNV-1a 64-bit hash of the bytes.
+            if let Some(h) = string_content_hash(key_bits) {
+                MAP_STRING_INDEX.with(|idx| {
+                    let mut idx = idx.borrow_mut();
+                    let slot = idx
+                        .entry(map as usize)
+                        .or_insert_with(std::collections::HashMap::new);
+                    slot.entry(h).or_insert_with(Vec::new).push(size);
+                });
+            }
         }
 
         map
@@ -660,6 +758,51 @@ pub extern "C" fn js_map_delete(map: *mut MapHeader, key: f64) -> i32 {
                 }
             });
         }
+
+        // Mirror string-key index maintenance: drop the deleted key from
+        // its bucket; on swap-pop, rewrite the swapped key's stored
+        // index from `size-1` to `idx`.
+        let key_str_h = if is_string_like(key_bits) {
+            string_content_hash(key_bits)
+        } else {
+            None
+        };
+        let swapped_str_h = swapped_bits.and_then(|sb| {
+            if is_string_like(sb) {
+                string_content_hash(sb)
+            } else {
+                None
+            }
+        });
+        if key_str_h.is_some() || swapped_str_h.is_some() {
+            MAP_STRING_INDEX.with(|sidx| {
+                let mut sidx = sidx.borrow_mut();
+                if let Some(slot) = sidx.get_mut(&(map as usize)) {
+                    if let Some(h) = key_str_h {
+                        // Drop the deleted-key index from its bucket.
+                        let drop_idx = idx as u32;
+                        if let Some(bucket) = slot.get_mut(&h) {
+                            bucket.retain(|&i| i != drop_idx);
+                            if bucket.is_empty() {
+                                slot.remove(&h);
+                            }
+                        }
+                    }
+                    if let Some(h) = swapped_str_h {
+                        // Rewrite the swapped key's stored index.
+                        let old_idx = (size - 1) as u32;
+                        let new_idx = idx as u32;
+                        if let Some(bucket) = slot.get_mut(&h) {
+                            for entry in bucket.iter_mut() {
+                                if *entry == old_idx {
+                                    *entry = new_idx;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
         1
     }
 }
@@ -675,6 +818,12 @@ pub extern "C" fn js_map_clear(map: *mut MapHeader) {
         (*map).size = 0;
     }
     MAP_INDEX.with(|idx| {
+        let mut idx = idx.borrow_mut();
+        if let Some(slot) = idx.get_mut(&(map as usize)) {
+            slot.clear();
+        }
+    });
+    MAP_STRING_INDEX.with(|idx| {
         let mut idx = idx.borrow_mut();
         if let Some(slot) = idx.get_mut(&(map as usize)) {
             slot.clear();
