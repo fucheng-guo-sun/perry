@@ -1911,13 +1911,18 @@ fn hex_encode_into_string(input: &[u8]) -> *mut StringHeader {
 ///
 /// v0.5.772 perf: writes bytes directly into the `BufferHeader`'s data region
 /// instead of routing through `Vec::push` (`decode_base64 -> Vec<u8>` then
-/// `copy_nonoverlapping`). The decode-table arm also accepts `-`/`_` for
-/// base64url variants — matches Node's `Buffer.from(s, 'base64')` permissive
-/// semantics (skip invalid chars, stop at first `=`). Tried routing through
-/// the `base64` crate's `decode_slice` but the strict engine rejects the
-/// permissive inputs Node accepts, and the filter+pad preprocessing pass to
-/// satisfy the strict engine actually slowed the hot path down vs the
-/// hand-rolled loop on a 5000-iter / 4 KB workload.
+/// `copy_nonoverlapping`).
+///
+/// v0.5.78x perf: 4-byte chunk fast path. Most encoded inputs are clean
+/// (produced by an encoder, no whitespace, no invalid chars, optional
+/// trailing `=` padding). For those we can decode 4 input bytes → 3
+/// output bytes per iteration with all four table lookups happening in
+/// parallel (no serial accum/bits state). On a 4 KB sample this drops
+/// per-iteration cost from ~7 dependent ops down to 4 independent loads
+/// + 1 OR + 3 writes. Falls back to the permissive byte-at-a-time loop
+/// when we encounter `=`, an invalid byte, or a whitespace character —
+/// matches Node's `Buffer.from(s, 'base64')` semantics for those cases
+/// (skip invalid, stop at first `=`).
 #[inline]
 fn base64_decode_into_buffer(input: &[u8]) -> *mut BufferHeader {
     let max_out = input.len().saturating_mul(3) / 4 + 3;
@@ -1929,9 +1934,49 @@ fn base64_decode_into_buffer(input: &[u8]) -> *mut BufferHeader {
     unsafe {
         let dst = buffer_data_mut(buf);
         let mut written = 0usize;
+
+        // Fast path: 4-byte chunks while all four bytes decode cleanly.
+        // Bails to the slow-path tail when we hit `=`, an invalid byte,
+        // or whitespace.
+        let mut i = 0usize;
+        let n = input.len();
+        while i + 4 <= n {
+            let b0 = *input.get_unchecked(i);
+            let b1 = *input.get_unchecked(i + 1);
+            let b2 = *input.get_unchecked(i + 2);
+            let b3 = *input.get_unchecked(i + 3);
+            // Bail to slow path if any chunk byte is special (= padding /
+            // invalid / whitespace). We let the slow path read these.
+            if b0 == b'=' || b1 == b'=' || b2 == b'=' || b3 == b'=' {
+                break;
+            }
+            let v0 = *BASE64_DECODE_TABLE.get_unchecked(b0 as usize);
+            let v1 = *BASE64_DECODE_TABLE.get_unchecked(b1 as usize);
+            let v2 = *BASE64_DECODE_TABLE.get_unchecked(b2 as usize);
+            let v3 = *BASE64_DECODE_TABLE.get_unchecked(b3 as usize);
+            // 64 = invalid / skip char. Fall back to the slow path so
+            // the permissive whitespace-skipping behavior fires correctly.
+            if (v0 | v1 | v2 | v3) >= 64 {
+                break;
+            }
+            let chunk = ((v0 as u32) << 18)
+                | ((v1 as u32) << 12)
+                | ((v2 as u32) << 6)
+                | (v3 as u32);
+            *dst.add(written)     = (chunk >> 16) as u8;
+            *dst.add(written + 1) = (chunk >> 8) as u8;
+            *dst.add(written + 2) = chunk as u8;
+            written += 3;
+            i += 4;
+        }
+
+        // Slow-path tail: byte-at-a-time, accumulator-based, handles
+        // padding, whitespace, and invalid characters per Node spec.
         let mut accum: u32 = 0;
         let mut bits: u32 = 0;
-        for &byte in input {
+        while i < n {
+            let byte = *input.get_unchecked(i);
+            i += 1;
             if byte == b'=' {
                 break;
             }

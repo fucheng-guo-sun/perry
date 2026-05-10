@@ -67,6 +67,12 @@ extern "C" fn mt_profile_atexit() {
         MT_FAST_PATH_HIT.load(Ordering::Relaxed),
         MT_FAST_PATH_MISS.load(Ordering::Relaxed),
     );
+    eprintln!(
+        "[mt-profile] closure: alloc={} cap_singleton_hit={} cap_singleton_miss={}",
+        crate::closure::CLOSURE_ALLOC_COUNT.load(Ordering::Relaxed),
+        crate::closure::CLOSURE_CAP_SINGLETON_HIT.load(Ordering::Relaxed),
+        crate::closure::CLOSURE_CAP_SINGLETON_MISS.load(Ordering::Relaxed),
+    );
 }
 
 static MT_PROFILE_REG: std::sync::Once = std::sync::Once::new();

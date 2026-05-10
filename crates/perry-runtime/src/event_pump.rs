@@ -22,6 +22,7 @@
 //! `wait_timeout` survive — if we used a bare `Condvar::wait_timeout`
 //! without a flag we would lose any notify that races the lock acquire.
 
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
@@ -40,6 +41,29 @@ static PUMP: Pump = Pump {
     cvar: Condvar::new(),
 };
 
+/// Lock-free fast-path flag for `js_notify_main_thread`.
+///
+/// The hot path is a single-threaded async benchmark with millions of
+/// promise resolutions per second — every one of which used to take
+/// the `PUMP.flag` mutex (a syscall on contention, an atomic CAS even
+/// uncontended). Profile of `benchmarks/app-patterns/kernels/promise_all_chains.ts`
+/// showed ~5% of total runtime in `<std::sync::Mutex as MutexGuard>::new` /
+/// `parking_lot_core::deadlock::*`.
+///
+/// New protocol:
+///   - `WAITER_COUNT` is incremented by the consumer just before entering
+///     `cvar.wait_timeout` and decremented immediately after.
+///   - `js_notify_main_thread` does a relaxed-load of `WAITER_COUNT`. If
+///     it's zero (the consumer is busy draining queues, not waiting)
+///     just store-true to `NOTIFIED` and return — no mutex, no syscall.
+///   - When `WAITER_COUNT > 0`, fall through to the mutex+cvar path so
+///     `notify_one` actually wakes the sleeping thread.
+///
+/// `js_wait_for_event` reads `NOTIFIED` first; if true, it consumes it
+/// and returns immediately. Otherwise it takes the mutex + cvar path.
+static NOTIFIED: AtomicBool = AtomicBool::new(false);
+static WAITER_COUNT: AtomicI64 = AtomicI64::new(0);
+
 /// Idle-cap: even if every notify path were silent, the consumer
 /// re-checks every second. Acts as a safety net only — the design
 /// target is 0 unmatched notifies on the hot path.
@@ -50,8 +74,28 @@ const IDLE_CAP_MS: u64 = 1000;
 /// Safe to call from any thread, including the main thread itself.
 /// Multiple notifies between consumer waits collapse to one wake — the
 /// consumer drains the entire queue each pass anyway.
+#[inline]
 #[no_mangle]
 pub extern "C" fn js_notify_main_thread() {
+    // Mark notification visible to the consumer regardless of which
+    // path it took (Release so subsequent producer side-effects are
+    // visible).
+    NOTIFIED.store(true, Ordering::Release);
+    // Hot path: no consumer is currently in `cvar.wait_timeout`, so
+    // we don't need to take the mutex or signal the cvar — the next
+    // call to `js_wait_for_event` will see `NOTIFIED == true` on the
+    // atomic-load fast path and return immediately. This skips a
+    // mutex acquire+release per call (= ~10 ns saved on uncontended
+    // x86, more under load), which for 200k microtasks/await dominates
+    // the per-await fixed cost.
+    if WAITER_COUNT.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    // Slow path: a consumer is sleeping in `cvar.wait_timeout`. Take
+    // the mutex to publish the flag under the lock (the cvar protocol
+    // requires this), then signal. The mutex is contended only for the
+    // brief duration the consumer holds it — uncontended in steady
+    // state.
     let mut flag = PUMP.flag.lock().unwrap();
     *flag = true;
     drop(flag);
@@ -65,6 +109,12 @@ pub extern "C" fn js_notify_main_thread() {
 /// and `await` busy-wait.
 #[no_mangle]
 pub extern "C" fn js_wait_for_event() {
+    // FAST PATH: a notify was already issued since the last wait. The
+    // hot async/await steady-state hits this every iteration.
+    if NOTIFIED.swap(false, Ordering::Acquire) {
+        return;
+    }
+
     let mut budget_ms: u64 = IDLE_CAP_MS;
     for d in [
         js_timer_next_deadline(),
@@ -79,14 +129,23 @@ pub extern "C" fn js_wait_for_event() {
         }
     }
 
-    let mut flag = PUMP.flag.lock().unwrap();
-    if *flag {
-        *flag = false;
+    if budget_ms == 0 {
+        // A timer is already due — don't block.
         return;
     }
-    if budget_ms == 0 {
-        // A timer is already due — don't block, but still ensure flag
-        // is clear so the next wait genuinely blocks if no event arrives.
+
+    // Slow path: take the cvar mutex and sleep on it. Mark ourselves
+    // as a waiter first so concurrent notifiers go through the
+    // mutex+cvar path (they won't see our wait if we registered after
+    // they checked WAITER_COUNT and we'd miss the wake). The
+    // mutex-protected `flag` covers the lost-wakeup window.
+    WAITER_COUNT.fetch_add(1, Ordering::Release);
+    let mut flag = PUMP.flag.lock().unwrap();
+    // Re-check NOTIFIED under the lock — a producer may have set it
+    // between our atomic-load above and the WAITER_COUNT increment.
+    if NOTIFIED.swap(false, Ordering::Acquire) || *flag {
+        *flag = false;
+        WAITER_COUNT.fetch_sub(1, Ordering::Release);
         return;
     }
     let (mut new_flag, _) = PUMP
@@ -94,6 +153,8 @@ pub extern "C" fn js_wait_for_event() {
         .wait_timeout(flag, Duration::from_millis(budget_ms))
         .unwrap();
     *new_flag = false;
+    WAITER_COUNT.fetch_sub(1, Ordering::Release);
+    NOTIFIED.store(false, Ordering::Release);
 }
 
 #[cfg(test)]

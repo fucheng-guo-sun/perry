@@ -27,7 +27,13 @@ thread_local! {
     /// `getOrCompute(map, key, () => new Foo(sortedTypes))` capturing
     /// a fresh array per call) from filling the cache and crowding
     /// out closures with stable captures.
-    static SINGLETON_CAPTURED_CLOSURES: RefCell<HashMap<usize, (Vec<u64>, *mut ClosureHeader)>> =
+    /// Per-`func_ptr` small-LRU cache. Each entry holds up to
+    /// `MAX_CAPTURED_CLOSURE_SLOTS` (captures-bits, ClosureHeader)
+    /// pairs. Multiple slots are critical for the parallel-instance
+    /// async-await pattern (e.g. `Promise.all` of N async closures
+    /// each capturing its own boxed `__async_step`), where a single-
+    /// slot cache evicts every cycle and effectively never hits.
+    static SINGLETON_CAPTURED_CLOSURES: RefCell<HashMap<usize, Vec<(Vec<u64>, *mut ClosureHeader)>>> =
         RefCell::new(HashMap::new());
 }
 
@@ -432,6 +438,7 @@ pub struct ClosureHeader {
 /// Returns pointer to ClosureHeader
 #[no_mangle]
 pub extern "C" fn js_closure_alloc(func_ptr: *const u8, capture_count: u32) -> *mut ClosureHeader {
+    CLOSURE_ALLOC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let actual_count = real_capture_count(capture_count) as usize;
     let captures_size = actual_count * 8; // Each capture is 8 bytes (f64 or i64)
     let total_size = std::mem::size_of::<ClosureHeader>() + captures_size;
@@ -447,6 +454,13 @@ pub extern "C" fn js_closure_alloc(func_ptr: *const u8, capture_count: u32) -> *
 
     ptr
 }
+
+pub static CLOSURE_ALLOC_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static CLOSURE_CAP_SINGLETON_HIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static CLOSURE_CAP_SINGLETON_MISS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Singleton-cached closure allocation for non-capturing closures and FuncRef
 /// wrappers. The same `func_ptr` always yields the SAME ClosureHeader, so a
@@ -490,12 +504,25 @@ pub fn snapshot_singleton_closures() -> Vec<*mut ClosureHeader> {
     let mut out: Vec<*mut ClosureHeader> =
         SINGLETON_CLOSURES.with(|s| s.borrow().values().copied().collect());
     SINGLETON_CAPTURED_CLOSURES.with(|s| {
-        for (_caps, c) in s.borrow().values() {
-            out.push(*c);
+        for slots in s.borrow().values() {
+            for (_caps, c) in slots {
+                out.push(*c);
+            }
         }
     });
     out
 }
+
+/// Maximum number of (captures-tuple, ClosureHeader) entries cached
+/// per-`func_ptr` in `SINGLETON_CAPTURED_CLOSURES`. Sized to absorb the
+/// parallel-instance async-await pattern (e.g. `Promise.all` of N
+/// concurrent unitOfWork calls each capturing their own boxed
+/// `__async_step`) without filling the cache when N is large. The
+/// LRU eviction inside the slot list keeps the most-recently-seen
+/// entries hot. Empirical: capping at 64 keeps memory bounded but
+/// covers the per-batch fan-out shape (50 promises) found in
+/// `benchmarks/app-patterns/kernels/promise_all_chains.ts`.
+const MAX_CAPTURED_CLOSURE_SLOTS: usize = 64;
 
 /// Per-`func_ptr` single-slot cache for closures with captures. When
 /// the same closure literal is created again with the SAME capture
@@ -522,23 +549,34 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         unsafe { std::slice::from_raw_parts(captures_ptr, n) }
     };
 
-    // Fast path: per-func-ptr single slot — if the cached captures
-    // match the new ones, return the cached closure. Avoids a HashMap
-    // allocation on the hot path.
+    // Fast path: scan the per-`func_ptr` slot list looking for a
+    // matching capture-tuple. We touch only the cached `Vec` (small,
+    // bounded by MAX_CAPTURED_CLOSURE_SLOTS). The match check is
+    // bit-equality of u64 capture slots — same as a plain primitive
+    // value comparison. Move the matched entry to the front to keep
+    // recency information for the LRU eviction policy below.
     if let Some(cached) = SINGLETON_CAPTURED_CLOSURES.with(|s| {
-        let s = s.borrow();
-        s.get(&(func_ptr as usize)).and_then(|(prev_caps, ptr)| {
-            if prev_caps.as_slice() == captures_slice {
-                Some(*ptr)
-            } else {
-                None
+        let mut s = s.borrow_mut();
+        if let Some(slots) = s.get_mut(&(func_ptr as usize)) {
+            for i in 0..slots.len() {
+                if slots[i].0.as_slice() == captures_slice {
+                    let entry = slots.remove(i);
+                    let ptr = entry.1;
+                    slots.insert(0, entry);
+                    return Some(ptr);
+                }
             }
-        })
+        }
+        None
     }) {
+        CLOSURE_CAP_SINGLETON_HIT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return cached;
     }
+    CLOSURE_CAP_SINGLETON_MISS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    // Slow path: allocate, populate captures, insert into cache.
+    // Slow path: allocate, populate captures, insert into cache as
+    // the most-recent entry. If the slot list is full, drop the
+    // least-recent (back of the Vec).
     let allocated = js_closure_alloc(func_ptr, capture_count);
     if n > 0 && !captures_ptr.is_null() {
         unsafe {
@@ -547,8 +585,12 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         }
     }
     SINGLETON_CAPTURED_CLOSURES.with(|s| {
-        s.borrow_mut()
-            .insert(func_ptr as usize, (captures_slice.to_vec(), allocated));
+        let mut s = s.borrow_mut();
+        let slots = s.entry(func_ptr as usize).or_insert_with(Vec::new);
+        slots.insert(0, (captures_slice.to_vec(), allocated));
+        if slots.len() > MAX_CAPTURED_CLOSURE_SLOTS {
+            slots.truncate(MAX_CAPTURED_CLOSURE_SLOTS);
+        }
     });
     allocated
 }

@@ -4448,17 +4448,30 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // inner arrow `(eid, arch, compId) => ... changeset ...`
             // is created per-call but always with the same `this` (the
             // World) and same captures (`this._changeset`).
-            let body_mutates_capture = !mutable_captures.is_empty()
-                && auto_captures.iter().any(|id| mutable_captures.contains(id));
-            // Boxed captures store a fresh box pointer per closure
-            // creation site, so their bits differ between calls even
-            // when the box's logical value is the same. That breaks
-            // the cache — every call would miss. Skip the captured
-            // singleton path when any capture is boxed.
-            let captures_any_boxed = auto_captures.iter().any(|id| ctx.boxed_vars.contains(id));
+            // Boxed captures still allow the cache path: the closure
+            // stores the BOX POINTER (a stable per-allocation address),
+            // and the box's contents are read dynamically inside the
+            // body via `js_box_get`. Two closure-literal sites that
+            // capture the same boxed local store identical box-pointer
+            // bits, so the cache (keyed on bit-equality of capture
+            // slots) still hits. The cache backing is a small LRU per
+            // func_ptr, which tolerates the parallel-instance pattern
+            // (50 concurrent unitOfWork calls each capturing a
+            // different `__async_step` box) by holding multiple
+            // captures rather than overwriting one slot per call.
+            //
+            // We previously bailed out when any captured local was
+            // boxed (`mutable_captures` non-empty). That made the
+            // async-to-generator transform's per-`await` `cb_v` /
+            // `cb_e` closures (which capture the boxed `__async_step`
+            // self-reference) miss the cache 100% of the time —
+            // 2 fresh closure allocs per await ≈ 300 ns of `gc_malloc`
+            // work even though the box pointers are stable across
+            // call sites. The relaxed gate plus the multi-slot LRU
+            // backing reclaims that overhead.
+            let _ = mutable_captures;
             let no_capture_singleton = total_caps == 0;
-            let captured_singleton =
-                !no_capture_singleton && !body_mutates_capture && !captures_any_boxed;
+            let captured_singleton = !no_capture_singleton;
 
             // For captures_this, the cache buffer needs an extra slot
             // for the `this` value so the cache key distinguishes
