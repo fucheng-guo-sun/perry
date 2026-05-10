@@ -2524,9 +2524,9 @@ pub extern "C" fn perry_ui_image_gallery_set_index(handle: i64, index: i64) {
 //     still compiles and runs but the widget is invisible. Real backend
 //     deferred to a later phase per #658's roadmap.
 #[no_mangle]
-pub extern "C" fn perry_ui_webview_create(url_ptr: i64, width: f64, height: f64) -> i64 {
+pub extern "C" fn perry_ui_webview_create(url_ptr: i64, width: f64, height: f64, ephemeral: f64) -> i64 {
     catch_panic("perry_ui_webview_create", || {
-        widgets::webview::create(url_ptr as *const u8, width, height)
+        widgets::webview::create(url_ptr as *const u8, width, height, ephemeral)
     })
 }
 #[no_mangle]

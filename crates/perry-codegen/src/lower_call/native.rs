@@ -1269,7 +1269,8 @@ pub(crate) fn lower_native_method_call(
         ctx.pending_declares.push((
             "perry_ui_webview_create".to_string(),
             I64,
-            vec![I64, DOUBLE, DOUBLE],
+            // v2-B: 4th arg is `ephemeral_hint` (1.0 ephemeral / 0.0 persistent).
+            vec![I64, DOUBLE, DOUBLE, DOUBLE],
         ));
         ctx.pending_declares.push((
             "perry_ui_webview_set_user_agent".to_string(),
@@ -1307,24 +1308,29 @@ pub(crate) fn lower_native_method_call(
             vec![DOUBLE],
         ));
 
+        // v2-B: pass ephemeral as a creation-time arg so backends with
+        // construction-time data-store choices (WebView2 userDataFolder,
+        // WebKitGTK NetworkSession::new_ephemeral) honor it before the
+        // first navigation. Default 1.0 = ephemeral when the user omits
+        // the field. The truthy lowering above produces an i64 (0 / 1);
+        // bitcast to a double via sitofp so the FFI sees an f64 hint.
         let blk = ctx.block();
+        let eph_hint = if let Some(eph) = &ephemeral_d {
+            blk.sitofp(I64, eph, DOUBLE)
+        } else {
+            double_literal(1.0)
+        };
+
         let handle = blk.call(
             I64,
             "perry_ui_webview_create",
-            &[(I64, &url_ptr), (DOUBLE, &width_d), (DOUBLE, &height_d)],
+            &[
+                (I64, &url_ptr),
+                (DOUBLE, &width_d),
+                (DOUBLE, &height_d),
+                (DOUBLE, &eph_hint),
+            ],
         );
-
-        // Apply ephemeral BEFORE the wnd/setters that may fire navigations,
-        // so the data store swap takes effect for the very first request.
-        // The macOS impl's set_ephemeral docstring notes: call before the
-        // first navigation. The create() call above includes the initial
-        // load if `url` is set, so this ordering is "best effort" — the
-        // first request might land before the swap. Document that user
-        // code should leave `ephemeral` at its default (true) or set it
-        // alongside a deferred initial URL.
-        if let Some(eph) = &ephemeral_d {
-            blk.call_void("perry_ui_webview_set_ephemeral", &[(I64, &handle), (I64, eph)]);
-        }
         if let Some(ua) = &user_agent_ptr {
             blk.call_void("perry_ui_webview_set_user_agent", &[(I64, &handle), (I64, ua)]);
         }

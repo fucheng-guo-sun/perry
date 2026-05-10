@@ -169,9 +169,10 @@ static NEXT_DATA_DIR_TAG: AtomicI64 = AtomicI64::new(1);
 // Public API
 // =============================================================================
 
-pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
+pub fn create(url_ptr: *const u8, width: f64, height: f64, ephemeral_hint: f64) -> i64 {
     let url = str_from_header(url_ptr).to_string();
     let control_id = alloc_control_id();
+    let _ = ephemeral_hint;
 
     #[cfg(target_os = "windows")]
     {
@@ -201,8 +202,15 @@ pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
             m.borrow_mut().insert(host.0 as isize, handle);
         });
 
-        // Default to ephemeral — a per-handle temp dir under %TEMP%.
-        let user_data_dir = ephemeral_user_data_dir();
+        // v2-B: ephemeral_hint controls userDataFolder choice at env-creation
+        // time. ephemeral=true (default) → per-handle temp dir; false →
+        // shared persistent dir under %LOCALAPPDATA%\PerryWebView so cookies
+        // survive across sessions / WebView instances in the same app.
+        let user_data_dir = if ephemeral_hint > 0.5 {
+            ephemeral_user_data_dir()
+        } else {
+            persistent_user_data_dir()
+        };
 
         WEBVIEW_STATES.with(|s| {
             s.borrow_mut().insert(
@@ -246,6 +254,21 @@ fn ephemeral_user_data_dir() -> PathBuf {
     let pid = std::process::id();
     let tag = NEXT_DATA_DIR_TAG.fetch_add(1, Ordering::Relaxed);
     p.push(format!("{}-{}", pid, tag));
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+/// Persistent userDataFolder for `ephemeral: false`. Located under
+/// `%LOCALAPPDATA%\PerryWebView\persistent` so cookies survive across
+/// app launches, the same way Edge / Chrome's profile dir works.
+#[cfg(target_os = "windows")]
+fn persistent_user_data_dir() -> PathBuf {
+    let mut p = std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir());
+    p.push("PerryWebView");
+    p.push("persistent");
     let _ = std::fs::create_dir_all(&p);
     p
 }

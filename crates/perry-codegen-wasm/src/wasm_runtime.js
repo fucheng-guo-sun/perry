@@ -3029,7 +3029,15 @@ function perry_ui_image_set_tint(h, r, g, b, a) { perry_ui_set_foreground(h, r, 
 // after the iframe's `load` event for any nav; `onError` is delivered
 // when the iframe fails to load (same-origin only). Custom UA is
 // browser-controlled and can't be overridden from JS.
-function perry_ui_webview_create(url, _width, _height) {
+//
+// v2-C cross-origin postMessage bridge: when a `postMessage` arrives
+// from the iframe's contentWindow, we route it to the per-handle
+// onMessage closure if any. The user wires this from TS via
+// `webviewEvaluateJs(handle, "window.parent.postMessage(payload, '*')")`
+// from inside the embedded page (or the embedded page can call
+// `window.parent.postMessage(...)` directly). This is the standard
+// cross-origin message channel — both sides must opt in.
+function perry_ui_webview_create(url, _width, _height, _ephemeral) {
   const el = document.createElement("iframe");
   el.src = url || "about:blank";
   el.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups");
@@ -3037,6 +3045,14 @@ function perry_ui_webview_create(url, _width, _height) {
   el.style.width = "100%";
   el.style.height = "100%";
   el._perry_state = { allowed: [], onShould: null, onLoaded: null, onError: null };
+  // v2-C: cross-origin postMessage is a TS-side concern — user code
+  // calls `window.addEventListener("message", e => ...)` directly to
+  // receive frames from the iframe's contentWindow. To send TO the
+  // iframe, use `webviewEvaluateJs(handle, "window.postMessage(...)")`.
+  // See the JSDoc on the WebView() type declaration for the working
+  // pattern. We don't expose a cross-platform onMessage / postMessage
+  // FFI in v1 because that's the Tauri/Electron path Perry's WebView
+  // explicitly avoids per the #658 design discussion.
   el.addEventListener("load", () => {
     const st = el._perry_state;
     let url = "";

@@ -75,13 +75,29 @@ fn host_in_allowlist(host: &str, allowlist: &[String]) -> bool {
         .any(|d| host == d || host.ends_with(&format!(".{}", d)))
 }
 
-pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
+pub fn create(url_ptr: *const u8, width: f64, height: f64, ephemeral_hint: f64) -> i64 {
     crate::app::ensure_gtk_init();
     let url = str_from_header(url_ptr).to_string();
 
-    // Default to ephemeral — fresh WebKitNetworkSession with no persistent
-    // cookies. set_ephemeral(false) replaces the session.
-    let session = webkit6::NetworkSession::new_ephemeral();
+    // v2-B: ephemeral_hint chooses ephemeral vs persistent NetworkSession
+    // at construction time. WebKitNetworkSession can't be replaced after
+    // the WebKitWebView is built, so this must happen here.
+    let session = if ephemeral_hint > 0.5 {
+        webkit6::NetworkSession::new_ephemeral()
+    } else {
+        // Persistent session under XDG_DATA_HOME/perry-webview so cookies
+        // survive across app launches.
+        let mut data = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
+        data.push("perry-webview");
+        let mut cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+        cache.push("perry-webview");
+        let _ = std::fs::create_dir_all(&data);
+        let _ = std::fs::create_dir_all(&cache);
+        webkit6::NetworkSession::new(
+            Some(data.to_string_lossy().as_ref()),
+            Some(cache.to_string_lossy().as_ref()),
+        )
+    };
     let webview = webkit6::WebView::builder()
         .network_session(&session)
         .build();

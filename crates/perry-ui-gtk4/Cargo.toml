@@ -25,6 +25,9 @@ libshumate = "0.6"
 # signal gives the same sync-intercept semantics as WKWebView's
 # decidePolicyForNavigationAction on macOS.
 webkit6 = "=0.4"
+# Persistent WebView userDataFolder (#658 v2-B) — XDG-aware data/cache
+# dir resolution for `ephemeral: false`. Pure-Rust crate, no system deps.
+dirs = "5"
 # perry/media — GStreamer playbin for streaming audio playback (#351).
 gstreamer = "0.23"
 # perry/media — MPRIS D-Bus exposure for GNOME / KDE / playerctl /

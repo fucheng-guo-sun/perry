@@ -24,6 +24,7 @@ extern "C" {
     fn js_closure_call1(closure: *const u8, arg: f64) -> f64;
     fn js_nanbox_get_pointer(value: f64) -> i64;
     fn js_nanbox_string(ptr: i64) -> f64;
+    fn js_is_truthy(value: f64) -> i32;
 }
 
 struct WebViewState {
@@ -47,9 +48,18 @@ fn nanbox_str(s: &str) -> f64 {
     unsafe { js_nanbox_string(p as i64) }
 }
 
-/// Create a WebView. Returns the widget handle.
-pub fn create(url_ptr: *const u8, _width: f64, _height: f64) -> i64 {
+/// Create a WebView. Returns the widget handle. `ephemeral_hint` ∈
+/// {0.0, 1.0}: when 1.0 (ephemeral), wipes process-wide cookies +
+/// WebStorage on init (Android WebViews share storage process-wide,
+/// so true per-instance isolation needs a separate process — this is
+/// the best-effort substitute).
+pub fn create(url_ptr: *const u8, _width: f64, _height: f64, ephemeral_hint: f64) -> i64 {
     let url = str_from_header(url_ptr).to_string();
+    if ephemeral_hint > 0.5 {
+        // Wipe at init time so the new WebView starts clean.
+        // Mirrors set_ephemeral(1) but happens before any nav.
+        wipe_process_storage();
+    }
     let mut env = jni_bridge::get_env();
     let _ = env.push_local_frame(32);
 
@@ -81,17 +91,13 @@ pub fn create(url_ptr: *const u8, _width: f64, _height: f64) -> i64 {
         }
     }
 
-    // Set the stock WebViewClient so navigations stay inside the WebView
-    // instead of opening the system browser. Hooks for shouldOverrideUrlLoading
-    // / onPageFinished aren't wired in v1 (need a custom helper class).
-    if let Ok(client) = env.new_object("android/webkit/WebViewClient", "()V", &[]) {
-        let _ = env.call_method(
-            &webview,
-            "setWebViewClient",
-            "(Landroid/webkit/WebViewClient;)V",
-            &[JValue::Object(&client)],
-        );
-    }
+    // Construct PerryWebViewClient(widgetHandle) — wires shouldOverrideUrlLoading
+    // / onPageFinished / onReceivedError back through PerryBridge to native.
+    // The handle isn't allocated until below; we register the WebView first
+    // and then attach the client. Use a placeholder of 0 here and rewire
+    // once we know the real handle.
+    // NOTE: this two-pass shape avoids a chicken-and-egg between handle
+    // allocation and client construction — see `attach_perry_client` below.
 
     if !url.is_empty() {
         if let Ok(jurl) = env.new_string(&url) {
@@ -129,7 +135,32 @@ pub fn create(url_ptr: *const u8, _width: f64, _height: f64) -> i64 {
             },
         );
     });
+    attach_perry_client(handle);
     handle
+}
+
+fn attach_perry_client(handle: i64) {
+    let view = match super::get_widget(handle) {
+        Some(v) => v,
+        None => return,
+    };
+    let mut env = jni_bridge::get_env();
+    let _ = env.push_local_frame(8);
+    if let Ok(client) = env.new_object(
+        "com/perry/app/PerryWebViewClient",
+        "(J)V",
+        &[JValue::Long(handle)],
+    ) {
+        let _ = env.call_method(
+            &view,
+            "setWebViewClient",
+            "(Landroid/webkit/WebViewClient;)V",
+            &[JValue::Object(&client)],
+        );
+    }
+    unsafe {
+        let _ = env.pop_local_frame(&jni::objects::JObject::null());
+    }
 }
 
 fn call_string_method(handle: i64, method: &str, sig: &str, jstr: &str) {
@@ -197,49 +228,245 @@ pub fn can_go_back(handle: i64) -> i64 {
     }
 }
 
-/// Fire `evaluateJavascript(js, ValueCallback<String>)`. The Android API
-/// is async-callback-based; v1 stores the user callback and invokes it
-/// from a synchronously-called helper that posts the JS on the WebView
-/// and waits for the result via a CountDownLatch (~50ms typical). For
-/// robustness, the v1 impl uses the simpler `loadUrl("javascript:...")`
-/// fire-and-forget shape and invokes the callback with the empty
-/// string immediately — gives user code a callback to await without
-/// blocking the JNI bridge. A real ValueCallback implementation needs
-/// a custom helper class (same v2 path as the WebViewClient).
+/// Fire `evaluateJavascript(js, PerryWebViewEvalCallback(callbackKey))`.
+/// The Java helper's `ValueCallback<String>.onReceiveValue(value)` calls
+/// back into native via `nativeWebViewEvalResult(callbackKey, value)`,
+/// where we look up the user's TS closure (stashed in EVAL_CALLBACKS at
+/// call time) and invoke it with the result. Android wraps successful
+/// returns as JSON-encoded strings; we strip outer quotes for plain
+/// string results matching the Windows / WKWebView ergonomics.
 pub fn evaluate_js(handle: i64, js_ptr: *const u8, callback: f64) {
     let js = str_from_header(js_ptr);
     let view = match super::get_widget(handle) {
         Some(v) => v,
         None => return,
     };
+    let key = next_eval_callback_key();
+    EVAL_CALLBACKS.with(|m| {
+        m.borrow_mut().insert(key, callback);
+    });
     let mut env = jni_bridge::get_env();
     let _ = env.push_local_frame(8);
     if let Ok(jjs) = env.new_string(js) {
-        // ValueCallback<String> is `null` here — Android accepts null
-        // and just runs the script without delivering the result.
-        let null_cb = jni::objects::JObject::null();
-        let _ = env.call_method(
-            &view,
-            "evaluateJavascript",
-            "(Ljava/lang/String;Landroid/webkit/ValueCallback;)V",
-            &[JValue::Object(&jjs), JValue::Object(&null_cb)],
-        );
+        if let Ok(cb) = env.new_object(
+            "com/perry/app/PerryWebViewEvalCallback",
+            "(J)V",
+            &[JValue::Long(key)],
+        ) {
+            let _ = env.call_method(
+                &view,
+                "evaluateJavascript",
+                "(Ljava/lang/String;Landroid/webkit/ValueCallback;)V",
+                &[JValue::Object(&jjs), JValue::Object(&cb)],
+            );
+        } else {
+            // Fallback: stock evaluateJavascript with null callback — the
+            // JS still runs, but the user callback never fires. Drop the
+            // EVAL_CALLBACKS entry so it doesn't leak.
+            EVAL_CALLBACKS.with(|m| {
+                m.borrow_mut().remove(&key);
+            });
+            let null_cb = jni::objects::JObject::null();
+            let _ = env.call_method(
+                &view,
+                "evaluateJavascript",
+                "(Ljava/lang/String;Landroid/webkit/ValueCallback;)V",
+                &[JValue::Object(&jjs), JValue::Object(&null_cb)],
+            );
+        }
     }
     unsafe {
         let _ = env.pop_local_frame(&jni::objects::JObject::null());
     }
+}
 
-    // Fire the user callback synchronously with empty string — preserves
-    // the API shape (a callback fires) without the Java helper class.
-    if callback != 0.0 {
-        let nb = nanbox_str("");
-        let closure_ptr = unsafe { js_nanbox_get_pointer(callback) } as *const u8;
-        if !closure_ptr.is_null() {
-            unsafe {
-                js_closure_call1(closure_ptr, nb);
-            }
+// =============================================================================
+// JNI exports — called from PerryWebViewClient / PerryWebViewEvalCallback
+// =============================================================================
+
+use std::cell::Cell as StdCell;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+thread_local! {
+    /// Per-call eval callback registry — populated by `evaluate_js`,
+    /// drained by `Java_..._nativeWebViewEvalResult`. Values are the
+    /// user's TS closure (NaN-boxed f64).
+    static EVAL_CALLBACKS: RefCell<HashMap<i64, f64>> = RefCell::new(HashMap::new());
+}
+
+static NEXT_EVAL_KEY: AtomicI64 = AtomicI64::new(1);
+
+fn next_eval_callback_key() -> i64 {
+    NEXT_EVAL_KEY.fetch_add(1, Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_perry_app_PerryBridge_nativeWebViewShouldNavigate(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    widget_handle: jni::sys::jlong,
+    url: jni::objects::JString,
+) -> jni::sys::jboolean {
+    let url_str: String = match env.get_string(&url) {
+        Ok(s) => s.into(),
+        Err(_) => return 1, // allow on read failure (open default)
+    };
+
+    let (on_should, allowed) = WEBVIEW_STATES.with(|s| {
+        s.borrow()
+            .get(&(widget_handle as i64))
+            .map(|st| (st.on_should_navigate, st.allowed_domains.clone()))
+            .unwrap_or((0.0, Vec::new()))
+    });
+
+    // Allowlist gate.
+    if !allowed.is_empty() {
+        let host = host_of_url(&url_str);
+        if !host_in_allowlist(&host, &allowed) {
+            return 0; // cancel
         }
     }
+
+    if on_should == 0.0 {
+        return 1; // allow
+    }
+    let url_nb = nanbox_str(&url_str);
+    let closure_ptr = unsafe { js_nanbox_get_pointer(on_should) } as *const u8;
+    if closure_ptr.is_null() {
+        return 1;
+    }
+    let result_cell = StdCell::new(f64::from_bits(0x7FFC_0000_0000_0001));
+    let result_cell_ref = &result_cell;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let r = unsafe { js_closure_call1(closure_ptr, url_nb) };
+        result_cell_ref.set(r);
+    }));
+    let result = result_cell.get();
+    let bits = result.to_bits();
+    let is_undefined = bits == 0x7FFC_0000_0000_0001;
+    let allow = is_undefined || unsafe { js_is_truthy(result) != 0 };
+    if allow {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_perry_app_PerryBridge_nativeWebViewLoaded(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    widget_handle: jni::sys::jlong,
+    url: jni::objects::JString,
+) {
+    let url_str: String = env.get_string(&url).map(|s| s.into()).unwrap_or_default();
+    let on_loaded = WEBVIEW_STATES.with(|s| {
+        s.borrow()
+            .get(&(widget_handle as i64))
+            .map(|st| st.on_loaded)
+            .unwrap_or(0.0)
+    });
+    if on_loaded == 0.0 {
+        return;
+    }
+    let closure_ptr = unsafe { js_nanbox_get_pointer(on_loaded) } as *const u8;
+    if closure_ptr.is_null() {
+        return;
+    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let nb = nanbox_str(&url_str);
+        unsafe { js_closure_call1(closure_ptr, nb) };
+    }));
+}
+
+extern "C" {
+    fn js_closure_call2(closure: *const u8, arg1: f64, arg2: f64) -> f64;
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_perry_app_PerryBridge_nativeWebViewError(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    widget_handle: jni::sys::jlong,
+    code: jni::sys::jlong,
+    message: jni::objects::JString,
+) {
+    let msg: String = env.get_string(&message).map(|s| s.into()).unwrap_or_default();
+    let on_error = WEBVIEW_STATES.with(|s| {
+        s.borrow()
+            .get(&(widget_handle as i64))
+            .map(|st| st.on_error)
+            .unwrap_or(0.0)
+    });
+    if on_error == 0.0 {
+        return;
+    }
+    let closure_ptr = unsafe { js_nanbox_get_pointer(on_error) } as *const u8;
+    if closure_ptr.is_null() {
+        return;
+    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let msg_nb = nanbox_str(&msg);
+        unsafe { js_closure_call2(closure_ptr, code as f64, msg_nb) };
+    }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_perry_app_PerryBridge_nativeWebViewEvalResult(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    callback_key: jni::sys::jlong,
+    result: jni::objects::JString,
+) {
+    let raw: String = env.get_string(&result).map(|s| s.into()).unwrap_or_default();
+    let callback = EVAL_CALLBACKS.with(|m| m.borrow_mut().remove(&(callback_key as i64)));
+    let callback = match callback {
+        Some(c) if c != 0.0 => c,
+        _ => return,
+    };
+    // Strip outer JSON quotes for plain string returns (matches the
+    // Windows / WKWebView ergonomic for `document.cookie`-style reads);
+    // `null` becomes empty.
+    let s = if raw == "null" {
+        String::new()
+    } else if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
+        let inner = &raw[1..raw.len() - 1];
+        inner.replace("\\\"", "\"").replace("\\\\", "\\")
+    } else {
+        raw
+    };
+    let closure_ptr = unsafe { js_nanbox_get_pointer(callback) } as *const u8;
+    if closure_ptr.is_null() {
+        return;
+    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let nb = nanbox_str(&s);
+        unsafe { js_closure_call1(closure_ptr, nb) };
+    }));
+}
+
+fn host_of_url(s: &str) -> String {
+    let after_scheme = match s.find("://") {
+        Some(i) => &s[i + 3..],
+        None => return String::new(),
+    };
+    let host_end = after_scheme
+        .find(|c| c == '/' || c == '?' || c == '#')
+        .unwrap_or(after_scheme.len());
+    let host_with_port = &after_scheme[..host_end];
+    match host_with_port.find(':') {
+        Some(i) => host_with_port[..i].to_string(),
+        None => host_with_port.to_string(),
+    }
+}
+
+fn host_in_allowlist(host: &str, allowlist: &[String]) -> bool {
+    if allowlist.is_empty() {
+        return true;
+    }
+    allowlist
+        .iter()
+        .any(|d| host == d || host.ends_with(&format!(".{}", d)))
 }
 
 pub fn clear_cookies(_handle: i64) {
@@ -324,46 +551,50 @@ pub fn set_allowed_domains(handle: i64, domains_arr_handle: i64) {
 }
 
 pub fn set_ephemeral(_handle: i64, ephemeral: i64) {
-    // Android WebView shares CookieManager / WebStorage across the
-    // process — true per-WebView isolation needs a separate process,
-    // not just per-instance state. v1 honors `ephemeral: true` by
-    // clearing cookies + WebStorage on init (best-effort).
     if ephemeral != 0 {
-        let mut env = jni_bridge::get_env();
-        let _ = env.push_local_frame(8);
-        if let Ok(mgr_class) = env.find_class("android/webkit/CookieManager") {
-            if let Ok(mgr) = env.call_static_method(
-                &mgr_class,
-                "getInstance",
-                "()Landroid/webkit/CookieManager;",
-                &[],
-            ) {
-                if let Ok(mgr_obj) = mgr.l() {
-                    let null_cb = jni::objects::JObject::null();
-                    let _ = env.call_method(
-                        &mgr_obj,
-                        "removeAllCookies",
-                        "(Landroid/webkit/ValueCallback;)V",
-                        &[JValue::Object(&null_cb)],
-                    );
-                }
-            }
-        }
-        if let Ok(storage_class) = env.find_class("android/webkit/WebStorage") {
-            if let Ok(s) = env.call_static_method(
-                &storage_class,
-                "getInstance",
-                "()Landroid/webkit/WebStorage;",
-                &[],
-            ) {
-                if let Ok(storage) = s.l() {
-                    let _ = env.call_method(&storage, "deleteAllData", "()V", &[]);
-                }
-            }
-        }
-        unsafe {
-        let _ = env.pop_local_frame(&jni::objects::JObject::null());
+        wipe_process_storage();
     }
+}
+
+/// Wipes process-wide cookies + WebStorage. Called both from
+/// `set_ephemeral(true)` and from `create()` when `ephemeral_hint` is
+/// truthy. Best-effort; errors are swallowed so a missing
+/// CookieManager / WebStorage class doesn't take down widget creation.
+fn wipe_process_storage() {
+    let mut env = jni_bridge::get_env();
+    let _ = env.push_local_frame(8);
+    if let Ok(mgr_class) = env.find_class("android/webkit/CookieManager") {
+        if let Ok(mgr) = env.call_static_method(
+            &mgr_class,
+            "getInstance",
+            "()Landroid/webkit/CookieManager;",
+            &[],
+        ) {
+            if let Ok(mgr_obj) = mgr.l() {
+                let null_cb = jni::objects::JObject::null();
+                let _ = env.call_method(
+                    &mgr_obj,
+                    "removeAllCookies",
+                    "(Landroid/webkit/ValueCallback;)V",
+                    &[JValue::Object(&null_cb)],
+                );
+            }
+        }
+    }
+    if let Ok(storage_class) = env.find_class("android/webkit/WebStorage") {
+        if let Ok(s) = env.call_static_method(
+            &storage_class,
+            "getInstance",
+            "()Landroid/webkit/WebStorage;",
+            &[],
+        ) {
+            if let Ok(storage) = s.l() {
+                let _ = env.call_method(&storage, "deleteAllData", "()V", &[]);
+            }
+        }
+    }
+    unsafe {
+        let _ = env.pop_local_frame(&jni::objects::JObject::null());
     }
 }
 

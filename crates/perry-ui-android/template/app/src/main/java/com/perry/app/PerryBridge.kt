@@ -1573,6 +1573,25 @@ object PerryBridge {
     @JvmStatic
     external fun nativeInvokeCallbackWithStringArray(key: Long, paths: Array<String>)
 
+    // Issue #658 v2-A — WebView callbacks routed through PerryWebViewClient.
+    /// Sync intercept; returns `true` to allow nav, `false` to cancel.
+    @JvmStatic
+    external fun nativeWebViewShouldNavigate(widgetHandle: Long, url: String): Boolean
+
+    /// Page finished loading — `widgetHandle` selects the WEBVIEW_STATES
+    /// entry holding the user's `onLoaded` closure pointer.
+    @JvmStatic
+    external fun nativeWebViewLoaded(widgetHandle: Long, url: String)
+
+    /// Main-frame load error — routes to the user's `onError` closure.
+    @JvmStatic
+    external fun nativeWebViewError(widgetHandle: Long, code: Long, message: String)
+
+    /// `evaluateJavascript` completion — `callbackKey` is the per-call key
+    /// the Rust side stashed when the call was issued.
+    @JvmStatic
+    external fun nativeWebViewEvalResult(callbackKey: Long, result: String)
+
     @JvmStatic
     external fun nativeFileDialogResult(key: Long, content: String?)
 

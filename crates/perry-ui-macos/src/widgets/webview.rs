@@ -336,10 +336,10 @@ impl PerryWebViewDelegate {
 // =============================================================================
 
 /// Create a WebView with `url` initial content. Returns the widget handle.
-/// Other params (allowedDomains / userAgent / ephemeral / closures) get set
-/// via the imperative `set_*` calls — codegen unpacks the AnonShape and
-/// emits a sequence of FFI calls per the existing pattern.
-pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
+/// `ephemeral_hint` (1.0 = ephemeral, 0.0 = persistent) is applied to
+/// `WKWebViewConfiguration.websiteDataStore` at construction time so
+/// the choice takes effect for the very first navigation. v2-B fix.
+pub fn create(url_ptr: *const u8, width: f64, height: f64, ephemeral_hint: f64) -> i64 {
     let url = str_from_header(url_ptr).to_string();
     let mtm = MainThreadMarker::new().expect("perry/ui must run on the main thread");
 
@@ -352,11 +352,20 @@ pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
             ),
         );
 
-        // 1. WKWebViewConfiguration with default (non-ephemeral) datastore.
-        //    The user can opt into ephemeral via `set_ephemeral` after create.
+        // 1. WKWebViewConfiguration. v2-B: pass the ephemeral hint up
+        //    front so the websiteDataStore is correct from the first
+        //    navigation onward. Default (1.0 = ephemeral) maps to
+        //    nonPersistentDataStore; 0.0 → defaultDataStore.
         let cfg_cls = AnyClass::get(c"WKWebViewConfiguration")
             .expect("WKWebViewConfiguration not found — link WebKit.framework");
         let cfg: *mut AnyObject = msg_send![cfg_cls, new];
+        let store_cls = AnyClass::get(c"WKWebsiteDataStore").unwrap();
+        let store: *mut AnyObject = if ephemeral_hint > 0.5 {
+            msg_send![store_cls, nonPersistentDataStore]
+        } else {
+            msg_send![store_cls, defaultDataStore]
+        };
+        let _: () = msg_send![cfg, setWebsiteDataStore: store];
 
         // 2. WKWebView.
         let wv_cls = AnyClass::get(c"WKWebView").expect("WKWebView not found");

@@ -617,7 +617,12 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
     MethodRow {
         method: "webviewCreate",
         runtime: "perry_ui_webview_create",
-        args: &[ArgKind::Str, ArgKind::F64, ArgKind::F64],
+        // v2-B: accepts a 4th `ephemeral_hint` arg (1.0 = ephemeral cookies,
+        // default; 0.0 = persistent). Setting it via this param instead of
+        // a follow-up `set_ephemeral` lets backends with construction-time
+        // data-store choices (WebView2 userDataFolder, WebKitGTK
+        // NetworkSession) honor it before any navigation kicks off.
+        args: &[ArgKind::Str, ArgKind::F64, ArgKind::F64, ArgKind::F64],
         ret: ReturnKind::Widget,
     },
     MethodRow {

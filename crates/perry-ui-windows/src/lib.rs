@@ -2324,8 +2324,8 @@ pub extern "C" fn perry_ui_image_gallery_set_index(handle: i64, index: i64) {
 //     pumps the message loop synchronously so create() blocks until the
 //     widget is ready. See widgets::webview for the full impl.
 #[no_mangle]
-pub extern "C" fn perry_ui_webview_create(url_ptr: i64, width: f64, height: f64) -> i64 {
-    widgets::webview::create(url_ptr as *const u8, width, height)
+pub extern "C" fn perry_ui_webview_create(url_ptr: i64, width: f64, height: f64, ephemeral: f64) -> i64 {
+    widgets::webview::create(url_ptr as *const u8, width, height, ephemeral)
 }
 #[no_mangle]
 pub extern "C" fn perry_ui_webview_set_user_agent(handle: i64, ua_ptr: i64) {

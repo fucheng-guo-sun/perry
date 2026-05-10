@@ -475,6 +475,28 @@ export function Image(options: {
  * })
  * ```
  *
+ * **Post-page-load hooks (cookies, JS values).** Use `webviewEvaluateJs`
+ * to read data from the loaded page after `onLoaded` fires:
+ *
+ * ```ts
+ * const wv = WebView({
+ *   url: "https://example.com/auth/callback",
+ *   onLoaded: (url) => {
+ *     webviewEvaluateJs(wv, "document.cookie", (cookies) => {
+ *       saveAuthSession(parseCookies(cookies));
+ *     });
+ *   }
+ * });
+ * ```
+ *
+ * **Cross-origin messaging (web target).** On the web target the
+ * embedded page can `window.parent.postMessage(payload, "*")` and the
+ * host can `window.addEventListener("message", e => ...)` to receive
+ * frames. This is browser-platform-specific; native targets don't
+ * expose `postMessage` (use `webviewEvaluateJs` to push state IN, and
+ * navigation interception to pull state OUT — that's the Perry contract
+ * across all platforms).
+ *
  * (#658)
  */
 export function WebView(options: {

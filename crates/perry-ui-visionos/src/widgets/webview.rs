@@ -256,7 +256,7 @@ impl PerryWebViewDelegate {
     }
 }
 
-pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
+pub fn create(url_ptr: *const u8, width: f64, height: f64, ephemeral_hint: f64) -> i64 {
     let url = str_from_header(url_ptr).to_string();
     unsafe {
         let frame = objc2_core_foundation::CGRect::new(
@@ -270,6 +270,14 @@ pub fn create(url_ptr: *const u8, width: f64, height: f64) -> i64 {
         let cfg_cls = AnyClass::get(c"WKWebViewConfiguration")
             .expect("WKWebViewConfiguration not found — link WebKit.framework");
         let cfg: *mut AnyObject = msg_send![cfg_cls, new];
+        // v2-B: ephemeral hint at construction time.
+        let store_cls = AnyClass::get(c"WKWebsiteDataStore").unwrap();
+        let store: *mut AnyObject = if ephemeral_hint > 0.5 {
+            msg_send![store_cls, nonPersistentDataStore]
+        } else {
+            msg_send![store_cls, defaultDataStore]
+        };
+        let _: () = msg_send![cfg, setWebsiteDataStore: store];
 
         let wv_cls = AnyClass::get(c"WKWebView").expect("WKWebView not found");
         let wv: *mut AnyObject = msg_send![wv_cls, alloc];
