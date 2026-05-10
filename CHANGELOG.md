@@ -2,6 +2,16 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.789 — Refs #645 deeper followup / #488 drizzle-sqlite: HIR default-arg fill loop now pushes `Expr::Undefined` for slots whose param has no default, instead of skipping them — so a later `Some` default lands at the correct positional index.
+
+Pre-fix, `tableBase(name, columns, extraConfig?, schema?, baseName=name)` called with 3 args (the load-bearing drizzle shape) had `defaults[3] = None` (`schema`) and `defaults[4] = Some(name)` (`baseName`); the loop's `if let Some(default_expr) = &defaults[i]` arm `continue`d past slot 3 and pushed baseName's default into the schema slot, so `schema` got the table name (`"users"`) and `baseName` was missing.
+
+End-to-end symptom in drizzle-sqlite: rendered SQL became `INSERT INTO "users"."users" (...)` instead of `INSERT INTO "users" (...)` because the SQL builder's schema-prefix path saw a non-undefined `schema` value where Node sees `undefined`.
+
+The fix in `crates/perry-hir/src/lower/expr_call.rs:5433-5460` synthesizes `Expr::Undefined` for None-default slots and pushes BOTH the param-map entry (so subsequent defaults can still reference earlier params via `substitute_param_refs_in_default`) AND the args vector (so positional arity matches the callee's declared param count).
+
+Verified end-to-end: synthetic `tableBase("users", {id:1}, undefined)` returns `schema=undef baseName=users`; mid-call `f(a, b?, c="C")` with `f("A", "B")` correctly resolves to `c="C"`. Sanity: 11/11 class-related regression tests + new regression `test_issue_645_default_fill_positional.ts` byte-identical to Node, gap suite 27/28 (the 1 failure `test_gap_console_methods` is the pre-existing timing-sensitive `console.time` divergence unrelated to this fix).
+
 ## v0.5.788 — fix(ui-macos): closes #640 — geisterhand label decoding + SecureField `/type` onChange parity
 
 Closes the residual surface around #640. v0.5.765's partial fix made `/value` distinguish empty-but-found from widget-not-found via the `\u{0}\u{0}NF` sentinel, but the user-reported "value cleared after swap" symptom didn't reproduce in a minimal repro and a fuller 3-route NavStack repro (signin → orders → addShop, exercising the Add Shop flow's load-bearing case) confirms the underlying NSTextField *does* persist across `setHidden` correctly — handles stay valid for both `/type` and `/value` after `screen.set(...)`, onChange fires, and the user-side captures (`shopName`, `shopBaseUrl`, …) get populated as expected. What this commit fixes is the two related papercuts that were *masking* triage of the original report:

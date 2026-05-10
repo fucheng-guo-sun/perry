@@ -5429,20 +5429,33 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         param_map.push((param_ids[i], args[i].clone()));
                     }
                     // Fill in missing arguments with their defaults, substituting
-                    // any parameter references to use the caller's scope
+                    // any parameter references to use the caller's scope.
+                    //
+                    // Refs #645 deeper followup / #488 drizzle-sqlite: push
+                    // something for EVERY slot from num_provided..defaults.len(),
+                    // even when defaults[i] is None — otherwise a later Some
+                    // default lands at the wrong positional slot. Drizzle's
+                    // tableBase(name, columns, extraConfig, schema?, baseName=name)
+                    // is the load-bearing repro: 3-arg call, slot 3 (schema)
+                    // has None default and slot 4 (baseName) has Some(name).
+                    // The pre-fix loop skipped slot 3 and pushed baseName's
+                    // default into slot 3 — so schema got the table name and
+                    // rendered SQL became `"users"."users"` instead of `"users"`.
                     for i in num_provided..defaults.len() {
-                        if let Some(default_expr) = &defaults[i] {
-                            let substituted = LoweringContext::substitute_param_refs_in_default(
+                        let substituted = if let Some(default_expr) = &defaults[i] {
+                            LoweringContext::substitute_param_refs_in_default(
                                 default_expr,
                                 &param_map,
-                            );
-                            // Add this expanded default to the map so later defaults
-                            // can reference it (e.g., c = b where b was also defaulted)
-                            if i < param_ids.len() {
-                                param_map.push((param_ids[i], substituted.clone()));
-                            }
-                            args.push(substituted);
+                            )
+                        } else {
+                            Expr::Undefined
+                        };
+                        // Add this expanded default to the map so later defaults
+                        // can reference it (e.g., c = b where b was also defaulted)
+                        if i < param_ids.len() {
+                            param_map.push((param_ids[i], substituted.clone()));
                         }
+                        args.push(substituted);
                     }
                 }
             }
