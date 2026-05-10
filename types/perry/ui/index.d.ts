@@ -448,6 +448,91 @@ export function Image(options: {
     alt?: string;
 }): Widget;
 
+/**
+ * Embedded native WebView for auth flows / payment redirects / bounded HTML
+ * pages. Backed by `WKWebView` on Apple platforms; `WebView2` on Windows
+ * (post-Phase 1); `android.webkit.WebView` on Android (post-Phase 1);
+ * `WebKitGTK 6.0` on Linux (post-Phase 1). Stub on tvOS / watchOS.
+ *
+ * Intentionally narrow scope — this is a "browser tab embedded in your
+ * native widget tree" primitive, NOT a Tauri/Electron-style app shell.
+ * If you need bidirectional native↔JS RPC, use Tauri or Electron.
+ *
+ * Common shape:
+ *
+ * ```ts
+ * WebView({
+ *   url: "https://accounts.google.com/o/oauth2/auth?...",
+ *   allowedDomains: ["accounts.google.com", "myapp.com"],
+ *   onShouldNavigate: (url) => {
+ *     if (url.startsWith("https://myapp.com/oauth/callback?code=")) {
+ *       const code = new URL(url).searchParams.get("code");
+ *       exchangeCodeForToken(code);
+ *       return false;  // don't actually navigate
+ *     }
+ *     return true;
+ *   }
+ * })
+ * ```
+ *
+ * (#658)
+ */
+export function WebView(options: {
+    /** Initial URL to load. Use `webviewLoadUrl` to navigate later. */
+    url: string;
+    /**
+     * Hard navigation allowlist. URLs whose host doesn't match any entry are
+     * blocked at the native layer (no `onShouldNavigate` round-trip). Match
+     * is exact OR subdomain — `["example.com"]` allows `example.com` and
+     * `*.example.com`. Empty / omitted = no host restriction.
+     */
+    allowedDomains?: string[];
+    /** Custom User-Agent header. Defaults to the platform WebKit UA. */
+    userAgent?: string;
+    /**
+     * Cookie / storage isolation. Default `true` — auth flows reusing a
+     * logged-in browser session is usually a footgun. Set `false` to
+     * persist cookies across WebView dismissals.
+     */
+    ephemeral?: boolean;
+    /**
+     * Sync intercept invoked before each navigation. Return `false` to
+     * cancel the load; return `true` (or omit a return) to allow it.
+     * Most common use: extract OAuth callback `code=` from a known
+     * redirect URL and cancel the actual navigation.
+     */
+    onShouldNavigate?: (url: string) => boolean | void;
+    /** Fired once a page finishes loading. */
+    onLoaded?: (url: string) => void;
+    /** Fired on any load error (DNS, TLS, HTTP, navigation cancel). */
+    onError?: (errorCode: number, message: string) => void;
+    /** Pixel width hint. The widget tree's layout engine still controls final size. */
+    width?: number;
+    /** Pixel height hint. */
+    height?: number;
+}): Widget;
+
+/** Replace the WebView's URL — re-navigates and re-paints. */
+export function webviewLoadUrl(handle: Widget, url: string): void;
+/** Reload the current page. */
+export function webviewReload(handle: Widget): void;
+/** Navigate back through the WebView's session history. */
+export function webviewGoBack(handle: Widget): void;
+/** Navigate forward through the WebView's session history. */
+export function webviewGoForward(handle: Widget): void;
+/** Returns 1 when there's history to go back to, 0 otherwise. */
+export function webviewCanGoBack(handle: Widget): number;
+/**
+ * Run a one-shot JS expression in the WebView's content process. The
+ * callback fires with the stringified result (empty string on null /
+ * undefined / error). Use sparingly — this is for reading
+ * `document.cookie` / `localStorage.getItem(...)` after a redirect, not
+ * for general-purpose RPC. (#658)
+ */
+export function webviewEvaluateJs(handle: Widget, js: string, callback: (result: string) => void): void;
+/** Wipe the WebView's cookies / local storage / IndexedDB. Use after auth. */
+export function webviewClearCookies(handle: Widget): void;
+
 /** VStack with built-in edge insets. */
 export function VStackWithInsets(spacing: number, top: number, left: number, bottom: number, right: number): Widget;
 

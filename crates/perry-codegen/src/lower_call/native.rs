@@ -1185,6 +1185,178 @@ pub(crate) fn lower_native_method_call(
         }
     }
 
+    // perry/ui WebView({ url, allowedDomains?, userAgent?, ephemeral?,
+    //                    onShouldNavigate?, onLoaded?, onError?,
+    //                    width?, height? }) — issue #658 Phase 1.
+    //
+    // Single object-literal form. Codegen calls
+    // `perry_ui_webview_create(url, w, h)` then for every other present
+    // key emits a corresponding `perry_ui_webview_set_*` call against
+    // the returned handle. Same shape as the App({...}) destructure
+    // above. There's no positional `WebView(url, w, h)` overload —
+    // option-bag is the only TS surface (every parameter is optional
+    // except url, and named is much more readable for ~9 fields).
+    if module == "perry/ui" && method == "WebView" && object.is_none() && args.len() == 1 {
+        let Some(props) = extract_options_fields(ctx, &args[0]) else {
+            bail!(
+                "perry/ui: WebView(...) requires a config object literal. Use \
+                 `WebView({{ url: ..., onShouldNavigate: (u) => ..., onLoaded: (u) => ... }})` \
+                 (see types/perry/ui/index.d.ts)."
+            );
+        };
+
+        let mut url_ptr: String = "0".to_string();
+        let mut width_d: String = "0.0".to_string();
+        let mut height_d: String = "0.0".to_string();
+        let mut user_agent_ptr: Option<String> = None;
+        let mut allowed_domains_handle: Option<String> = None;
+        let mut ephemeral_d: Option<String> = None;
+        let mut on_should_navigate_d: Option<String> = None;
+        let mut on_loaded_d: Option<String> = None;
+        let mut on_error_d: Option<String> = None;
+
+        for (key, val) in &props {
+            match key.as_str() {
+                "url" => {
+                    let v = lower_expr(ctx, val)?;
+                    let blk = ctx.block();
+                    url_ptr = unbox_to_i64(blk, &v);
+                }
+                "width" => {
+                    width_d = lower_expr(ctx, val)?;
+                }
+                "height" => {
+                    height_d = lower_expr(ctx, val)?;
+                }
+                "userAgent" => {
+                    let v = lower_expr(ctx, val)?;
+                    let blk = ctx.block();
+                    user_agent_ptr = Some(unbox_to_i64(blk, &v));
+                }
+                "allowedDomains" => {
+                    // The user passes a JS array of strings; we treat it as a
+                    // generic widget-like handle (i64 unbox of POINTER) and
+                    // the runtime walks it via js_array_get_length / element.
+                    let v = lower_expr(ctx, val)?;
+                    let blk = ctx.block();
+                    allowed_domains_handle = Some(unbox_to_i64(blk, &v));
+                }
+                "ephemeral" => {
+                    // Boolean → JS truthy → f64 → i64 (1 = ephemeral).
+                    let v = lower_expr(ctx, val)?;
+                    let blk = ctx.block();
+                    let truthy = blk.call(I64, "js_is_truthy", &[(DOUBLE, &v)]);
+                    ephemeral_d = Some(truthy);
+                }
+                "onShouldNavigate" => {
+                    on_should_navigate_d = Some(lower_expr(ctx, val)?);
+                }
+                "onLoaded" => {
+                    on_loaded_d = Some(lower_expr(ctx, val)?);
+                }
+                "onError" => {
+                    on_error_d = Some(lower_expr(ctx, val)?);
+                }
+                _ => {
+                    // Unknown key — lower for side effects so any nested
+                    // closures still get collected by the closure-conversion
+                    // pass.
+                    let _ = lower_expr(ctx, val)?;
+                }
+            }
+        }
+
+        ctx.pending_declares.push((
+            "perry_ui_webview_create".to_string(),
+            I64,
+            vec![I64, DOUBLE, DOUBLE],
+        ));
+        ctx.pending_declares.push((
+            "perry_ui_webview_set_user_agent".to_string(),
+            crate::types::VOID,
+            vec![I64, I64],
+        ));
+        ctx.pending_declares.push((
+            "perry_ui_webview_set_allowed_domains".to_string(),
+            crate::types::VOID,
+            vec![I64, I64],
+        ));
+        ctx.pending_declares.push((
+            "perry_ui_webview_set_ephemeral".to_string(),
+            crate::types::VOID,
+            vec![I64, I64],
+        ));
+        ctx.pending_declares.push((
+            "perry_ui_webview_set_on_should_navigate".to_string(),
+            crate::types::VOID,
+            vec![I64, DOUBLE],
+        ));
+        ctx.pending_declares.push((
+            "perry_ui_webview_set_on_loaded".to_string(),
+            crate::types::VOID,
+            vec![I64, DOUBLE],
+        ));
+        ctx.pending_declares.push((
+            "perry_ui_webview_set_on_error".to_string(),
+            crate::types::VOID,
+            vec![I64, DOUBLE],
+        ));
+        ctx.pending_declares.push((
+            "js_is_truthy".to_string(),
+            I64,
+            vec![DOUBLE],
+        ));
+
+        let blk = ctx.block();
+        let handle = blk.call(
+            I64,
+            "perry_ui_webview_create",
+            &[(I64, &url_ptr), (DOUBLE, &width_d), (DOUBLE, &height_d)],
+        );
+
+        // Apply ephemeral BEFORE the wnd/setters that may fire navigations,
+        // so the data store swap takes effect for the very first request.
+        // The macOS impl's set_ephemeral docstring notes: call before the
+        // first navigation. The create() call above includes the initial
+        // load if `url` is set, so this ordering is "best effort" — the
+        // first request might land before the swap. Document that user
+        // code should leave `ephemeral` at its default (true) or set it
+        // alongside a deferred initial URL.
+        if let Some(eph) = &ephemeral_d {
+            blk.call_void("perry_ui_webview_set_ephemeral", &[(I64, &handle), (I64, eph)]);
+        }
+        if let Some(ua) = &user_agent_ptr {
+            blk.call_void("perry_ui_webview_set_user_agent", &[(I64, &handle), (I64, ua)]);
+        }
+        if let Some(dom) = &allowed_domains_handle {
+            blk.call_void(
+                "perry_ui_webview_set_allowed_domains",
+                &[(I64, &handle), (I64, dom)],
+            );
+        }
+        if let Some(cb) = &on_should_navigate_d {
+            blk.call_void(
+                "perry_ui_webview_set_on_should_navigate",
+                &[(I64, &handle), (DOUBLE, cb)],
+            );
+        }
+        if let Some(cb) = &on_loaded_d {
+            blk.call_void(
+                "perry_ui_webview_set_on_loaded",
+                &[(I64, &handle), (DOUBLE, cb)],
+            );
+        }
+        if let Some(cb) = &on_error_d {
+            blk.call_void(
+                "perry_ui_webview_set_on_error",
+                &[(I64, &handle), (DOUBLE, cb)],
+            );
+        }
+
+        // Return as a NaN-boxed widget handle (POINTER tag).
+        return Ok(nanbox_pointer_inline(blk, &handle));
+    }
+
     if module == "perry/ui" && method == "App" && object.is_none() {
         if args.len() != 1 {
             bail!(

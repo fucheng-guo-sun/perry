@@ -608,6 +608,96 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         ],
         ret: ReturnKind::Void,
     },
+    // ---- WebView (issue #658) ----
+    // The TS surface accepts `WebView({ url, allowedDomains?, userAgent?,
+    // ephemeral?, onShouldNavigate?, onLoaded?, onError?, width?, height? })`.
+    // The object-literal form is destructured by `lower_call/native.rs` into
+    // a `webviewCreate(url, w, h)` call followed by per-prop set_* calls.
+    // This row backs the lowered create call.
+    MethodRow {
+        method: "webviewCreate",
+        runtime: "perry_ui_webview_create",
+        args: &[ArgKind::Str, ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Widget,
+    },
+    MethodRow {
+        method: "webviewSetUserAgent",
+        runtime: "perry_ui_webview_set_user_agent",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewSetAllowedDomains",
+        runtime: "perry_ui_webview_set_allowed_domains",
+        args: &[ArgKind::Widget, ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewSetEphemeral",
+        runtime: "perry_ui_webview_set_ephemeral",
+        args: &[ArgKind::Widget, ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewSetOnShouldNavigate",
+        runtime: "perry_ui_webview_set_on_should_navigate",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewSetOnLoaded",
+        runtime: "perry_ui_webview_set_on_loaded",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewSetOnError",
+        runtime: "perry_ui_webview_set_on_error",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewLoadUrl",
+        runtime: "perry_ui_webview_load_url",
+        args: &[ArgKind::Widget, ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewReload",
+        runtime: "perry_ui_webview_reload",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewGoBack",
+        runtime: "perry_ui_webview_go_back",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewGoForward",
+        runtime: "perry_ui_webview_go_forward",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewCanGoBack",
+        runtime: "perry_ui_webview_can_go_back",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::I64AsF64,
+    },
+    MethodRow {
+        method: "webviewEvaluateJs",
+        runtime: "perry_ui_webview_evaluate_js",
+        args: &[ArgKind::Widget, ArgKind::Str, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "webviewClearCookies",
+        runtime: "perry_ui_webview_clear_cookies",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
     // ---- Padding / Edge Insets ----
     MethodRow {
         method: "setPadding",
