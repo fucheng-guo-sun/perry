@@ -71,6 +71,62 @@ thread_local! {
     /// float, slow-path runs, `setDefaultContentType` returns a header object,
     /// `responseHeaders.set(k, v)` then fails with a #510-class TypeError).
     static CLOSURE_ARITY_REGISTRY: RefCell<HashMap<usize, u32>> = RefCell::new(HashMap::new());
+
+    /// Unified dispatch lookup, populated lazily on first call to a func_ptr.
+    /// Cuts the per-call cost from TWO RefCell::borrow + HashMap::get
+    /// (one each for rest and arity) down to ONE — material on hot paths
+    /// like `array.sort` (25M comparisons) or `Promise.all` of N async
+    /// chains (150k microtasks for the 1k-batch x 50-promise x 3-await
+    /// shape). The fast path on a cache hit is one borrow + one
+    /// HashMap::get + a small-enum branch.
+    static DISPATCH_CACHE: RefCell<HashMap<usize, DispatchStrategy>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Per-call dispatch strategy for a closure body. Decided once at first
+/// call, cached in `DISPATCH_CACHE` thereafter.
+#[derive(Clone, Copy)]
+enum DispatchStrategy {
+    /// Bound-method receiver pretending to be a closure (BOUND_METHOD_FUNC_PTR
+    /// sentinel). Dispatch via `dispatch_bound_method`.
+    BoundMethod,
+    /// Closure body has a rest param at the given fixed_arity index.
+    /// Dispatch via `dispatch_rest_bundled`.
+    Rest(u32),
+    /// Closure body declares an arity higher than the call sites use;
+    /// dispatch must pad with TAG_UNDEFINED via `dispatch_with_arity`.
+    Arity(u32),
+    /// Direct callable: just transmute func_ptr to typed fn pointer
+    /// (declared arity == call site arity, no rest, no bound method).
+    /// The hot path for the vast majority of closure call sites.
+    Direct,
+}
+
+#[inline(always)]
+fn resolve_strategy(func_ptr: *const u8) -> DispatchStrategy {
+    let key = func_ptr as usize;
+    // Fast path: read existing cache entry.
+    if let Some(s) = DISPATCH_CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return s;
+    }
+    // First call for this func_ptr: compute the strategy and cache it.
+    if func_ptr == BOUND_METHOD_FUNC_PTR {
+        DISPATCH_CACHE.with(|c| {
+            c.borrow_mut().insert(key, DispatchStrategy::BoundMethod);
+        });
+        return DispatchStrategy::BoundMethod;
+    }
+    let strategy = if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
+        DispatchStrategy::Rest(fixed_arity)
+    } else if let Some(declared) = lookup_closure_arity(func_ptr) {
+        DispatchStrategy::Arity(declared)
+    } else {
+        DispatchStrategy::Direct
+    };
+    DISPATCH_CACHE.with(|c| {
+        c.borrow_mut().insert(key, strategy);
+    });
+    strategy
 }
 
 /// Register that the closure body at `func_ptr` has a rest parameter at index
@@ -662,19 +718,20 @@ pub extern "C" fn js_closure_call0(closure: *const ClosureHeader) -> f64 {
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe { dispatch_bound_method(closure, &[]) };
-    }
-    if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
-        return unsafe { dispatch_rest_bundled(closure, func_ptr, &[], fixed_arity) };
-    }
-    if let Some(declared) = lookup_closure_arity(func_ptr) {
-        if declared > 0 {
-            return unsafe { dispatch_with_arity(closure, func_ptr, &[], declared) };
+    match resolve_strategy(func_ptr) {
+        DispatchStrategy::BoundMethod => unsafe { dispatch_bound_method(closure, &[]) },
+        DispatchStrategy::Rest(fixed_arity) => unsafe {
+            dispatch_rest_bundled(closure, func_ptr, &[], fixed_arity)
+        },
+        DispatchStrategy::Arity(declared) if declared > 0 => unsafe {
+            dispatch_with_arity(closure, func_ptr, &[], declared)
+        },
+        _ => {
+            let func: extern "C" fn(*const ClosureHeader) -> f64 =
+                unsafe { std::mem::transmute(func_ptr) };
+            func(closure)
         }
     }
-    let func: extern "C" fn(*const ClosureHeader) -> f64 = unsafe { std::mem::transmute(func_ptr) };
-    func(closure)
 }
 
 /// Call a closure with 1 argument, returning f64
@@ -684,20 +741,20 @@ pub extern "C" fn js_closure_call1(closure: *const ClosureHeader, arg0: f64) -> 
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe { dispatch_bound_method(closure, &[arg0]) };
-    }
-    if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
-        return unsafe { dispatch_rest_bundled(closure, func_ptr, &[arg0], fixed_arity) };
-    }
-    if let Some(declared) = lookup_closure_arity(func_ptr) {
-        if declared > 1 {
-            return unsafe { dispatch_with_arity(closure, func_ptr, &[arg0], declared) };
+    match resolve_strategy(func_ptr) {
+        DispatchStrategy::BoundMethod => unsafe { dispatch_bound_method(closure, &[arg0]) },
+        DispatchStrategy::Rest(fixed_arity) => unsafe {
+            dispatch_rest_bundled(closure, func_ptr, &[arg0], fixed_arity)
+        },
+        DispatchStrategy::Arity(declared) if declared > 1 => unsafe {
+            dispatch_with_arity(closure, func_ptr, &[arg0], declared)
+        },
+        _ => {
+            let func: extern "C" fn(*const ClosureHeader, f64) -> f64 =
+                unsafe { std::mem::transmute(func_ptr) };
+            func(closure, arg0)
         }
     }
-    let func: extern "C" fn(*const ClosureHeader, f64) -> f64 =
-        unsafe { std::mem::transmute(func_ptr) };
-    func(closure, arg0)
 }
 
 /// Resolve a 2-arg closure call once: returns Some(typed_fn_ptr) when
@@ -734,20 +791,20 @@ pub extern "C" fn js_closure_call2(closure: *const ClosureHeader, arg0: f64, arg
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe { dispatch_bound_method(closure, &[arg0, arg1]) };
-    }
-    if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
-        return unsafe { dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1], fixed_arity) };
-    }
-    if let Some(declared) = lookup_closure_arity(func_ptr) {
-        if declared > 2 {
-            return unsafe { dispatch_with_arity(closure, func_ptr, &[arg0, arg1], declared) };
+    match resolve_strategy(func_ptr) {
+        DispatchStrategy::BoundMethod => unsafe { dispatch_bound_method(closure, &[arg0, arg1]) },
+        DispatchStrategy::Rest(fixed_arity) => unsafe {
+            dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1], fixed_arity)
+        },
+        DispatchStrategy::Arity(declared) if declared > 2 => unsafe {
+            dispatch_with_arity(closure, func_ptr, &[arg0, arg1], declared)
+        },
+        _ => {
+            let func: extern "C" fn(*const ClosureHeader, f64, f64) -> f64 =
+                unsafe { std::mem::transmute(func_ptr) };
+            func(closure, arg0, arg1)
         }
     }
-    let func: extern "C" fn(*const ClosureHeader, f64, f64) -> f64 =
-        unsafe { std::mem::transmute(func_ptr) };
-    func(closure, arg0, arg1)
 }
 
 /// Call a closure with 3 arguments, returning f64
@@ -762,24 +819,22 @@ pub extern "C" fn js_closure_call3(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe { dispatch_bound_method(closure, &[arg0, arg1, arg2]) };
-    }
-    if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
-        return unsafe {
+    match resolve_strategy(func_ptr) {
+        DispatchStrategy::BoundMethod => unsafe {
+            dispatch_bound_method(closure, &[arg0, arg1, arg2])
+        },
+        DispatchStrategy::Rest(fixed_arity) => unsafe {
             dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1, arg2], fixed_arity)
-        };
-    }
-    if let Some(declared) = lookup_closure_arity(func_ptr) {
-        if declared > 3 {
-            return unsafe {
-                dispatch_with_arity(closure, func_ptr, &[arg0, arg1, arg2], declared)
-            };
+        },
+        DispatchStrategy::Arity(declared) if declared > 3 => unsafe {
+            dispatch_with_arity(closure, func_ptr, &[arg0, arg1, arg2], declared)
+        },
+        _ => {
+            let func: extern "C" fn(*const ClosureHeader, f64, f64, f64) -> f64 =
+                unsafe { std::mem::transmute(func_ptr) };
+            func(closure, arg0, arg1, arg2)
         }
     }
-    let func: extern "C" fn(*const ClosureHeader, f64, f64, f64) -> f64 =
-        unsafe { std::mem::transmute(func_ptr) };
-    func(closure, arg0, arg1, arg2)
 }
 
 /// Call a closure with 4 arguments, returning f64
@@ -795,24 +850,22 @@ pub extern "C" fn js_closure_call4(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe { dispatch_bound_method(closure, &[arg0, arg1, arg2, arg3]) };
-    }
-    if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
-        return unsafe {
+    match resolve_strategy(func_ptr) {
+        DispatchStrategy::BoundMethod => unsafe {
+            dispatch_bound_method(closure, &[arg0, arg1, arg2, arg3])
+        },
+        DispatchStrategy::Rest(fixed_arity) => unsafe {
             dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1, arg2, arg3], fixed_arity)
-        };
-    }
-    if let Some(declared) = lookup_closure_arity(func_ptr) {
-        if declared > 4 {
-            return unsafe {
-                dispatch_with_arity(closure, func_ptr, &[arg0, arg1, arg2, arg3], declared)
-            };
+        },
+        DispatchStrategy::Arity(declared) if declared > 4 => unsafe {
+            dispatch_with_arity(closure, func_ptr, &[arg0, arg1, arg2, arg3], declared)
+        },
+        _ => {
+            let func: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64) -> f64 =
+                unsafe { std::mem::transmute(func_ptr) };
+            func(closure, arg0, arg1, arg2, arg3)
         }
     }
-    let func: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64) -> f64 =
-        unsafe { std::mem::transmute(func_ptr) };
-    func(closure, arg0, arg1, arg2, arg3)
 }
 
 /// Call a closure with 5 arguments, returning f64
