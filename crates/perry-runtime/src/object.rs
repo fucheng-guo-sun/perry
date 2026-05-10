@@ -2719,6 +2719,29 @@ pub extern "C" fn js_object_get_field_by_name(
             // returned undefined.
             if (raw as usize) > 0 && (raw as usize) < 0x100000 {
                 if !key.is_null() {
+                    // Drizzle-sqlite blocker: synth `data.constructor` for
+                    // small-handle native instances so drizzle's
+                    // `isConfig(data)` duck-type via
+                    // `data.constructor.name !== "Object"` doesn't crash on
+                    // `(undefined).name` under #648's strict catch-all.
+                    // Returning the existing NULL_OBJECT_BYTES stub (a real
+                    // ObjectHeader-shape with no fields) makes `(stub).name`
+                    // return undefined safely, and `undefined !== "Object"`
+                    // makes isConfig return false at the first gate. Refs
+                    // #645 deeper followup.
+                    unsafe {
+                        let key_ptr =
+                            (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
+                        let key_len = (*key).byte_len as usize;
+                        let key_bytes = std::slice::from_raw_parts(key_ptr, key_len);
+                        if key_bytes == b"constructor" {
+                            let null_obj_ptr = &NULL_OBJECT_BYTES as *const NullObjectBytes
+                                as *mut u8;
+                            return JSValue::from_bits(
+                                JSValue::pointer(null_obj_ptr).bits(),
+                            );
+                        }
+                    }
                     let dispatch = unsafe { HANDLE_PROPERTY_DISPATCH };
                     if let Some(dispatch) = dispatch {
                         unsafe {
@@ -3390,6 +3413,18 @@ pub extern "C" fn js_object_get_field_ic_miss(
     // dispatch to the per-module accessor instead of silently
     // returning undefined.
     if (obj as usize) > 0 && (obj as usize) < 0x100000 {
+        // Drizzle-sqlite blocker: synth `data.constructor` for small-handle
+        // receivers — IC-miss path mirror of the constructor intercept in
+        // `js_object_get_field_by_name`. Refs #645 deeper followup.
+        unsafe {
+            let key_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
+            let key_len = (*key).byte_len as usize;
+            let key_bytes = std::slice::from_raw_parts(key_ptr, key_len);
+            if key_bytes == b"constructor" {
+                let null_obj_ptr = &NULL_OBJECT_BYTES as *const NullObjectBytes as *mut u8;
+                return f64::from_bits(JSValue::pointer(null_obj_ptr).bits());
+            }
+        }
         let dispatch = unsafe { HANDLE_PROPERTY_DISPATCH };
         if let Some(dispatch) = dispatch {
             unsafe {

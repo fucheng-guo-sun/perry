@@ -150,6 +150,29 @@ pub unsafe extern "C" fn js_handle_method_dispatch(
         }
     }
 
+    // SQLite Database handle: db.prepare(sql) / .exec(sql) / .close() —
+    // routes the dynamic-receiver path used by drizzle's
+    // `BetterSQLiteSession.prepareQuery` body, where
+    // `const stmt = this.client.prepare(query.sql)` reads `this.client`
+    // off a class instance field whose declared type is `any`. Pre-fix
+    // the call fell through every dispatcher (the existing sqlite arm
+    // only handles Statement methods, not Database methods) and the
+    // catch-all returned NULL_OBJECT_BYTES — chained `stmt.run(...)` /
+    // `stmt.raw().all(...)` then collapsed to a number receiver and
+    // crashed with `(number).<method> is not a function` (the surface
+    // symptom of #645). The static dispatch-table path (#465) covers
+    // typed receivers; this arm is the runtime fallback for Any-typed
+    // class fields the codegen can't statically resolve. Refs #645 /
+    // #488 / #643. Method-gated to avoid claiming small handles owned
+    // by other registries (HashHandle, FastifyApp, etc.).
+    #[cfg(feature = "database-sqlite")]
+    if matches!(method_name, "prepare" | "exec" | "close") {
+        let result = dispatch_sqlite_db(handle, method_name, args);
+        if result.to_bits() != perry_runtime::JSValue::undefined().bits() {
+            return result;
+        }
+    }
+
     // net.Socket: covers wrapper-function, struct-field, and Map.get
     // receivers where codegen lost the static type. Static NATIVE_MODULE_TABLE
     // path is still preferred when types are visible.
@@ -762,6 +785,85 @@ unsafe fn dispatch_sqlite_stmt(handle: i64, method: &str, args: &[f64]) -> f64 {
             } else {
                 js_nanbox_pointer(obj_ptr as i64)
             }
+        }
+        _ => f64::from_bits(perry_runtime::JSValue::undefined().bits()),
+    }
+}
+
+/// Dispatch method calls on a SQLite Database handle (`db.prepare(sql)`,
+/// `db.exec(sql)`, `db.close()`) — the Database counterpart to
+/// `dispatch_sqlite_stmt`. Reached when codegen lost the static type
+/// through a class field (e.g. drizzle's
+/// `BetterSQLiteSession.prepareQuery` reads `this.client` typed as
+/// `any` and calls `.prepare(query.sql)`). The static NATIVE_MODULE
+/// dispatch-table path (#465) covers typed receivers; this arm is
+/// the runtime fallback. Returns `JSValue::undefined()` if the handle
+/// isn't a SqliteDb — the caller falls through to the next
+/// dispatcher.
+///
+/// Like `dispatch_sqlite_stmt`, we route through `extern "C"` so the
+/// linked impl wins (perry-stdlib's vs perry-ext-better-sqlite3's),
+/// keeping handle and lookup TypeIds consistent regardless of which
+/// crate registered the Database handle.
+#[cfg(feature = "database-sqlite")]
+unsafe fn dispatch_sqlite_db(handle: i64, method: &str, args: &[f64]) -> f64 {
+    use perry_runtime::js_nanbox_pointer;
+
+    extern "C" {
+        fn js_sqlite_prepare(db_handle: i64, sql_ptr: *const perry_runtime::StringHeader) -> i64;
+        fn js_sqlite_exec(db_handle: i64, sql_ptr: *const perry_runtime::StringHeader) -> i32;
+        fn js_sqlite_close(db_handle: i64) -> i32;
+    }
+
+    // Helper: extract a raw StringHeader pointer from a NaN-boxed f64.
+    // STRING_TAG (0x7FFF) carries a 48-bit pointer in the lower bits.
+    let arg_str_ptr = |idx: usize| -> *const perry_runtime::StringHeader {
+        if idx >= args.len() {
+            return std::ptr::null();
+        }
+        let bits = args[idx].to_bits();
+        let tag = bits >> 48;
+        if tag == 0x7FFF {
+            (bits & 0x0000_FFFF_FFFF_FFFF) as *const perry_runtime::StringHeader
+        } else {
+            std::ptr::null()
+        }
+    };
+
+    match method {
+        "prepare" => {
+            let sql_ptr = arg_str_ptr(0);
+            if sql_ptr.is_null() {
+                return f64::from_bits(perry_runtime::JSValue::undefined().bits());
+            }
+            let stmt_handle = js_sqlite_prepare(handle, sql_ptr);
+            // -1 means prepare failed (invalid SQL or not-a-Database
+            // handle — the registry lookup inside `js_sqlite_prepare`
+            // returns None for the latter). Returning undefined lets
+            // the outer dispatcher fall through to other arms (e.g.
+            // when the handle is actually a HashHandle or FastifyApp
+            // with a coincidentally-named "prepare" method).
+            if stmt_handle < 0 {
+                return f64::from_bits(perry_runtime::JSValue::undefined().bits());
+            }
+            // NaN-box as POINTER so subsequent `.run(...)` / `.all(...)`
+            // / `.get(...)` calls re-enter the small-handle dispatch
+            // path and route to `dispatch_sqlite_stmt`.
+            js_nanbox_pointer(stmt_handle)
+        }
+        "exec" => {
+            let sql_ptr = arg_str_ptr(0);
+            if sql_ptr.is_null() {
+                return f64::from_bits(perry_runtime::JSValue::undefined().bits());
+            }
+            let _ = js_sqlite_exec(handle, sql_ptr);
+            // better-sqlite3 returns the Database for chaining; mirror
+            // that so `db.exec("...").exec("...")` chains.
+            js_nanbox_pointer(handle)
+        }
+        "close" => {
+            let _ = js_sqlite_close(handle);
+            f64::from_bits(perry_runtime::JSValue::undefined().bits())
         }
         _ => f64::from_bits(perry_runtime::JSValue::undefined().bits()),
     }

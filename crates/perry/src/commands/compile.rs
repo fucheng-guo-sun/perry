@@ -2191,9 +2191,27 @@ pub fn run_with_parse_cache(
         }
     }
 
-    // Also propagate exported_func_param_counts through ExportAll/ReExport/Named chains
+    // Also propagate exported_func_param_counts AND exported_func_has_rest
+    // through ExportAll/ReExport/Named chains.
+    //
+    // Drizzle-sqlite blocker: pre-fix the rest-only table only carried entries
+    // for the SOURCE module of the function declaration (e.g.
+    // `drizzle-orm/better-sqlite3/driver.js::drizzle`), so when a downstream
+    // module re-exported it via `export * from "./driver.js"` (the canonical
+    // npm-package barrel pattern in `drizzle-orm/better-sqlite3/index.js`),
+    // the re-exported entry was never written. Consumers importing `drizzle`
+    // from `"drizzle-orm/better-sqlite3"` (resolving to index.js) looked up
+    // `(index.js, "drizzle")` in `exported_func_has_rest`, missed → no rest
+    // bundling at the call site → `function drizzle(...params)` ran with
+    // `params` as raw f64 args instead of a bundled array → `params[0]`
+    // indexed into a non-array and read undefined. Symptom: `drizzle(sqlite)`
+    // saw `params[0] === undefined`, took the `params[0] === void 0` branch
+    // and constructed a fresh `new Client()` (heap wrapper, NOT the
+    // small-handle Database the user passed), and every downstream
+    // `this.client.prepare(...)` failed with `prepare is not a function`.
+    // Refs #645 deeper followup, #488.
     loop {
-        let mut new_func_entries: Vec<((String, String), usize)> = Vec::new();
+        let mut new_func_entries: Vec<((String, String), usize, bool)> = Vec::new();
         for (path, hir_module) in &ctx.native_modules {
             let path_str = path.to_string_lossy().to_string();
             for export in &hir_module.exports {
@@ -2212,7 +2230,11 @@ pub fn run_with_parse_cache(
                                 if src_path == &source_path_str {
                                     let key = (path_str.clone(), func_name.clone());
                                     if !exported_func_param_counts.contains_key(&key) {
-                                        new_func_entries.push((key, param_count));
+                                        let has_rest = exported_func_has_rest
+                                            .get(&(src_path.clone(), func_name.clone()))
+                                            .copied()
+                                            .unwrap_or(false);
+                                        new_func_entries.push((key, param_count, has_rest));
                                     }
                                 }
                             }
@@ -2236,7 +2258,11 @@ pub fn run_with_parse_cache(
                                 if src_path == &source_path_str && func_name == imported {
                                     let key = (path_str.clone(), exported.clone());
                                     if !exported_func_param_counts.contains_key(&key) {
-                                        new_func_entries.push((key, param_count));
+                                        let has_rest = exported_func_has_rest
+                                            .get(&(src_path.clone(), func_name.clone()))
+                                            .copied()
+                                            .unwrap_or(false);
+                                        new_func_entries.push((key, param_count, has_rest));
                                     }
                                 }
                             }
@@ -2270,7 +2296,12 @@ pub fn run_with_parse_cache(
                                         {
                                             let key = (path_str.clone(), exported.clone());
                                             if !exported_func_param_counts.contains_key(&key) {
-                                                new_func_entries.push((key, param_count));
+                                                let has_rest = exported_func_has_rest
+                                                    .get(&key_src)
+                                                    .copied()
+                                                    .unwrap_or(false);
+                                                new_func_entries
+                                                    .push((key, param_count, has_rest));
                                             }
                                         }
                                     }
@@ -2285,8 +2316,11 @@ pub fn run_with_parse_cache(
         if new_func_entries.is_empty() {
             break;
         }
-        for (key, param_count) in new_func_entries {
-            exported_func_param_counts.insert(key, param_count);
+        for (key, param_count, has_rest) in new_func_entries {
+            exported_func_param_counts.insert(key.clone(), param_count);
+            if has_rest {
+                exported_func_has_rest.insert(key, true);
+            }
         }
     }
 
