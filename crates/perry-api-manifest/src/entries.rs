@@ -250,6 +250,8 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("fastify", "listen", true, None),
     method("fastify", "method", true, None),
     method("fastify", "url", true, None),
+    // Manifest-consistency catch-up (release-sweep gate).
+    method("fastify", "type", true, None),
     method("fastify", "params", true, None),
     method("fastify", "param", true, None),
     method("fastify", "query", true, None),
@@ -387,6 +389,9 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("better-sqlite3", "all", true, None),
     method("better-sqlite3", "exec", true, None),
     method("better-sqlite3", "close", true, None),
+    // Manifest-consistency catch-up (release-sweep gate): NATIVE_MODULE_TABLE
+    // had a `raw` row that wasn't mirrored here.
+    method("better-sqlite3", "raw", true, None),
     // tursodb (#424). open / exec / execBatch / close /
     // lastInsertRowid / isAutocommit shipped in v0.5.543; queryAll /
     // queryOne shipped in v0.5.553 (close the row-as-object gap by
@@ -1176,6 +1181,22 @@ pub static API_MANIFEST: &[ApiEntry] = &[
         &[p_any("p0"), p_any("p1")],
         TypeSpec::Void,
     ),
+    // Manifest-consistency catch-up (release-sweep gate, v0.5.823):
+    // NATIVE_MODULE_TABLE accumulated 12 perry/tui entries during the
+    // #679 ink-API ergonomics work (v0.5.810) and follow-ups that
+    // weren't mirrored here. Restoring drift-free state.
+    method_sig("perry/tui", "boxSetPaddingEach", false, None, &[p_any("p0"), p_any("p1"), p_any("p2"), p_any("p3"), p_any("p4")], TypeSpec::Void),
+    method_sig("perry/tui", "boxSetFlexShrink", false, None, &[p_any("p0"), p_any("p1")], TypeSpec::Void),
+    method_sig("perry/tui", "boxSetFlexBasis", false, None, &[p_any("p0"), p_any("p1")], TypeSpec::Void),
+    method_sig("perry/tui", "boxSetFlexBasisPct", false, None, &[p_any("p0"), p_any("p1")], TypeSpec::Void),
+    method_sig("perry/tui", "boxSetWidthPct", false, None, &[p_any("p0"), p_any("p1")], TypeSpec::Void),
+    method_sig("perry/tui", "boxSetHeightPct", false, None, &[p_any("p0"), p_any("p1")], TypeSpec::Void),
+    method_sig("perry/tui", "TextStyled", false, None, &[p_str("p0"), p_str("p1"), p_str("p2"), p_any("p3")], TypeSpec::Any),
+    method_sig("perry/tui", "Table", false, None, &[p_any("p0"), p_any("p1"), p_any("p2")], TypeSpec::Any),
+    method_sig("perry/tui", "Tabs", false, None, &[p_any("p0"), p_any("p1"), p_any("p2")], TypeSpec::Any),
+    method_sig("perry/tui", "InputAt", false, None, &[p_str("p0"), p_any("p1")], TypeSpec::Any),
+    method_sig("perry/tui", "AnimatedSpinner", false, None, &[p_any("p0"), p_any("p1")], TypeSpec::Any),
+    method_sig("perry/tui", "useStateTuple", false, None, &[p_any("p0")], TypeSpec::Any),
     method_sig("perry/tui", "Spacer", false, None, &[], TypeSpec::Any),
     method_sig(
         "perry/tui",
