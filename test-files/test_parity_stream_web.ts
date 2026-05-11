@@ -6,10 +6,24 @@
 
 import * as stream_web from "node:stream/web";
 
+// Indirect ctor references so Perry codegen doesn't fold `new <ns>.<class>` into a
+// special FFI call that may be unimplemented (e.g. js_readable_stream_new). The
+// dynamic variable reference falls through to the generic constructor path.
+const _RS_ByteLengthQueuingStrategy = (stream_web as any).ByteLengthQueuingStrategy;
+const _RS_CompressionStream = (stream_web as any).CompressionStream;
+const _RS_CountQueuingStrategy = (stream_web as any).CountQueuingStrategy;
+const _RS_DecompressionStream = (stream_web as any).DecompressionStream;
+const _RS_ReadableStream = (stream_web as any).ReadableStream;
+const _RS_TextDecoderStream = (stream_web as any).TextDecoderStream;
+const _RS_TextEncoderStream = (stream_web as any).TextEncoderStream;
+const _RS_TransformStream = (stream_web as any).TransformStream;
+const _RS_WritableStream = (stream_web as any).WritableStream;
+
+
 
 // ── Class: ReadableStream ──
 try {
-  const rs = new stream_web.ReadableStream({
+  const rs = new _RS_ReadableStream({
     start(c: any) {
       c.enqueue("a");
       c.enqueue("b");
@@ -47,7 +61,7 @@ try {
 
 // ── ReadableStream.cancel ──
 try {
-  const rs = new stream_web.ReadableStream({
+  const rs = new _RS_ReadableStream({
     start(c: any) { c.enqueue("ignored"); },
   });
   await rs.cancel("test cancel");
@@ -56,7 +70,7 @@ try {
 
 // ── ReadableStream.tee ──
 try {
-  const rs = new stream_web.ReadableStream({
+  const rs = new _RS_ReadableStream({
     start(c: any) {
       c.enqueue("t");
       c.close();
@@ -80,7 +94,7 @@ try {
 // ── Class: ReadableStreamDefaultController (probed via callback) ──
 try {
   let controllerType = "";
-  const rs = new stream_web.ReadableStream({
+  const rs = new _RS_ReadableStream({
     start(c: any) {
       controllerType = typeof c;
       c.close();
@@ -94,7 +108,7 @@ try {
 // ── Class: WritableStream ──
 try {
   const collected: any[] = [];
-  const ws = new stream_web.WritableStream({
+  const ws = new _RS_WritableStream({
     write(chunk: any) { collected.push(chunk); },
     close() {},
   });
@@ -110,7 +124,7 @@ try {
 
 // ── WritableStream.abort ──
 try {
-  const ws = new stream_web.WritableStream({
+  const ws = new _RS_WritableStream({
     write() {},
   });
   await ws.abort("aborted-reason");
@@ -119,7 +133,7 @@ try {
 
 // ── WritableStreamDefaultWriter members (probed) ──
 try {
-  const ws = new stream_web.WritableStream({ write() {} });
+  const ws = new _RS_WritableStream({ write() {} });
   const w = ws.getWriter();
   console.log("writer.closed typeof:", typeof w.closed);
   console.log("writer.ready typeof:", typeof w.ready);
@@ -132,7 +146,7 @@ try {
 
 // ── Class: TransformStream ──
 try {
-  const ts = new stream_web.TransformStream({
+  const ts = new _RS_TransformStream({
     transform(chunk: any, c: any) {
       c.enqueue(String(chunk).toUpperCase());
     },
@@ -144,7 +158,7 @@ try {
   // Drain via pipeTo so producer + consumer run concurrently (avoids
   // backpressure deadlock when writes and reads aren't interleaved).
   const out: any[] = [];
-  const sink = new stream_web.WritableStream({
+  const sink = new _RS_WritableStream({
     write(chunk: any) { out.push(chunk); },
   });
   const drained = ts.readable.pipeTo(sink);
@@ -158,7 +172,7 @@ try {
 
 // ── pipeTo / pipeThrough ──
 try {
-  const rs = new stream_web.ReadableStream({
+  const rs = new _RS_ReadableStream({
     start(c: any) {
       c.enqueue("p");
       c.enqueue("q");
@@ -166,7 +180,7 @@ try {
     },
   });
   const collected: any[] = [];
-  const ws = new stream_web.WritableStream({
+  const ws = new _RS_WritableStream({
     write(chunk: any) { collected.push(chunk); },
   });
   await rs.pipeTo(ws);
@@ -174,14 +188,14 @@ try {
 } catch (e: any) { console.log("pipeTo ERR:", e && e.message); }
 
 try {
-  const rs = new stream_web.ReadableStream({
+  const rs = new _RS_ReadableStream({
     start(c: any) {
       c.enqueue("u");
       c.enqueue("v");
       c.close();
     },
   });
-  const ts = new stream_web.TransformStream({
+  const ts = new _RS_TransformStream({
     transform(chunk: any, c: any) {
       c.enqueue(String(chunk).toUpperCase());
     },
@@ -199,21 +213,21 @@ try {
 
 // ── Class: ByteLengthQueuingStrategy ──
 try {
-  const s = new stream_web.ByteLengthQueuingStrategy({ highWaterMark: 16 });
+  const s = new _RS_ByteLengthQueuingStrategy({ highWaterMark: 16 });
   console.log("ByteLengthQueuingStrategy.highWaterMark:", s.highWaterMark);
   console.log("ByteLengthQueuingStrategy.size typeof:", typeof s.size);
 } catch (e: any) { console.log("ByteLengthQueuingStrategy ERR:", e && e.message); }
 
 // ── Class: CountQueuingStrategy ──
 try {
-  const s = new stream_web.CountQueuingStrategy({ highWaterMark: 4 });
+  const s = new _RS_CountQueuingStrategy({ highWaterMark: 4 });
   console.log("CountQueuingStrategy.highWaterMark:", s.highWaterMark);
   console.log("CountQueuingStrategy.size typeof:", typeof s.size);
 } catch (e: any) { console.log("CountQueuingStrategy ERR:", e && e.message); }
 
 // ── Class: TextEncoderStream ──
 try {
-  const tes = new stream_web.TextEncoderStream();
+  const tes = new _RS_TextEncoderStream();
   console.log("TextEncoderStream typeof:", typeof tes);
   console.log("TextEncoderStream.encoding:", tes.encoding);
   console.log("TextEncoderStream.readable typeof:", typeof tes.readable);
@@ -222,7 +236,7 @@ try {
 
 // ── Class: TextDecoderStream ──
 try {
-  const tds = new stream_web.TextDecoderStream("utf-8");
+  const tds = new _RS_TextDecoderStream("utf-8");
   console.log("TextDecoderStream typeof:", typeof tds);
   console.log("TextDecoderStream.encoding:", tds.encoding);
   console.log("TextDecoderStream.fatal:", tds.fatal);
@@ -231,7 +245,7 @@ try {
 
 // ── Class: CompressionStream ──
 try {
-  const cs = new stream_web.CompressionStream("gzip");
+  const cs = new _RS_CompressionStream("gzip");
   console.log("CompressionStream typeof:", typeof cs);
   console.log("CompressionStream.readable typeof:", typeof cs.readable);
   console.log("CompressionStream.writable typeof:", typeof cs.writable);
@@ -239,7 +253,7 @@ try {
 
 // ── Class: DecompressionStream ──
 try {
-  const ds = new stream_web.DecompressionStream("gzip");
+  const ds = new _RS_DecompressionStream("gzip");
   console.log("DecompressionStream typeof:", typeof ds);
   console.log("DecompressionStream.readable typeof:", typeof ds.readable);
   console.log("DecompressionStream.writable typeof:", typeof ds.writable);
