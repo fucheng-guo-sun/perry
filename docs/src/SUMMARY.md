@@ -52,6 +52,13 @@
 - [Camera](ui/camera.md)
 - [WebView](ui/webview.md)
 
+# Terminal UI
+
+- [Overview](tui/overview.md)
+- [Widgets](tui/widgets.md)
+- [Hooks](tui/hooks.md)
+- [Examples](tui/examples.md)
+
 # Platforms
 
 - [Overview](platforms/overview.md)
