@@ -2,6 +2,48 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.807 — fix(hir,codegen,compile): closes #680 — type-only imports flipped topo cycles + flat namespace-member map collided
+
+Two coordinated fixes for the init-order disasters Effect's `import {} from "effect"` exposed once #671 cleared the keySet throw at HashMap.ts__init.
+
+**Symptom 1**: `internal/tracer.ts__init` ran 75th from `_main` but `Context.ts__init` ran 259th. Tracer's top-level `Context.Reference()(...)` then read an uninitialized Context global and threw `TypeError: value is not a function` (the same throw as #671 but from a different code path — `js_closure_call2` validating an extracted-from-NaN-box pointer that was 0).
+
+**Root cause 1** (`crates/perry/src/commands/compile.rs:1567` — DFS topo-sort dep collection): the loop over `hir_module.imports` did not distinguish whole-decl `import type * as X from ...` from value imports, so type-only imports created phantom init-order edges. `internal/tracer.ts` has `import type * as Tracer from "../Tracer.js"` and Tracer.ts has the matching value `import * as internal from "./internal/tracer.js"` — the type-only edge made it look like a true cycle, and the DFS cycle-break direction (back-edge wins for the deeper-in-cycle node) put internal/tracer.ts ahead of Tracer.ts AND, transitively through other type-only edges, ahead of Context.ts.
+
+**Fix 1**: thread a `type_only: bool` field through `perry_hir::Import` (already added to `ir.rs` in c0b53adf for an unrelated rework, set from the AST's `whole_decl_type_only` in `lower.rs`, completed by Ralph's e2628cb2 for `inline.rs`). `compile.rs:1568` now `continue`s past type-only imports when building `module_deps`. The phantom cycle disappears; topo order puts Context.ts at position 37, internal/tracer.ts at 86 — providers before consumers.
+
+**Symptom 2** (exposed by fix 1): `defaultServices.ts__init` SIGSEGV'd at `js_closure_call1`. The chain `Context.add(random.randomTag, random.make(Math.random()))` was emitting `bl perry_fn_internal_tracer_ts__make` instead of `bl perry_fn_internal_random_ts__make` — calling tracer.make with `Math.random()` as the options object, which dereferences a NaN-boxed number as an object pointer.
+
+**Root cause 2** (`crates/perry/src/commands/compile.rs:2820` — namespace import registration): `import_function_prefixes` is a flat `name → source_prefix` map. `defaultServices.ts` has `import * as random from "./random"`, `import * as tracer from "./tracer"`, `import * as clock from "./clock"` — each module exports `make`, and the LAST namespace import to register a name won. `random.make`, `tracer.make`, and `clock.make` all resolved to whichever (alphabetically-last? import-order-last) source registered `make`.
+
+**Fix 2**: add a per-namespace map `namespace_member_prefixes: HashMap<(namespace_local_name, member_name), source_prefix>` to `CompileOptions`, `CrossModuleCtx`, and `FnCtx`. Populate alongside `import_function_prefixes` in compile.rs's namespace import loop, keyed by `(local, export_name)`. The two consumer paths (`expr.rs:3586` value-position namespace member access and `lower_call.rs:550` namespace-member call) now consult `namespace_member_prefixes.get((ns_name, property))` first and fall back to the flat map for namespaces with no overlapping conflicts. Post-fix the bls in `defaultServices.ts__init` resolve correctly: `random.make` → `perry_fn_internal_random_ts__make`, `tracer.make` → `perry_fn_internal_tracer_ts__make`.
+
+**Validation**: with both fixes,  the test_bare.ts repro (`import {} from "effect"`) advances past tracer.ts and defaultServices.ts. The Effect end-to-end (#321) is not yet passing — there are further blockers downstream — but #680's specific symptom is fixed and the topology is now sound.
+
+## v0.5.806 — refs #665 — `(?:module\.)?exports\.X = require('Y')` index aggregators forward class identity
+
+Closes the remaining symptom from issue #665's last comment: named-imports of CJS classes from packages whose `index.js` is a series of `module.exports.X = require('./lib/X')` lines (rate-limiter-flexible, many older npm packages). Pre-fix the consumer's `import { RateLimiterMemory } from "rate-limiter-flexible"` resolved to `export const RateLimiterMemory = _cjs.RateLimiterMemory;` — a runtime property read on the IIFE result. HIR can't see through that read to the class declaration in the required file, so `new RateLimiterMemory(...)` produced an empty object with no methods (`typeof limiter.consume === "undefined"`, `Object.keys(limiter) === ""`).
+
+**Fix** in `crates/perry/src/commands/compile/cjs_wrap.rs`: add `extract_named_exports_from_require()` to detect the `(?:module\.)?exports\.NAME = require('SPEC')` shape and emit `export { _req_N as NAME };` directly (instead of `export const NAME = _cjs.NAME;`). The compile.rs class propagation arm at `Export::Named` then walks the default-import specifier, looks up the source module's `"default"`-keyed entry in `exported_classes`, and forwards the class into the index module's `exported_classes` under the aliased name. Class identity survives the indirection.
+
+**Defensive**: if the same `exports.X = ...` appears with a non-`require(...)` RHS elsewhere in the file, the pair is dropped — those files want the IIFE's runtime semantics. Already-hoisted-class names also win over the new direct re-export (the existing #652 path keeps its precedence).
+
+**Validation**: minimal reproducer matching rate-limiter-flexible's index.js shape (single-class default + named aggregator):
+```
+node_modules/my-pkg/index.js:    module.exports.Child = require('./lib/Child');
+                                 module.exports.Base = require('./lib/Base');
+node_modules/my-pkg/lib/Child.js: class Child extends Base {...} module.exports = Child;
+node_modules/my-pkg/lib/Base.js:  class Base {...} module.exports = Base;
+main.ts:                         import { Child, Base } from "my-pkg";
+                                 new Child({...}).greetChild("hi")
+```
+Pre-fix: `typeof c.greetChild === "undefined"`; `Object.keys(c) === ""`.
+Post-fix: `typeof c.greetChild === "function"`; `c.greetChild("hi") === "child:hi"`; `c.greetBase("hi") === "base:hi"`; `instanceof Base === true`; `instanceof Child === true`.
+
+**Out of scope**: cross-module `super()` constructor body field initialization (parent's `this.X = ...` doesn't take effect on subclass instances when subclass lives in another file) is a separate pre-existing limitation, not introduced or addressed by this change.
+
+**Unit tests** added in cjs_wrap.rs: `extracts_named_exports_from_require_basic`, `extracts_named_exports_from_require_bare_exports_dot`, `skips_named_export_when_name_has_non_require_assignment`, `wrap_emits_direct_reexport_for_module_exports_dot_require`.
+
 ## v0.5.805 — **Closes #488 — drizzle-sqlite acceptance** (`tests/release/packages/drizzle-sqlite/fixture.sh` reports `PASS drizzle-sqlite` byte-identical to expected).
 
 **Final blocker fixed**: `Array.prototype.reduce` / `reduceRight` callbacks were called with only 2 args `(accumulator, currentValue)` instead of the spec's `(accumulator, currentValue, currentIndex, array)`. Drizzle's `mapResultRow` in `node_modules/drizzle-orm/utils.js` uses `columns.reduce((result, { path, field }, columnIndex) => { ... row[columnIndex] ... }, {})` — pre-fix `columnIndex === undefined`, so `row[undefined]` was read for every column (perry returns `row[0]` for that), every column projection collapsed onto the id column. SELECT returned the right row count but `alice.age = 1` (the id) instead of `30`.

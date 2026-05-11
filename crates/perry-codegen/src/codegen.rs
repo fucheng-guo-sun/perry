@@ -63,6 +63,19 @@ pub struct CompileOptions {
     /// `perry_fn_<source_prefix>__<funcname>`. Built by the CLI driver
     /// from each module's `hir.imports` table.
     pub import_function_prefixes: std::collections::HashMap<String, String>,
+    /// Issue #680: per-namespace member resolution. Keyed by
+    /// `(namespace_local_name, member_name)` → `source_prefix`. Used by
+    /// the namespace-member access lowering paths in `expr.rs` and
+    /// `lower_call.rs` to disambiguate when multiple `import * as X / Y`
+    /// sources export the same member name. Pre-fix
+    /// `import_function_prefixes` was a flat name→prefix map and the LAST
+    /// namespace import to register a name won, so `import * as random;
+    /// import * as tracer` (both export `make`) made `random.make` resolve
+    /// to `tracer.make` — Effect's `defaultServices.ts` SIGSEGV'd because
+    /// it dispatched `tracer.make(Math.random())` instead of
+    /// `random.make(Math.random())`.
+    pub namespace_member_prefixes:
+        std::collections::HashMap<(String, String), String>,
     /// When true, `compile_module` returns the textual LLVM IR (`.ll`)
     /// as bytes instead of invoking `clang -c` to produce an object file.
     /// Used by the bitcode-link path (`PERRY_LLVM_BITCODE_LINK=1`).
@@ -250,6 +263,10 @@ pub struct ImportedClass {
 /// Built once in `compile_module` from `CompileOptions`.
 pub(crate) struct CrossModuleCtx {
     pub namespace_imports: std::collections::HashSet<String>,
+    /// Issue #680: per-namespace member resolution. See doc on
+    /// `CompileOptions::namespace_member_prefixes`.
+    pub namespace_member_prefixes:
+        std::collections::HashMap<(String, String), String>,
     pub imported_async_funcs: std::collections::HashSet<String>,
     /// FuncIds of locally-defined async functions in this module. Populated
     /// from `hir.functions.is_async`. Used by `is_promise_expr` to refine
@@ -992,6 +1009,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // Build the cross-module context bundle from CompileOptions.
     let cross_module = CrossModuleCtx {
         namespace_imports: opts.namespace_imports.iter().cloned().collect(),
+        namespace_member_prefixes: opts.namespace_member_prefixes,
         imported_async_funcs: opts.imported_async_funcs,
         local_async_funcs,
         type_aliases: opts.type_aliases,
@@ -2842,6 +2860,7 @@ fn compile_function(
         closure_rest_params,
         local_closure_func_ids: HashMap::new(),
         namespace_imports: &cross_module.namespace_imports,
+            namespace_member_prefixes: &cross_module.namespace_member_prefixes,
         imported_async_funcs: &cross_module.imported_async_funcs,
         local_async_funcs: &cross_module.local_async_funcs,
         type_aliases: &cross_module.type_aliases,
@@ -3219,6 +3238,7 @@ fn compile_closure(
         closure_rest_params,
         local_closure_func_ids: HashMap::new(),
         namespace_imports: &cross_module.namespace_imports,
+            namespace_member_prefixes: &cross_module.namespace_member_prefixes,
         imported_async_funcs: &cross_module.imported_async_funcs,
         local_async_funcs: &cross_module.local_async_funcs,
         type_aliases: &cross_module.type_aliases,
@@ -3441,6 +3461,7 @@ fn compile_method(
         closure_rest_params,
         local_closure_func_ids: HashMap::new(),
         namespace_imports: &cross_module.namespace_imports,
+            namespace_member_prefixes: &cross_module.namespace_member_prefixes,
         imported_async_funcs: &cross_module.imported_async_funcs,
         local_async_funcs: &cross_module.local_async_funcs,
         type_aliases: &cross_module.type_aliases,
@@ -3870,6 +3891,7 @@ fn compile_module_entry(
             closure_rest_params: closure_rest_params,
             local_closure_func_ids: HashMap::new(),
             namespace_imports: &cross_module.namespace_imports,
+            namespace_member_prefixes: &cross_module.namespace_member_prefixes,
             imported_async_funcs: &cross_module.imported_async_funcs,
             local_async_funcs: &cross_module.local_async_funcs,
             type_aliases: &cross_module.type_aliases,
@@ -4129,6 +4151,7 @@ fn compile_module_entry(
             closure_rest_params: closure_rest_params,
             local_closure_func_ids: HashMap::new(),
             namespace_imports: &cross_module.namespace_imports,
+            namespace_member_prefixes: &cross_module.namespace_member_prefixes,
             imported_async_funcs: &cross_module.imported_async_funcs,
             local_async_funcs: &cross_module.local_async_funcs,
             type_aliases: &cross_module.type_aliases,
@@ -4837,6 +4860,7 @@ fn compile_static_method(
         closure_rest_params,
         local_closure_func_ids: HashMap::new(),
         namespace_imports: &cross_module.namespace_imports,
+            namespace_member_prefixes: &cross_module.namespace_member_prefixes,
         imported_async_funcs: &cross_module.imported_async_funcs,
         local_async_funcs: &cross_module.local_async_funcs,
         type_aliases: &cross_module.type_aliases,

@@ -1565,6 +1565,21 @@ pub fn run_with_parse_cache(
 
             let mut module_deps = Vec::new();
             for import in &hir_module.imports {
+                // Issue #680: skip whole-decl type-only imports
+                // (`import type * as X`, `import type { Foo } from "..."`).
+                // Type-only imports are erased at runtime — they MUST NOT
+                // be init-order edges. Pre-fix Effect's
+                // `internal/tracer.ts` had a `import type * as Tracer`
+                // self-edge that combined with Tracer.ts's value
+                // `import * as internal from "./internal/tracer.js"` to
+                // form a phantom cycle. The DFS cycle-break direction
+                // then put `internal/tracer.ts` ahead of `Context.ts`
+                // (transitively reached via the same phony edge chain),
+                // so tracer's top-level `Context.Reference()(...)` ran
+                // against an uninitialized Context global and threw.
+                if import.type_only {
+                    continue;
+                }
                 if let Some(ref resolved) = import.resolved_path {
                     let resolved_path = PathBuf::from(resolved);
                     if resolved_path != entry_path
@@ -2747,6 +2762,13 @@ pub fn run_with_parse_cache(
             // to generate `perry_fn_<source_prefix>__<name>`.
             let mut import_function_prefixes: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
+            // Issue #680: per-namespace member resolution. Disambiguates
+            // `random.make` vs `tracer.make` when multiple namespaces
+            // export the same member name. Keyed by `(namespace_local,
+            // member_name)` → `source_prefix`.
+            let mut namespace_member_prefixes:
+                std::collections::HashMap<(String, String), String> =
+                std::collections::HashMap::new();
             let mut namespace_imports: Vec<String> = Vec::new();
             let mut imported_classes: Vec<perry_codegen::ImportedClass> = Vec::new();
             let mut imported_enums: Vec<(String, Vec<(String, perry_hir::EnumValue)>)> = Vec::new();
@@ -2818,6 +2840,13 @@ pub fn run_with_parse_cache(
                                     compute_module_prefix(origin_path, &ctx.project_root);
                                 import_function_prefixes
                                     .insert(export_name.clone(), origin_prefix.clone());
+                                // Issue #680: also register under the
+                                // per-namespace key so `random.make` and
+                                // `tracer.make` can be disambiguated.
+                                namespace_member_prefixes.insert(
+                                    (local.clone(), export_name.clone()),
+                                    origin_prefix.clone(),
+                                );
 
                                 let key = (origin_path.clone(), export_name.clone());
                                 if let Some(&param_count) = exported_func_param_counts.get(&key) {
@@ -3830,6 +3859,7 @@ method_has_rest: class
                 is_entry_module: is_entry,
                 non_entry_module_prefixes,
                 import_function_prefixes,
+                namespace_member_prefixes,
                 emit_ir_only: bitcode_link,
                 namespace_imports,
                 imported_classes,

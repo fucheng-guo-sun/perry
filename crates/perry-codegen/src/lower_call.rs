@@ -547,8 +547,16 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
     if let Expr::PropertyGet { object, property } = callee {
         if let Expr::ExternFuncRef { name: ns_name, .. } = object.as_ref() {
             if ctx.namespace_imports.contains(ns_name) {
-                if let Some(source_prefix) =
-                    ctx.import_function_prefixes.get(property).cloned()
+                // Issue #680: prefer the per-namespace map so
+                // `random.make` and `tracer.make` resolve to their own
+                // sources even when both modules export `make`. Falls
+                // back to the flat `import_function_prefixes` for
+                // namespaces with no overlapping conflicts.
+                if let Some(source_prefix) = ctx
+                    .namespace_member_prefixes
+                    .get(&(ns_name.clone(), property.clone()))
+                    .cloned()
+                    .or_else(|| ctx.import_function_prefixes.get(property).cloned())
                 {
                     let symbol = format!("perry_fn_{}__{}", source_prefix, property);
                     if ctx.imported_vars.contains(property) {

@@ -306,6 +306,12 @@ pub(crate) struct FnCtx<'a> {
     /// Codegen uses this to know that `X.foo()` should be dispatched as
     /// a cross-module call rather than an object method call.
     pub namespace_imports: &'a std::collections::HashSet<String>,
+    /// Issue #680: per-namespace member resolution. Keyed by
+    /// `(namespace_local_name, member_name)` → `source_prefix`. Consulted
+    /// by namespace member access lowering to disambiguate when the same
+    /// export name appears in multiple `import * as X / Y` sources.
+    pub namespace_member_prefixes:
+        &'a std::collections::HashMap<(String, String), String>,
     /// Names of imported functions that are async. Used to wrap
     /// cross-module calls in promise machinery.
     pub imported_async_funcs: &'a std::collections::HashSet<String>,
@@ -3577,7 +3583,25 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                         let bits = crate::nanbox::INT32_TAG | (cid as u64 & 0xFFFF_FFFF);
                         return Ok(double_literal(f64::from_bits(bits)));
                     }
-                    if let Some(source_prefix) = ctx.import_function_prefixes.get(property).cloned()
+                    // Issue #680: prefer the per-namespace map so
+                    // `random.make` and `tracer.make` resolve to their
+                    // own sources even when both modules export `make`.
+                    // Falls back to the flat `import_function_prefixes`
+                    // for namespaces with no overlapping conflicts.
+                    let _ns_lookup_name = if let Expr::ExternFuncRef { name, .. } = object.as_ref() {
+                        Some(name.clone())
+                    } else {
+                        None
+                    };
+                    let source_prefix_opt = _ns_lookup_name
+                        .as_ref()
+                        .and_then(|ns| {
+                            ctx.namespace_member_prefixes
+                                .get(&(ns.clone(), property.clone()))
+                                .cloned()
+                        })
+                        .or_else(|| ctx.import_function_prefixes.get(property).cloned());
+                    if let Some(source_prefix) = source_prefix_opt
                     {
                         // Issue #671: distinguish exported VARIABLES from
                         // exported FUNCTIONS — for variables, the symbol
