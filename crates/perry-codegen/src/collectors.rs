@@ -567,7 +567,7 @@ pub(crate) fn collect_ref_ids_in_stmts(stmts: &[perry_hir::Stmt], out: &mut Hash
     }
 }
 
-fn collect_ref_ids_in_expr(e: &perry_hir::Expr, out: &mut HashSet<u32>) {
+pub(crate) fn collect_ref_ids_in_expr(e: &perry_hir::Expr, out: &mut HashSet<u32>) {
     use perry_hir::{ArrayElement, CallArg, Expr};
     let walk = |sub: &Expr, out: &mut HashSet<u32>| {
         collect_ref_ids_in_expr(sub, out);

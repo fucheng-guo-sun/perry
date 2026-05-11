@@ -5067,6 +5067,45 @@ fn init_static_fields(ctx: &mut crate::expr::FnCtx<'_>, hir: &HirModule) -> Resu
             &[(crate::types::I32, &cid_str), (I64, &func_ptr_i64)],
         );
     }
+    // Issue #685: nested classes (declared as expressions inside a
+    // factory function body, e.g. `return class X extends Y { static
+    // params = params.slice() }` in effect's `TemplateLiteralParser`)
+    // are hoisted into `module.classes` by HIR lowering, but their
+    // static-field initializers may reference parameters of the
+    // enclosing function — those LocalIds aren't in the module-init
+    // scope. The fallback at `expr.rs::LocalGet` returns `0.0`, so the
+    // hoisted init becomes `(0.0).slice()` and throws
+    // `TypeError: (number).slice is not a function` deep in
+    // `<module>__init`, before any user code runs.
+    //
+    // Skip such inits at module level — the static field's storage
+    // remains the zero default, which is wrong but harmless (the class
+    // is built fresh on each factory invocation and the static slot
+    // would need re-emitting per-invocation to be correct). The full
+    // fix is to emit the init at the class-expression site inside the
+    // factory body; tracking the eager-eval-of-inner-class-statics
+    // separately.
+    let mut module_local_scope: std::collections::HashSet<u32> = ctx
+        .module_globals
+        .keys()
+        .copied()
+        .collect();
+    // Top-level `let` / `const` bindings may not appear in
+    // `module_globals` (the global table only includes vars referenced
+    // from inner functions or exported). For the purpose of "is this
+    // LocalId in the module's own scope," count every top-level
+    // `Stmt::Let` id too — otherwise a valid
+    // `static foo = topLevelConst` would be wrongly skipped.
+    for s in &hir.init {
+        if let perry_hir::Stmt::Let { id, .. } = s {
+            module_local_scope.insert(*id);
+        }
+    }
+    let init_references_out_of_scope_local = |init_expr: &perry_hir::Expr| -> bool {
+        let mut refs: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        crate::collectors::collect_ref_ids_in_expr(init_expr, &mut refs);
+        refs.iter().any(|id| !module_local_scope.contains(id))
+    };
     for c in &hir.classes {
         for sf in &c.static_fields {
             // Computed-key static fields go through the class-static-symbol
@@ -5074,6 +5113,11 @@ fn init_static_fields(ctx: &mut crate::expr::FnCtx<'_>, hir: &HirModule) -> Resu
             // "Table"` is consulted by `Object.prototype.hasOwnProperty.call(
             // type, entityKind)` in drizzle's `is(value, type)`.
             if let (Some(key_expr), Some(init_expr)) = (sf.key_expr.as_ref(), sf.init.as_ref()) {
+                if init_references_out_of_scope_local(init_expr)
+                    || init_references_out_of_scope_local(key_expr)
+                {
+                    continue;
+                }
                 let Some(&class_id) = ctx.class_ids.get(&c.name) else {
                     continue;
                 };
@@ -5095,6 +5139,9 @@ fn init_static_fields(ctx: &mut crate::expr::FnCtx<'_>, hir: &HirModule) -> Resu
                 continue;
             };
             if let Some(init_expr) = &sf.init {
+                if init_references_out_of_scope_local(init_expr) {
+                    continue;
+                }
                 let v = crate::expr::lower_expr(ctx, init_expr)?;
                 let g_ref = format!("@{}", global_name);
                 ctx.block().store(DOUBLE, &v, &g_ref);
