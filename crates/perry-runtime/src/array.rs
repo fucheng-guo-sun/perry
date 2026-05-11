@@ -1790,7 +1790,11 @@ unsafe fn js_array_flat_into(
         let maybe_arr_ptr = if top16 >= 0x7FF8 {
             if top16 == 0x7FFD {
                 let ptr = (bits & 0x0000_FFFF_FFFF_FFFF) as *const ArrayHeader;
-                if (ptr as usize) >= 0x1000 { Some(ptr) } else { None }
+                if (ptr as usize) >= 0x1000 {
+                    Some(ptr)
+                } else {
+                    None
+                }
             } else {
                 None
             }
