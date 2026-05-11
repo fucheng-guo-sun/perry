@@ -1638,10 +1638,8 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     let mut iter = args.into_iter();
                                     let mut result = iter.next().unwrap();
                                     for next_arg in iter {
-                                        result = Expr::PathJoin(
-                                            Box::new(result),
-                                            Box::new(next_arg),
-                                        );
+                                        result =
+                                            Expr::PathJoin(Box::new(result), Box::new(next_arg));
                                     }
                                     return Ok(result);
                                 }
@@ -5362,8 +5360,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 let mut iter = args.into_iter();
                                 let mut result = iter.next().unwrap();
                                 for next_arg in iter {
-                                    result =
-                                        Expr::PathJoin(Box::new(result), Box::new(next_arg));
+                                    result = Expr::PathJoin(Box::new(result), Box::new(next_arg));
                                 }
                                 return Ok(result);
                             }

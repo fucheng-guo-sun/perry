@@ -420,10 +420,7 @@ fn extract_object_literal_exports_from_require(source: &str) -> Vec<(String, Str
     // Locate the LAST `module.exports = {` or `exports = {` (case where the file
     // reassigns the whole exports object). Anchored at start-of-line. We use
     // `rfind`-style behavior because later assignments win at runtime.
-    let header_re = regex::Regex::new(
-        r#"(?m)^\s*(?:module\.exports|exports)\s*=\s*\{"#,
-    )
-    .unwrap();
+    let header_re = regex::Regex::new(r#"(?m)^\s*(?:module\.exports|exports)\s*=\s*\{"#).unwrap();
     let last_match = header_re.find_iter(source).last();
     let m = match last_match {
         Some(m) => m,
@@ -580,10 +577,9 @@ fn extract_object_literal_exports_from_require(source: &str) -> Vec<(String, Str
 
     // Parse each entry as shorthand `X` or longhand `X: Y` (Y must be a bare ident).
     let shorthand_re = regex::Regex::new(r#"^[A-Za-z_$][A-Za-z0-9_$]*$"#).unwrap();
-    let longhand_re = regex::Regex::new(
-        r#"^([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)$"#,
-    )
-    .unwrap();
+    let longhand_re =
+        regex::Regex::new(r#"^([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)$"#)
+            .unwrap();
     let mut out: Vec<(String, String)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in entries {
@@ -1247,8 +1243,14 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("RateLimiterMemory".to_string(), "./lib/RateLimiterMemory".to_string()),
-                ("RateLimiterRedis".to_string(), "./lib/RateLimiterRedis".to_string()),
+                (
+                    "RateLimiterMemory".to_string(),
+                    "./lib/RateLimiterMemory".to_string()
+                ),
+                (
+                    "RateLimiterRedis".to_string(),
+                    "./lib/RateLimiterRedis".to_string()
+                ),
             ]
         );
     }

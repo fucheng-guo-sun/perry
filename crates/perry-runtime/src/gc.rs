@@ -1535,8 +1535,7 @@ impl ValidPointerSet {
         // `maybe_contains` still prefilters correctly for malloc
         // pointers (closures/promises) that fall outside the
         // arena address span.
-        if let (Some(&first), Some(&last)) =
-            (self.merged_sorted.first(), self.merged_sorted.last())
+        if let (Some(&first), Some(&last)) = (self.merged_sorted.first(), self.merged_sorted.last())
         {
             if first < self.range_min {
                 self.range_min = first;
