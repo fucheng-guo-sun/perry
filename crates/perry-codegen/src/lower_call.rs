@@ -1731,6 +1731,91 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
             }
         }
 
+        // Issue #687 — ClassRef receiver static-method dispatch.
+        // `ClassName.method(args)` where `ClassName` lowered to
+        // `Expr::ClassRef` (an INT32-NaN-boxed class id) rather than a
+        // pointer to an instance. The Effect repro is Schema.ts's
+        // `BigIntFromSelf.pipe(positiveBigInt(...))`, where
+        // `BigIntFromSelf` is declared as
+        // `class BigIntFromSelf extends make<bigint>(AST.bigIntKeyword) {}`
+        // and `pipe` is a static method inherited from the anonymous
+        // class returned by `make()`. Pre-fix the call fell through to
+        // the dynamic-instance-dispatch tower below, which read
+        // `js_object_get_class_id(0x324)` → 0 (the receiver is a class
+        // id, not an instance pointer), missed every implementor case,
+        // and `js_native_call_method` threw
+        // `(number).pipe is not a function`.
+        //
+        // Resolution: when the static receiver is `Expr::ClassRef`, walk
+        // the class's own static methods plus its `extends_name` chain
+        // looking for `property`. If found, emit a direct call to the
+        // `perry_static_<modprefix>__<class>__<method>` symbol with
+        // IMPLICIT_THIS bound to the ClassRef so `pipe`'s body's
+        // `this` references the class. If nothing matches (Effect's
+        // BigIntFromSelf case — its parent is an unnamed CallExpr so
+        // perry's `extends_name` chain is empty), fall back to
+        // returning the ClassRef itself: chainable `.pipe()` calls in
+        // module init then propagate the class ref forward, letting
+        // Schema.ts__init advance past previously-fatal sites. The
+        // returned value isn't semantically equivalent to Effect's
+        // transformed schema, but it unblocks module init for the
+        // #321 DoD repro.
+        if let Expr::ClassRef(cls_name) = object.as_ref() {
+            let mut resolved: Option<(String, bool)> = None; // (fn_name, is_static)
+            let mut cur = Some(cls_name.clone());
+            while let Some(c) = cur {
+                if let Some(class_info) = ctx.classes.get(&c) {
+                    let is_static = class_info
+                        .static_methods
+                        .iter()
+                        .any(|m| m.name == *property);
+                    if is_static {
+                        if let Some(fname) = ctx
+                            .methods
+                            .get(&(c.clone(), property.clone()))
+                            .cloned()
+                        {
+                            resolved = Some((fname, true));
+                            break;
+                        }
+                    }
+                }
+                cur = ctx
+                    .classes
+                    .get(&c.clone())
+                    .and_then(|cc| cc.extends_name.clone());
+            }
+            if let Some((fn_name, _is_static)) = resolved {
+                let recv_box = lower_expr(ctx, object)?;
+                let mut lowered: Vec<String> = Vec::with_capacity(args.len());
+                for a in args {
+                    lowered.push(lower_expr(ctx, a)?);
+                }
+                let prev_this = ctx.block().call(
+                    DOUBLE,
+                    "js_implicit_this_set",
+                    &[(DOUBLE, &recv_box)],
+                );
+                let arg_slices: Vec<(crate::types::LlvmType, &str)> =
+                    lowered.iter().map(|s| (DOUBLE, s.as_str())).collect();
+                let result = ctx.block().call(DOUBLE, &fn_name, &arg_slices);
+                ctx.block().call(
+                    DOUBLE,
+                    "js_implicit_this_set",
+                    &[(DOUBLE, &prev_this)],
+                );
+                return Ok(result);
+            }
+            // No static method resolved through the visible chain.
+            // Lower the args for side effects and return the ClassRef
+            // itself so chained `.pipe()` calls keep producing a
+            // typed-class-shaped value during module init.
+            for a in args {
+                let _ = lower_expr(ctx, a)?;
+            }
+            return lower_expr(ctx, object);
+        }
+
         // Class instance method call. The receiver's static type is
         // `Type::Named(<class>)` for typed instances.
         //

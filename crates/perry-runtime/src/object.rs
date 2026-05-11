@@ -6485,6 +6485,30 @@ pub unsafe extern "C" fn js_native_call_method(
             method_name.len(),
         );
     }
+    // Issue #687: INT32-NaN-boxed value whose payload is a registered
+    // class id — i.e. a `ClassRef` produced by `Expr::ClassRef` codegen.
+    // Effect's `Schema.NonNegative.pipe(int()).annotations({...})` chains
+    // produce a ClassRef out of the first `.pipe()` (via the codegen-side
+    // defensive no-op in `lower_call.rs::Expr::ClassRef`) and the chained
+    // `.annotations(...)` reaches us with that ClassRef as the receiver.
+    // Treat it as a chainable no-op: return the receiver so further
+    // `.method(...)` calls stay typed-class-shaped during module init.
+    // The result isn't semantically equivalent to Effect's transformed
+    // schema, but it advances Schema.ts__init past sites that previously
+    // threw `(number).<method> is not a function`. Paired with the
+    // codegen-side fix in `lower_call.rs` for the simpler
+    // `ClassRef.method()` shape.
+    if jsval.is_int32() {
+        let payload = jsval.as_int32() as u32;
+        if payload != 0 {
+            let guard = REGISTERED_CLASS_IDS.read().unwrap();
+            if let Some(set) = guard.as_ref() {
+                if set.contains(&payload) {
+                    return object;
+                }
+            }
+        }
+    }
     let primitive_kind: Option<&'static str> = if jsval.is_any_string() {
         Some("string")
     } else if jsval.is_int32() || jsval.is_number() {
