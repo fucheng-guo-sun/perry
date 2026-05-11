@@ -262,6 +262,44 @@ pub extern "C" fn js_array_from_f64(elements: *const f64, count: u32) -> *mut Ar
     arr
 }
 
+/// `Array.from({length: N, 0: a, 1: b, ...})` — read the `length` property
+/// and emit `obj[0]..obj[N-1]` in order (missing slots fill with `undefined`
+/// per spec). Receivers without a numeric `length` property produce an
+/// empty array (ToLength coerces non-numbers to 0).
+unsafe fn js_array_from_arraylike(obj: *const crate::object::ObjectHeader) -> *mut ArrayHeader {
+    if obj.is_null() {
+        return js_array_alloc(0);
+    }
+    let length_key = crate::string::js_string_from_bytes(b"length".as_ptr(), 6);
+    let length_val = crate::object::js_object_get_field_by_name_f64(obj, length_key);
+    let length_bits = length_val.to_bits();
+    // ToLength coercion: NaN / undefined / non-finite / negative → 0.
+    let len = if length_val.is_nan()
+        || !length_val.is_finite()
+        || length_val < 0.0
+        || (length_bits >> 48) >= 0x7FF8
+    {
+        0u32
+    } else {
+        length_val as u32
+    };
+    let arr = js_array_alloc(len);
+    (*arr).length = len;
+    let elements = (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
+    const TAG_UNDEFINED: u64 = 0x7FFC_0000_0000_0001;
+    let undefined = f64::from_bits(TAG_UNDEFINED);
+    for i in 0..len {
+        // Pre-init to undefined in case the key lookup returns the
+        // wrong type / produces a sentinel we want to coerce.
+        *elements.add(i as usize) = undefined;
+        let key_str = i.to_string();
+        let key = crate::string::js_string_from_bytes(key_str.as_ptr(), key_str.len() as u32);
+        let v = crate::object::js_object_get_field_by_name_f64(obj, key);
+        *elements.add(i as usize) = v;
+    }
+    arr
+}
+
 /// `Array.from(string)` — split the source string into Unicode codepoints
 /// and emit each as a 1-codepoint string element (matches `[..."hello"]` /
 /// `for (const c of "hello")` semantics). Surrogate pairs in UTF-16 source
@@ -1838,6 +1876,23 @@ pub extern "C" fn js_array_clone(src: *const ArrayHeader) -> *mut ArrayHeader {
     // Check if this is a Map (for Array.from(map) → array of [key, value] pairs)
     if !src.is_null() && crate::map::is_registered_map(src as usize) {
         return crate::map::js_map_entries(src as *const crate::map::MapHeader);
+    }
+
+    // `Array.from({length: N, 0: ..., 1: ...})` (array-like object) per
+    // ECMA-262 §23.1.2.1 step 8: read `.length`, then for each index
+    // 0..length read `obj[i]` (missing slots → undefined). Pre-fix this
+    // fell through to the array-memcpy path which read ObjectHeader's
+    // `field_count` u32 as `length` and the inline f64 slots as elements
+    // — garbage. Detect via `GC_TYPE_OBJECT`.
+    if raw_addr >= crate::gc::GC_HEADER_SIZE + 0x1000 {
+        let obj_type = unsafe {
+            let hdr = (raw_addr as *const u8).sub(crate::gc::GC_HEADER_SIZE)
+                as *const crate::gc::GcHeader;
+            (*hdr).obj_type
+        };
+        if obj_type == crate::gc::GC_TYPE_OBJECT {
+            return unsafe { js_array_from_arraylike(raw_addr as *const crate::ObjectHeader) };
+        }
     }
     // Issue #578: typed array source — materialize each element through the
     // per-kind accessor instead of memcpy'ing the byte-packed storage as if
