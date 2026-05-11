@@ -440,12 +440,26 @@ pub(crate) fn pre_scan_node_http_upgrade_params(
 
 /// Detect if an expression represents a native handle instance (Big, Decimal, etc.)
 /// Returns the module name if it does.
-pub(crate) fn detect_native_instance_expr(expr: &ast::Expr) -> Option<&'static str> {
+///
+/// A user `class Big {...}` (or `Decimal`, etc.) in the current module shadows
+/// the hardcoded library-name mapping — without that gate `class Big { f0=0; }
+/// const b = new Big(); b.f0` returned 0 because the value was routed through
+/// big.js's handle-based dispatch.
+pub(crate) fn detect_native_instance_expr(
+    ctx: &LoweringContext,
+    expr: &ast::Expr,
+) -> Option<&'static str> {
     match expr {
         // new Big(...) / new Decimal(...) / new BigNumber(...)
         ast::Expr::New(new_expr) => {
             if let ast::Expr::Ident(ident) = new_expr.callee.as_ref() {
-                match ident.sym.as_ref() {
+                let class_name = ident.sym.as_ref();
+                if ctx.classes_index.contains_key(class_name)
+                    || ctx.pending_classes.iter().any(|c| c.name == class_name)
+                {
+                    return None;
+                }
+                match class_name {
                     "Big" => Some("big.js"),
                     "Decimal" => Some("decimal.js"),
                     "BigNumber" => Some("bignumber.js"),
@@ -462,7 +476,7 @@ pub(crate) fn detect_native_instance_expr(expr: &ast::Expr) -> Option<&'static s
             if let ast::Callee::Expr(callee_expr) = &call_expr.callee {
                 if let ast::Expr::Member(member) = callee_expr.as_ref() {
                     // Recursively check the object
-                    detect_native_instance_expr(&member.obj)
+                    detect_native_instance_expr(ctx, &member.obj)
                 } else {
                     None
                 }

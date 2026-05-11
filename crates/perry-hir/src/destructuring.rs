@@ -1170,10 +1170,19 @@ pub(crate) fn lower_var_decl_with_destructuring(
                 if let ast::Expr::New(new_expr) = init_expr.as_ref() {
                     if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
                         let class_name = class_ident.sym.as_ref();
+                        // A user `class Big {...}` in scope shadows the
+                        // hardcoded library-name fallback below. Without
+                        // this gate `class Big { f0=0; ... } const b = new
+                        // Big()` routed through big.js's handle-based
+                        // dispatch so every property read returned 0.
+                        let user_class_defined = ctx.classes_index.contains_key(class_name)
+                            || ctx.pending_classes.iter().any(|c| c.name == class_name);
                         // First try the general native module lookup (covers all imported native classes)
                         let module_name = if let Some((m, _)) = ctx.lookup_native_module(class_name)
                         {
                             Some(m.to_string())
+                        } else if user_class_defined {
+                            None
                         } else {
                             // Fallback to hardcoded map for known classes.
                             // Pool/Client/MongoClient are intentionally NOT
@@ -1217,6 +1226,10 @@ pub(crate) fn lower_var_decl_with_destructuring(
                     if let ast::Expr::New(new_expr) = await_expr.arg.as_ref() {
                         if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
                             let class_name = class_ident.sym.as_ref();
+                            // Same user-class shadowing rule as the
+                            // non-await new-expr path above.
+                            let user_class_defined = ctx.classes_index.contains_key(class_name)
+                                || ctx.pending_classes.iter().any(|c| c.name == class_name);
                             // First try the general native module lookup.
                             // Pool/Client/MongoClient are intentionally NOT
                             // in the fallback map — see the sync `new` arm
@@ -1224,6 +1237,8 @@ pub(crate) fn lower_var_decl_with_destructuring(
                             let module_name =
                                 if let Some((m, _)) = ctx.lookup_native_module(class_name) {
                                     Some(m.to_string())
+                                } else if user_class_defined {
+                                    None
                                 } else {
                                     match class_name {
                                         "EventEmitter" => Some("events".to_string()),
@@ -1614,7 +1629,7 @@ pub(crate) fn lower_var_decl_with_destructuring(
                             // Second try: object is new Big(...) or a chained call like new Big(...).div(...)
                             if !handled {
                                 if let Some(module_name) =
-                                    detect_native_instance_expr(&member_expr.obj)
+                                    detect_native_instance_expr(ctx, &member_expr.obj)
                                 {
                                     let class_name = match module_name {
                                         "big.js" => "Big",

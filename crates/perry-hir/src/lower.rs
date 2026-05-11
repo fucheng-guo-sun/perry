@@ -3793,10 +3793,30 @@ fn lower_module_decl(
                             if let ast::Expr::New(new_expr) = init.as_ref() {
                                 if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
                                     let class_name = class_ident.sym.as_ref();
+                                    // If the user has declared a class with this
+                                    // name in the current module, it shadows the
+                                    // hardcoded library-name fallback below — the
+                                    // user-defined class wins. Without this gate
+                                    // a user's `class Big { f0=0; ... }` was
+                                    // routed through `big.js`'s handle-based
+                                    // method dispatch (returning 0 for every
+                                    // unknown property), so reads of any field
+                                    // returned 0. Same shadowing logic applies
+                                    // to `Decimal`, `BigNumber`, etc.
+                                    let user_class_defined = module
+                                        .classes
+                                        .iter()
+                                        .any(|c| c.name == class_name)
+                                        || ctx
+                                            .pending_classes
+                                            .iter()
+                                            .any(|c| c.name == class_name);
                                     let module_name: Option<String> = if let Some((m, _)) =
                                         ctx.lookup_native_module(class_name)
                                     {
                                         Some(m.to_string())
+                                    } else if user_class_defined {
+                                        None
                                     } else {
                                         match class_name {
                                             "EventEmitter" => Some("events".to_string()),
@@ -3829,10 +3849,22 @@ fn lower_module_decl(
                                     if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref()
                                     {
                                         let class_name = class_ident.sym.as_ref();
+                                        // Same user-class shadowing rule as the
+                                        // non-await new-expr path above.
+                                        let user_class_defined = module
+                                            .classes
+                                            .iter()
+                                            .any(|c| c.name == class_name)
+                                            || ctx
+                                                .pending_classes
+                                                .iter()
+                                                .any(|c| c.name == class_name);
                                         let module_name: Option<String> = if let Some((m, _)) =
                                             ctx.lookup_native_module(class_name)
                                         {
                                             Some(m.to_string())
+                                        } else if user_class_defined {
+                                            None
                                         } else {
                                             match class_name {
                                                 "EventEmitter" => Some("events".to_string()),

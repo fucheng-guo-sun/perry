@@ -1420,7 +1420,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
 
                 // Check for method calls on new Big/Decimal/BigNumber() expressions
                 // e.g., new Big("100").div(2)
-                if let Some(module_name) = detect_native_instance_expr(&member.obj) {
+                if let Some(module_name) = detect_native_instance_expr(ctx, &member.obj) {
                     if let ast::MemberProp::Ident(method_ident) = &member.prop {
                         let method_name = method_ident.sym.to_string();
                         let object_expr = lower_expr(ctx, &member.obj)?;
