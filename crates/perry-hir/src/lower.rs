@@ -6170,11 +6170,17 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                 });
                 // Lower user body statements. lower_stmt appends to module.init,
                 // so we snapshot and drain to capture the body stmts.
+                // Handle both Block bodies (`for (...) { ... }`) AND single-statement
+                // bodies (`for (...) console.log(v);`). Pre-fix the brace-less
+                // form was silently dropped — `for (const v of gen()) doThing(v);`
+                // produced no output at all.
                 let init_before = module.init.len();
                 if let ast::Stmt::Block(block) = &*for_of_stmt.body {
                     for s in &block.stmts {
                         lower_stmt(ctx, module, s)?;
                     }
+                } else {
+                    lower_stmt(ctx, module, &for_of_stmt.body)?;
                 }
                 let mut user_body: Vec<Stmt> = module.init.drain(init_before..).collect();
                 body_stmts.append(&mut user_body);

@@ -2296,6 +2296,90 @@ fn linearize_body(
                 }
             }
 
+            // Let with yield* delegation initializer: `const x = yield* inner()`.
+            // Per spec: x receives the value returned by inner when it completes
+            // (the `value` field of `{value, done: true}`). Without this arm
+            // the catch-all below treated `yield*` like `yield`, sending the
+            // iterator object itself as the yielded value and assigning __sent
+            // (typically undefined) to x — both wrong.
+            Stmt::Let {
+                id,
+                init: Some(Expr::Yield {
+                    value: Some(inner),
+                    delegate: true,
+                }),
+                mutable,
+                ty,
+                name,
+            } => {
+                let del_iter_id = alloc_local(next_local_id);
+                let del_result_id = alloc_local(next_local_id);
+
+                let next_call = Expr::Call {
+                    callee: Box::new(Expr::PropertyGet {
+                        object: Box::new(Expr::LocalGet(del_iter_id)),
+                        property: "next".to_string(),
+                    }),
+                    args: vec![],
+                    type_args: vec![],
+                };
+
+                current.push(Stmt::Expr(Expr::LocalSet(
+                    del_iter_id,
+                    Box::new(*inner.clone()),
+                )));
+                current.push(Stmt::Expr(Expr::LocalSet(
+                    del_result_id,
+                    Box::new(next_call.clone()),
+                )));
+
+                let while_body = vec![
+                    Stmt::Expr(Expr::Yield {
+                        value: Some(Box::new(Expr::PropertyGet {
+                            object: Box::new(Expr::LocalGet(del_result_id)),
+                            property: "value".to_string(),
+                        })),
+                        delegate: false,
+                    }),
+                    Stmt::Expr(Expr::LocalSet(del_result_id, Box::new(next_call))),
+                ];
+
+                let while_stmt = Stmt::While {
+                    condition: Expr::Unary {
+                        op: UnaryOp::Not,
+                        operand: Box::new(Expr::PropertyGet {
+                            object: Box::new(Expr::LocalGet(del_result_id)),
+                            property: "done".to_string(),
+                        }),
+                    },
+                    body: while_body,
+                };
+
+                linearize_body(
+                    &[while_stmt],
+                    states,
+                    current,
+                    state_num,
+                    state_id,
+                    next_local_id,
+                    sent_id,
+                    catches,
+                );
+
+                // After the loop, the iterator's final `value` (from
+                // {value, done:true}) becomes the value of `yield* expr`.
+                current.push(Stmt::Let {
+                    id: *id,
+                    init: Some(Expr::PropertyGet {
+                        object: Box::new(Expr::LocalGet(del_result_id)),
+                        property: "value".to_string(),
+                    }),
+                    mutable: *mutable,
+                    ty: ty.clone(),
+                    name: name.clone(),
+                });
+            }
+
             // Let with yield initializer: `const x = yield expr` (two-way yield)
             // After resuming, `x` receives the value passed by the caller via next(val),
             // which is stored in __sent by the next() closure preamble.
