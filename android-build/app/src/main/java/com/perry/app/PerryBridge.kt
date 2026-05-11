@@ -1242,6 +1242,70 @@ object PerryBridge {
         return String.format("%04d-%02d-%02d", y, m, d)
     }
 
+    // ============================================================
+    // Issue #475 — Combobox (android.widget.AutoCompleteTextView).
+    // ============================================================
+    //
+    // Each combobox keeps its own ArrayAdapter<String> in a side-map so
+    // `comboboxAddItem` only needs to push one entry instead of rebuilding
+    // the whole list. The TextWatcher fires nativeInvokeCallbackWithString
+    // on each edit; selecting an autocomplete suggestion already feeds the
+    // text back through the same path.
+
+    private val comboboxAdapters =
+        mutableMapOf<android.widget.AutoCompleteTextView, ArrayAdapter<String>>()
+
+    @JvmStatic
+    fun comboboxCreate(
+        initial: String,
+        callbackKey: Long
+    ): android.widget.AutoCompleteTextView {
+        val actv = android.widget.AutoCompleteTextView(activity)
+        // simple_dropdown_item_1line is the canonical built-in row layout.
+        val adapter = ArrayAdapter<String>(
+            activity,
+            android.R.layout.simple_dropdown_item_1line,
+            mutableListOf<String>()
+        )
+        actv.setAdapter(adapter)
+        actv.threshold = 1
+        if (initial.isNotEmpty()) {
+            actv.setText(initial, false)
+        }
+        comboboxAdapters[actv] = adapter
+        if (callbackKey != 0L) {
+            actv.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    nativeInvokeCallbackWithString(callbackKey, s?.toString() ?: "")
+                }
+            })
+        }
+        return actv
+    }
+
+    @JvmStatic
+    fun comboboxAddItem(actv: android.widget.AutoCompleteTextView, value: String) {
+        val adapter = comboboxAdapters[actv] ?: return
+        uiHandler.post {
+            adapter.add(value)
+            adapter.notifyDataSetChanged()
+        }
+    }
+
+    @JvmStatic
+    fun comboboxSetValue(actv: android.widget.AutoCompleteTextView, value: String) {
+        uiHandler.post {
+            actv.setText(value, false)
+        }
+    }
+
+    @JvmStatic
+    fun comboboxGetValue(actv: android.widget.AutoCompleteTextView): String {
+        return actv.text?.toString() ?: ""
+    }
+
     // --- Native methods ---
 
     @JvmStatic
