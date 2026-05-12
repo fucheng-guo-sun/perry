@@ -280,9 +280,19 @@ jobs:
             done
           done
 
-      - name: Build UI library (Linux glibc)
-        if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
-        run: cargo build --release --target ${{ matrix.target }} -p perry-ui-gtk4
+      # perry-ui-gtk4 build temporarily disabled (v0.5.863): three real
+      # compile errors in crates/perry-ui-gtk4/src/widgets/webview.rs against
+      # the gtk4-rs 0.9 / webkit6 0.4 API on ubuntu-24.04+ runners — `glib::Error::code`
+      # private, `CookieManager::delete_all_cookies` missing, multiple-applicable
+      # items in scope. Tests-workflow doc-tests-gtk4 entry is also disabled
+      # (v0.5.851). Tracked separately; re-enable when webview.rs is fixed.
+      # Until then the Linux release tarballs ship without libperry_ui_gtk4.a,
+      # so `perry compile --target linux-gtk4` won't link on those bottles —
+      # but the perry CLI itself ships fine for all Linux users that don't
+      # use perry/ui.
+      # - name: Build UI library (Linux glibc)
+      #   if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
+      #   run: cargo build --release --target ${{ matrix.target }} -p perry-ui-gtk4
 
       - name: Build UI library (Windows)
         if: runner.os == 'Windows'
