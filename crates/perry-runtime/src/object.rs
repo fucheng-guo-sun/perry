@@ -7432,7 +7432,7 @@ unsafe fn get_native_module_constant(
                 "RTLD_NOW" => Some(libc::RTLD_NOW as f64),
                 "RTLD_GLOBAL" => Some(libc::RTLD_GLOBAL as f64),
                 "RTLD_LOCAL" => Some(libc::RTLD_LOCAL as f64),
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", target_env = "gnu"))]
                 "RTLD_DEEPBIND" => Some(libc::RTLD_DEEPBIND as f64),
                 _ => None,
             }
