@@ -615,14 +615,7 @@ jobs:
           - os: macos-14
             ui_backend: perry-ui-macos
             shell: bash
-            # Excludes beyond ui/gallery.ts: 5 doc-tests that fail on CI
-            # for reasons tracked separately —
-            # - stdlib/crypto/snippets.ts: ethers.Wallet unimplemented (#463)
-            # - ui/state/snippets.ts: TypeError: undefined.slice (real bug)
-            # - ui/tray/snippets.ts: CGSConnectionByID fails on headless CI
-            # - ui/webview/snippets.ts: WebView 1-arg HIR gap
-            # - ui/widgets/textarea.ts: TypeError: undefined.length (real bug)
-            cmd_exclude_gallery: "./scripts/run_doc_tests.sh --verbose --skip-xcompile --filter-exclude ui/gallery.ts --filter-exclude stdlib/crypto/snippets.ts --filter-exclude ui/state/snippets.ts --filter-exclude ui/tray/snippets.ts --filter-exclude ui/webview/snippets.ts --filter-exclude ui/widgets/textarea.ts"
+            cmd_exclude_gallery: "./scripts/run_doc_tests.sh --verbose --skip-xcompile --filter-exclude ui/gallery.ts"
             cmd_gallery: "./scripts/run_doc_tests.sh --verbose --skip-xcompile --filter ui/gallery.ts"
             # Repeat `--xcompile-only-target=…` per target rather than a
             # single comma-delimited value because PowerShell splits even
