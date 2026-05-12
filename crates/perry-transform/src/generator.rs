@@ -2955,10 +2955,7 @@ fn rewrite_yield_to_await_in_stmt(stmt: &mut Stmt) {
 
 fn rewrite_yield_to_await_in_expr(expr: &mut Expr) {
     if let Expr::Yield { value, .. } = expr {
-        let inner = value
-            .take()
-            .map(|b| *b)
-            .unwrap_or(Expr::Undefined);
+        let inner = value.take().map(|b| *b).unwrap_or(Expr::Undefined);
         let mut new_inner = inner;
         rewrite_yield_to_await_in_expr(&mut new_inner);
         *expr = Expr::Await(Box::new(new_inner));
