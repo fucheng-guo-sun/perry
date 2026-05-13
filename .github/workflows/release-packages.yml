@@ -681,6 +681,18 @@ jobs:
           for lib in libperry_runtime.a libperry_stdlib.a libperry_ui_gtk4.a; do
             if [ -f "staging/$lib" ]; then
               cp "staging/$lib" "${PKG}/usr/lib/perry/"
+              # Strip DWARF debug info but keep the symbol table.
+              # `strip = false` in [profile.release.package.perry-*]
+              # preserves the #[no_mangle] symbols perry-codegen needs
+              # at link time — but it also keeps multi-MB of DWARF that
+              # users don't need. `--strip-debug` removes the debug
+              # sections without touching .text / symbols.
+              #
+              # v0.5.891 fix: amd64 .deb crossed GitHub's 100 MB git
+              # push limit at v0.5.890. Strip drops ~30-50% off each
+              # .a, keeping the .deb under 100 MB so the apt-repo
+              # push doesn't reject.
+              strip --strip-debug "${PKG}/usr/lib/perry/$lib" || true
             fi
           done
 
