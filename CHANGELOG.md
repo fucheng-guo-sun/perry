@@ -2,6 +2,8 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.945 — hotfix: resolve stray Cargo.toml + CLAUDE.md conflict markers from #903 squash-merge that left the workspace unbuildable (`cargo metadata` errored with `key with no value, expected =` at Cargo.toml:193). Direct-push admin hotfix; no code change.
+
 ## v0.5.944 — fix(hir+cli): #901 — two same-file default imports no longer collide on the literal `"default"` key
 
 **Symptom.** Pino's CJS-bundle module-init phase threw `TypeError: Cannot read properties of undefined (reading 'ASC')` at v0.5.941. The minimal repro is two `import X from "./a"; import Y from "./b"` in the same `.ts` file, where each source has `export default <obj>`: at runtime `X.value` and `Y.value` BOTH printed `Y`'s value (the second default's value — its module's prefix overwrote the first under the shared key in `import_function_prefixes`).
