@@ -29,3 +29,4 @@ pub mod types;
 pub mod update;
 pub mod updater;
 pub mod verify;
+pub mod widget;
