@@ -6546,10 +6546,9 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
             // Fill in default arguments if callee is a known function
             let mut args = args;
             if let Expr::FuncRef(func_id) = &callee_expr {
-                if let Some((defaults, param_ids, rest_idx)) = ctx.lookup_func_defaults(*func_id) {
-                    let defaults = defaults.to_vec();
-                    let param_ids = param_ids.to_vec();
-                    let num_provided = args.len();
+                if let Some((defaults, param_ids, rest_idx, has_synth_args)) =
+                    ctx.lookup_func_defaults(*func_id)
+                {
                     // Refs #653 followup to v0.5.789's #645 fix: stop the
                     // default-fill loop BEFORE the rest param's slot. Pushing
                     // `Expr::Undefined` for a rest param turns
@@ -6558,46 +6557,72 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     // `args[0] = undefined`. Real semantics: trailing positional
                     // args get bundled into the rest array at runtime; missing
                     // ones produce an empty array, NOT a single-undefined array.
-                    let fill_end = match rest_idx {
-                        Some(i) => i,
-                        None => defaults.len(),
-                    };
-                    // Build substitution map: callee param LocalId -> actual arg expression
-                    // For provided args, map to the caller's arg expression
-                    // For defaulted args, map to the expanded default (built incrementally)
-                    let mut param_map: Vec<(LocalId, Expr)> = Vec::new();
-                    for i in 0..param_ids.len().min(num_provided) {
-                        param_map.push((param_ids[i], args[i].clone()));
-                    }
-                    // Fill in missing arguments with their defaults, substituting
-                    // any parameter references to use the caller's scope.
                     //
-                    // Refs #645 deeper followup / #488 drizzle-sqlite: push
-                    // something for EVERY slot from num_provided..defaults.len(),
-                    // even when defaults[i] is None — otherwise a later Some
-                    // default lands at the wrong positional slot. Drizzle's
-                    // tableBase(name, columns, extraConfig, schema?, baseName=name)
-                    // is the load-bearing repro: 3-arg call, slot 3 (schema)
-                    // has None default and slot 4 (baseName) has Some(name).
-                    // The pre-fix loop skipped slot 3 and pushed baseName's
-                    // default into slot 3 — so schema got the table name and
-                    // rendered SQL became `"users"."users"` instead of `"users"`.
-                    for i in num_provided..fill_end {
-                        let substituted = if let Some(default_expr) = &defaults[i] {
-                            LoweringContext::substitute_param_refs_in_default(
-                                default_expr,
-                                &param_map,
-                            )
-                        } else {
-                            Expr::Undefined
+                    // Issue #1069: synthetic-`arguments` rest param. For
+                    // `function f(a, b) { arguments }`, the HIR appends a
+                    // hidden `arguments`-named rest param so the body can
+                    // reference it. The codegen call-site synth-args path
+                    // (`crates/perry-codegen/src/lower_call.rs:974`) uses
+                    // `args.len()` to size the runtime `arguments` array
+                    // AND pads missing fixed-param slots with `undefined`
+                    // itself, so the body's `if (param === undefined) {
+                    // param = default; }` prefix applies user defaults
+                    // there. If we let the loop below push Undefined into
+                    // the fixed-param slots, `args.len()` inflates to the
+                    // declared fixed-param count and `arguments.length`
+                    // reads as the declared count regardless of the
+                    // caller's actual arg count — `f()` reports
+                    // `arguments.length === 2` instead of `0`. Skip the
+                    // fill loop entirely for synth-args callees.
+                    if has_synth_args {
+                        // Skip the default-fill loop. Codegen handles the
+                        // fixed-param padding and the body's default-fill
+                        // statements substitute user defaults.
+                    } else {
+                        let defaults = defaults.to_vec();
+                        let param_ids = param_ids.to_vec();
+                        let num_provided = args.len();
+                        let fill_end = match rest_idx {
+                            Some(i) => i,
+                            None => defaults.len(),
                         };
-                        // Add this expanded default to the map so later defaults
-                        // can reference it (e.g., c = b where b was also defaulted)
-                        if i < param_ids.len() {
-                            param_map.push((param_ids[i], substituted.clone()));
+                        // Build substitution map: callee param LocalId -> actual arg expression
+                        // For provided args, map to the caller's arg expression
+                        // For defaulted args, map to the expanded default (built incrementally)
+                        let mut param_map: Vec<(LocalId, Expr)> = Vec::new();
+                        for i in 0..param_ids.len().min(num_provided) {
+                            param_map.push((param_ids[i], args[i].clone()));
                         }
-                        args.push(substituted);
-                    }
+                        // Fill in missing arguments with their defaults, substituting
+                        // any parameter references to use the caller's scope.
+                        //
+                        // Refs #645 deeper followup / #488 drizzle-sqlite: push
+                        // something for EVERY slot from num_provided..defaults.len(),
+                        // even when defaults[i] is None — otherwise a later Some
+                        // default lands at the wrong positional slot. Drizzle's
+                        // tableBase(name, columns, extraConfig, schema?, baseName=name)
+                        // is the load-bearing repro: 3-arg call, slot 3 (schema)
+                        // has None default and slot 4 (baseName) has Some(name).
+                        // The pre-fix loop skipped slot 3 and pushed baseName's
+                        // default into slot 3 — so schema got the table name and
+                        // rendered SQL became `"users"."users"` instead of `"users"`.
+                        for i in num_provided..fill_end {
+                            let substituted = if let Some(default_expr) = &defaults[i] {
+                                LoweringContext::substitute_param_refs_in_default(
+                                    default_expr,
+                                    &param_map,
+                                )
+                            } else {
+                                Expr::Undefined
+                            };
+                            // Add this expanded default to the map so later defaults
+                            // can reference it (e.g., c = b where b was also defaulted)
+                            if i < param_ids.len() {
+                                param_map.push((param_ids[i], substituted.clone()));
+                            }
+                            args.push(substituted);
+                        }
+                    } // end of !has_synth_args branch
                 }
             }
 
