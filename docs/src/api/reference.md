@@ -2,7 +2,7 @@
 
 This page is auto-generated from Perry's compile-time API manifest (`perry-api-manifest::API_MANIFEST`). It is the source of truth for what `perry compile` accepts; references to symbols not listed here produce `R005 UnimplementedApi` (issue #463). Stubs (#464) are flagged ⚠ — they link cleanly but no-op at runtime on the chosen target.
 
-Total: 992 entries across 76 modules.
+Total: 998 entries across 76 modules.
 
 ## Modules
 
@@ -183,10 +183,19 @@ Total: 992 entries across 76 modules.
 
 - `alloc` — module
 - `allocUnsafe` — module
+- `allocUnsafeSlow` — module
 - `byteLength` — module
 - `concat` — module
 - `from` — module
 - `isBuffer` — module
+- `isEncoding` — module
+- `of` — module
+
+### Properties
+
+- `constants`
+- `kMaxLength`
+- `kStringMaxLength`
 
 ## `cheerio`
 

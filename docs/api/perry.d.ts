@@ -1,6 +1,6 @@
 // Auto-generated from Perry's API manifest (#465). Do not edit by hand.
 // Source: perry-api-manifest::API_MANIFEST
-// Coverage: 992 entries across 76 modules
+// Coverage: 998 entries across 76 modules
 
 declare module "@perryts/pdf" {
   /** stdlib */
@@ -82,9 +82,17 @@ declare module "buffer" {
   /** stdlib */
   export class Buffer { [key: string]: any; }
   /** stdlib */
+  export const constants: any;
+  /** stdlib */
+  export const kMaxLength: any;
+  /** stdlib */
+  export const kStringMaxLength: any;
+  /** stdlib */
   export function alloc(...args: any[]): any;
   /** stdlib */
   export function allocUnsafe(...args: any[]): any;
+  /** stdlib */
+  export function allocUnsafeSlow(...args: any[]): any;
   /** stdlib */
   export function byteLength(...args: any[]): any;
   /** stdlib */
@@ -93,6 +101,10 @@ declare module "buffer" {
   export function from(...args: any[]): any;
   /** stdlib */
   export function isBuffer(...args: any[]): any;
+  /** stdlib */
+  export function isEncoding(...args: any[]): any;
+  /** stdlib */
+  export function of(...args: any[]): any;
 }
 
 declare module "cheerio" {
