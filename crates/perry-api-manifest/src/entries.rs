@@ -2282,6 +2282,14 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     // #1335: returns `fn` unchanged today; the spec'd "wraps fn to
     // record a 'function' timeline entry" piece isn't recorded yet.
     method("perf_hooks", "timerify", false, None),
+    // #1336: monitorEventLoopDelay() / createHistogram() return a
+    // Histogram-shaped object whose method/property reads route
+    // through the internal `perf_histogram` namespace (not listed in
+    // NATIVE_MODULES because users never import it — they receive the
+    // object as a return value, same pattern as `perf_observer`).
+    // Stub — every stat reads 0 and the mutators are no-ops.
+    method("perf_hooks", "monitorEventLoopDelay", false, None),
+    method("perf_hooks", "createHistogram", false, None),
     property("perf_hooks", "timeOrigin"),
     property("perf_hooks", "nodeTiming"),
     property("perf_hooks", "performance"),
