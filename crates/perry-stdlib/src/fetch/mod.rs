@@ -12,6 +12,12 @@ use std::sync::Mutex;
 
 use crate::common::async_bridge::{queue_promise_resolution, spawn};
 
+// Web Fetch `Headers` FFI — split out to keep this file under the 2,000-line
+// lint gate (#1649). The child module sees mod.rs's private items via its
+// `use super::*`.
+mod headers;
+pub use headers::*;
+
 // Response handle storage
 lazy_static::lazy_static! {
     static ref FETCH_RESPONSES: Mutex<HashMap<usize, FetchResponse>> = Mutex::new(HashMap::new());
@@ -61,6 +67,12 @@ struct FetchResponse {
     /// the resulting registry id; subsequent reads of `.headers` return
     /// the same id (preserves `res.headers === res.headers`).
     cached_headers_id: Option<usize>,
+    /// Cached ReadableStream handle id for `response.body`, allocated on
+    /// first read so repeat `.body` reads return the same stream (the spec
+    /// requires a stable `ReadableStream`; getting a fresh unlocked stream
+    /// each time would silently un-lock a reader). None for an empty body —
+    /// `Response.body` is `ReadableStream | null` (#1650).
+    cached_body_stream_id: Option<usize>,
 }
 
 /// Extract the registry id from a Web Fetch handle f64 value.
@@ -186,6 +198,7 @@ pub unsafe extern "C" fn js_fetch_get(url_ptr: *const StringHeader) -> *mut perr
                         headers,
                         body,
                         cached_headers_id: None,
+                        cached_body_stream_id: None,
                     },
                 );
 
@@ -263,6 +276,7 @@ pub unsafe extern "C" fn js_fetch_get_with_auth(
                         headers,
                         body,
                         cached_headers_id: None,
+                        cached_body_stream_id: None,
                     },
                 );
 
@@ -342,6 +356,7 @@ pub unsafe extern "C" fn js_fetch_post_with_auth(
                         headers,
                         body,
                         cached_headers_id: None,
+                        cached_body_stream_id: None,
                     },
                 );
 
@@ -424,6 +439,7 @@ pub unsafe extern "C" fn js_fetch_post(
                         headers,
                         body,
                         cached_headers_id: None,
+                        cached_body_stream_id: None,
                     },
                 );
 
@@ -525,6 +541,7 @@ pub unsafe extern "C" fn js_fetch_with_options(
                         headers,
                         body,
                         cached_headers_id: None,
+                        cached_body_stream_id: None,
                     },
                 );
 
@@ -926,6 +943,21 @@ impl HeadersStore {
         }
         self.entries.push((lk, value.to_string()));
     }
+    /// Web Fetch `Headers.append` — adds a value without clobbering an existing
+    /// one. Per spec, repeated values for the same name are combined with
+    /// `", "` so `get` returns the joined string (e.g. multiple `Set-Cookie`-
+    /// style appends become `a, b`).
+    fn append(&mut self, key: &str, value: &str) {
+        let lk = key.to_ascii_lowercase();
+        for entry in self.entries.iter_mut() {
+            if entry.0 == lk {
+                entry.1.push_str(", ");
+                entry.1.push_str(value);
+                return;
+            }
+        }
+        self.entries.push((lk, value.to_string()));
+    }
     fn get(&self, key: &str) -> Option<&str> {
         let lk = key.to_ascii_lowercase();
         self.entries
@@ -955,8 +987,11 @@ struct RequestRecord {
     url: String,
     method: String,
     body: Option<String>,
-    #[allow(dead_code)]
     headers: HeadersStore,
+    /// Cached Headers handle id, allocated on first `request.headers` read so
+    /// repeat reads return the same handle (preserves `req.headers ===
+    /// req.headers`). Mirrors `FetchResponse::cached_headers_id` (#1649).
+    cached_headers_id: Option<usize>,
 }
 
 lazy_static::lazy_static! {
@@ -1021,168 +1056,15 @@ fn alloc_response(status: u16, status_text: String, headers: HeadersStore, body:
             headers: hdr_map,
             body,
             cached_headers_id: None,
+            cached_body_stream_id: None,
         },
     );
     id
 }
 
 // ----------------- Headers FFI -----------------
-
-/// new Headers() — returns NaN-boxed POINTER_TAG handle as f64.
-/// See `handle_to_f64` / `handle_id` for the encoding contract.
-#[no_mangle]
-pub extern "C" fn js_headers_new() -> f64 {
-    handle_to_f64(alloc_headers(HeadersStore::default()))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn js_headers_set(
-    handle: f64,
-    key_ptr: *const StringHeader,
-    value_ptr: *const StringHeader,
-) -> f64 {
-    let id = handle_id(handle);
-    let key = string_from_header(key_ptr).unwrap_or_default();
-    let value = string_from_header(value_ptr).unwrap_or_default();
-    if let Some(store) = HEADERS_REGISTRY.lock().unwrap().get_mut(&id) {
-        store.set(&key, &value);
-    }
-    f64::from_bits(TAG_UNDEFINED)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn js_headers_get(
-    handle: f64,
-    key_ptr: *const StringHeader,
-) -> *mut StringHeader {
-    let id = handle_id(handle);
-    let key = match string_from_header(key_ptr) {
-        Some(k) => k,
-        None => return std::ptr::null_mut(),
-    };
-    if let Some(store) = HEADERS_REGISTRY.lock().unwrap().get(&id) {
-        if let Some(v) = store.get(&key) {
-            return js_string_from_bytes(v.as_ptr(), v.len() as u32);
-        }
-    }
-    std::ptr::null_mut()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn js_headers_has(handle: f64, key_ptr: *const StringHeader) -> f64 {
-    let id = handle_id(handle);
-    let key = match string_from_header(key_ptr) {
-        Some(k) => k,
-        None => return f64::from_bits(TAG_FALSE),
-    };
-    if let Some(store) = HEADERS_REGISTRY.lock().unwrap().get(&id) {
-        if store.has(&key) {
-            return f64::from_bits(TAG_TRUE);
-        }
-    }
-    f64::from_bits(TAG_FALSE)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn js_headers_delete(handle: f64, key_ptr: *const StringHeader) -> f64 {
-    let id = handle_id(handle);
-    let key = string_from_header(key_ptr).unwrap_or_default();
-    if let Some(store) = HEADERS_REGISTRY.lock().unwrap().get_mut(&id) {
-        store.delete(&key);
-    }
-    f64::from_bits(TAG_UNDEFINED)
-}
-
-/// Snapshot the headers store sorted by key (WHATWG spec: iteration order is
-/// sorted lexicographically by name, regardless of insertion order). Used by
-/// `forEach`, `keys`, `values`, `entries`, and `Symbol.iterator` so all five
-/// surfaces agree byte-for-byte (refs #576).
-fn snapshot_sorted(handle: f64) -> Vec<(String, String)> {
-    let id = handle_id(handle);
-    let mut entries: Vec<(String, String)> = match HEADERS_REGISTRY.lock().unwrap().get(&id) {
-        Some(s) => s.entries.clone(),
-        None => return Vec::new(),
-    };
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    entries
-}
-
-#[no_mangle]
-pub extern "C" fn js_headers_for_each(handle: f64, callback: f64) -> f64 {
-    let entries = snapshot_sorted(handle);
-    // Extract closure pointer from NaN-boxed callback
-    let cb_bits = callback.to_bits();
-    let cb_ptr = (cb_bits & 0x0000_FFFF_FFFF_FFFF) as i64;
-    if cb_ptr == 0 {
-        return f64::from_bits(TAG_UNDEFINED);
-    }
-    let closure = cb_ptr as *const perry_runtime::ClosureHeader;
-    for (k, v) in entries {
-        let v_ptr = js_string_from_bytes(v.as_ptr(), v.len() as u32);
-        let k_ptr = js_string_from_bytes(k.as_ptr(), k.len() as u32);
-        let v_nan = JSValue::string_ptr(v_ptr).bits();
-        let k_nan = JSValue::string_ptr(k_ptr).bits();
-        perry_runtime::js_closure_call2(closure, f64::from_bits(v_nan), f64::from_bits(k_nan));
-    }
-    f64::from_bits(TAG_UNDEFINED)
-}
-
-const POINTER_TAG: u64 = 0x7FFD_0000_0000_0000;
-
-#[inline]
-fn nanbox_array_pointer(arr: *mut perry_runtime::ArrayHeader) -> f64 {
-    let bits = POINTER_TAG | ((arr as u64) & 0x0000_FFFF_FFFF_FFFF);
-    f64::from_bits(bits)
-}
-
-/// `headers.keys()` — returns a sorted-by-key array of header names. The
-/// returned array is itself iterable, so `for (const k of headers.keys())`,
-/// spread, and `Array.from` all work via the array's existing `Symbol.iterator`
-/// (refs #576).
-#[no_mangle]
-pub extern "C" fn js_headers_keys(handle: f64) -> f64 {
-    let entries = snapshot_sorted(handle);
-    let mut arr = perry_runtime::js_array_alloc(entries.len() as u32);
-    for (k, _) in entries {
-        let k_ptr = js_string_from_bytes(k.as_ptr(), k.len() as u32);
-        let k_nan = JSValue::string_ptr(k_ptr).bits();
-        arr = perry_runtime::js_array_push_f64(arr, f64::from_bits(k_nan));
-    }
-    nanbox_array_pointer(arr)
-}
-
-/// `headers.values()` — sorted-by-key array of header values. See `js_headers_keys`.
-#[no_mangle]
-pub extern "C" fn js_headers_values(handle: f64) -> f64 {
-    let entries = snapshot_sorted(handle);
-    let mut arr = perry_runtime::js_array_alloc(entries.len() as u32);
-    for (_, v) in entries {
-        let v_ptr = js_string_from_bytes(v.as_ptr(), v.len() as u32);
-        let v_nan = JSValue::string_ptr(v_ptr).bits();
-        arr = perry_runtime::js_array_push_f64(arr, f64::from_bits(v_nan));
-    }
-    nanbox_array_pointer(arr)
-}
-
-/// `headers.entries()` — sorted-by-key array of `[key, value]` pair arrays.
-/// `for (const [k, v] of headers.entries())` and `for (const [k, v] of h)` both
-/// route here (the latter via the `Symbol.iterator` alias, see #576).
-#[no_mangle]
-pub extern "C" fn js_headers_entries(handle: f64) -> f64 {
-    let entries = snapshot_sorted(handle);
-    let mut arr = perry_runtime::js_array_alloc(entries.len() as u32);
-    for (k, v) in entries {
-        let k_ptr = js_string_from_bytes(k.as_ptr(), k.len() as u32);
-        let v_ptr = js_string_from_bytes(v.as_ptr(), v.len() as u32);
-        let k_nan = JSValue::string_ptr(k_ptr).bits();
-        let v_nan = JSValue::string_ptr(v_ptr).bits();
-        let mut pair = perry_runtime::js_array_alloc(2);
-        pair = perry_runtime::js_array_push_f64(pair, f64::from_bits(k_nan));
-        pair = perry_runtime::js_array_push_f64(pair, f64::from_bits(v_nan));
-        arr = perry_runtime::js_array_push_f64(arr, nanbox_array_pointer(pair));
-    }
-    nanbox_array_pointer(arr)
-}
+// Moved to the `headers` sub-module (#1649 pushed fetch.rs past the 2,000-line
+// lint gate; mirrors the earlier fetch_blob.rs extraction). Re-exported below.
 
 // ----------------- Response FFI (constructor + extra methods) -----------------
 
@@ -1265,6 +1147,7 @@ pub extern "C" fn js_response_clone(handle: f64) -> f64 {
             headers: resp.headers.clone(),
             body: resp.body.clone(),
             cached_headers_id: None,
+            cached_body_stream_id: None,
         })
     };
     if let Some(new_resp) = cloned {
@@ -1532,6 +1415,17 @@ pub fn response_bytes_clone(resp_id: usize) -> Option<Vec<u8>> {
 /// property reads on a Response handle whose id collides with a Request id.
 #[doc(hidden)]
 pub fn dispatch_request_property(req_id: usize, prop: &str) -> Option<f64> {
+    // `request.headers` — lazily allocate a Headers registry entry backed by
+    // the request's stored header map and cache the id so repeat reads return
+    // the same handle (`req.headers === req.headers`). Mirrors the Response
+    // path. Without this arm `.headers` fell through to a numeric handle and
+    // `req.headers.get(...)` threw "(number).get is not a function" — the
+    // root cause of every Hono adapter crashing on the first request (#1649).
+    if prop == "headers" {
+        // Membership check first so a non-Request id falls through.
+        REQUEST_REGISTRY.lock().unwrap().get(&req_id)?;
+        return Some(request_headers_handle(req_id));
+    }
     let guard = REQUEST_REGISTRY.lock().unwrap();
     let req = guard.get(&req_id)?;
     let bits = match prop {
@@ -1592,6 +1486,19 @@ pub fn dispatch_response_property(resp_id: usize, prop: &str) -> Option<f64> {
             }
         };
         return Some(handle_to_f64(id));
+    }
+    // `response.body` — `ReadableStream | null` per the Web Fetch spec.
+    // Returns a NaN-boxed (POINTER_TAG) single-chunk ReadableStream handle
+    // over the buffered body so `typeof res.body === 'object'` and
+    // `res.body.getReader()` route through the untyped stream dispatch
+    // (see dispatch_readable_stream_method). `null` when the response was
+    // constructed with no body. Cached so `.body` is stable across reads
+    // (the spec mandates a single stream; a fresh stream each call would
+    // silently unlock a held reader) (#1650).
+    if prop == "body" {
+        // Membership check first so a non-Response id falls through.
+        FETCH_RESPONSES.lock().unwrap().get(&resp_id)?;
+        return Some(response_body_stream(resp_id));
     }
     let guard = FETCH_RESPONSES.lock().unwrap();
     let resp = guard.get(&resp_id)?;
@@ -1717,12 +1624,20 @@ pub fn dispatch_headers_method(headers_id: usize, method: &str, args: &[f64]) ->
                 JSValue::string_ptr(js_headers_get(h_f64, str_arg(0))).bits(),
             )),
             "set" => Some(js_headers_set(h_f64, str_arg(0), str_arg(1))),
+            "append" => Some(js_headers_append(h_f64, str_arg(0), str_arg(1))),
             "has" => Some(js_headers_has(h_f64, str_arg(0))),
             "delete" => Some(js_headers_delete(h_f64, str_arg(0))),
             "forEach" => {
                 let cb = args.first().copied().unwrap_or(f64::NAN);
                 Some(js_headers_for_each(h_f64, cb))
             }
+            // The iterator helpers each return a (sorted) JS array, which is
+            // itself iterable — `for (const [k,v] of req.headers.entries())`
+            // and `[...req.headers.keys()]` both work off the untyped path
+            // Hono's type-stripped JS takes (#1649).
+            "keys" => Some(js_headers_keys(h_f64)),
+            "values" => Some(js_headers_values(h_f64)),
+            "entries" => Some(js_headers_entries(h_f64)),
             _ => None,
         }
     }
@@ -1758,19 +1673,47 @@ pub unsafe extern "C" fn js_blob_stream(handle: f64) -> f64 {
     crate::streams::alloc_readable_from_bytes(bytes) as f64
 }
 
-/// `response.body` — returns a single-chunk ReadableStream handle over
-/// the buffered response body. Returns `null`-tagged f64 for an unknown
-/// response handle (matching the spec's `Response.body: ReadableStream
-/// | null`).
+/// Shared `response.body` resolver used by both the typed codegen path
+/// (`js_response_body`) and the untyped property dispatcher
+/// (`dispatch_response_property`). Returns a single-chunk ReadableStream
+/// handle over the buffered body, or `null` when the response carries no
+/// body (`Response.body: ReadableStream | null`). The handle is a raw
+/// `id as f64` in the shared Web Streams id range (#1545), so the runtime
+/// machinery answers `typeof` (`"object"`), `instanceof ReadableStream`,
+/// and `.getReader()` / `reader.read()`. The stream id is cached on the
+/// FetchResponse so `.body` is stable across reads — the spec mandates a
+/// single stream, and a fresh one each call would silently unlock a held
+/// reader (#1650).
+fn response_body_stream(resp_id: usize) -> f64 {
+    if let Some(id) = FETCH_RESPONSES
+        .lock()
+        .unwrap()
+        .get(&resp_id)
+        .and_then(|r| r.cached_body_stream_id)
+    {
+        return id as f64;
+    }
+    let bytes = match FETCH_RESPONSES.lock().unwrap().get(&resp_id) {
+        Some(r) => r.body.clone(),
+        None => return f64::from_bits(TAG_NULL),
+    };
+    if bytes.is_empty() {
+        return f64::from_bits(TAG_NULL);
+    }
+    let stream_id = crate::streams::alloc_readable_from_bytes(bytes);
+    if let Some(resp) = FETCH_RESPONSES.lock().unwrap().get_mut(&resp_id) {
+        resp.cached_body_stream_id = Some(stream_id);
+    }
+    stream_id as f64
+}
+
+/// `response.body` — `ReadableStream | null` per the Web Fetch spec. The
+/// returned handle is a raw `id as f64` in the shared Web Streams id range
+/// so the #1545 runtime machinery answers `typeof`/`instanceof`/method
+/// dispatch; `null` when the response has no body. (#1650)
 #[no_mangle]
 pub unsafe extern "C" fn js_response_body(handle: f64) -> f64 {
-    let id = handle_id(handle);
-    match response_bytes_clone(id) {
-        // Streams are still a Phase 2 subsystem — keep their handle in the
-        // legacy raw-float form so streams.rs's accessors round-trip.
-        Some(bytes) => crate::streams::alloc_readable_from_bytes(bytes) as f64,
-        None => f64::from_bits(TAG_NULL),
-    }
+    response_body_stream(handle_id(handle))
 }
 
 /// Response.json(value) — static method. Allocates a Response with JSON-stringified body
@@ -1854,9 +1797,48 @@ pub unsafe extern "C" fn js_request_new(
             method,
             body,
             headers,
+            cached_headers_id: None,
         },
     );
     handle_to_f64(id)
+}
+
+/// Shared `request.headers` resolver used by both the typed codegen path
+/// (`js_request_get_headers`) and the untyped property dispatcher. Lazily
+/// allocates a Headers registry entry from the request's stored header map
+/// and caches the id so `req.headers === req.headers`. Caller must have
+/// already verified `req_id` is a live Request. (#1649)
+fn request_headers_handle(req_id: usize) -> f64 {
+    if let Some(id) = REQUEST_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&req_id)
+        .and_then(|r| r.cached_headers_id)
+    {
+        return handle_to_f64(id);
+    }
+    let store = match REQUEST_REGISTRY.lock().unwrap().get(&req_id) {
+        Some(r) => r.headers.clone(),
+        None => return f64::from_bits(TAG_UNDEFINED),
+    };
+    let new_id = alloc_headers(store);
+    if let Some(req) = REQUEST_REGISTRY.lock().unwrap().get_mut(&req_id) {
+        req.cached_headers_id = Some(new_id);
+    }
+    handle_to_f64(new_id)
+}
+
+/// `request.headers` — returns a NaN-boxed `Headers` handle (Web Fetch spec).
+/// Without this the typed codegen path fell through to a raw numeric handle
+/// and `req.headers.get(...)` threw "(number).get is not a function", which
+/// broke every Hono adapter on the first request (#1649).
+#[no_mangle]
+pub extern "C" fn js_request_get_headers(handle: f64) -> f64 {
+    let id = handle_id(handle);
+    if REQUEST_REGISTRY.lock().unwrap().get(&id).is_none() {
+        return f64::from_bits(TAG_UNDEFINED);
+    }
+    request_headers_handle(id)
 }
 
 #[no_mangle]
