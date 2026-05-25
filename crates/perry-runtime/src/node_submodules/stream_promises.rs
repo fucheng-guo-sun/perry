@@ -79,7 +79,7 @@ pub(crate) fn get_object_property(value: f64, name: &[u8]) -> Option<f64> {
     }
 }
 
-fn options_signal(options: f64) -> Option<f64> {
+pub(crate) fn options_signal(options: f64) -> Option<f64> {
     let jsval = JSValue::from_bits(options.to_bits());
     if jsval.is_undefined() || jsval.is_null() {
         return None;
@@ -87,18 +87,19 @@ fn options_signal(options: f64) -> Option<f64> {
     get_object_property(options, b"signal")
 }
 
-fn signal_aborted(signal: f64) -> bool {
+pub(crate) fn signal_aborted(signal: f64) -> bool {
     get_object_property(signal, b"aborted").is_some_and(|v| crate::value::js_is_truthy(v) != 0)
 }
 
 pub(crate) fn abort_error_value() -> f64 {
-    let msg = b"AbortError";
-    let header = js_string_from_bytes(msg.as_ptr(), msg.len() as u32);
-    let err = crate::error::js_error_new_with_message(header);
+    let msg = b"The operation was aborted";
+    let msg_ptr = js_string_from_bytes(msg.as_ptr(), msg.len() as u32);
+    let err = crate::error::js_error_new_with_name_message(b"AbortError", msg_ptr);
+    crate::node_submodules::register_error_code_pub(msg_ptr, "ABORT_ERR");
     value_from_ptr(err as *const u8)
 }
 
-fn signal_reason(signal: f64) -> f64 {
+pub(crate) fn signal_reason(signal: f64) -> f64 {
     match get_object_property(signal, b"reason") {
         Some(reason) if !JSValue::from_bits(reason.to_bits()).is_undefined() => reason,
         _ => abort_error_value(),
@@ -118,7 +119,7 @@ fn promise_value_from_ptr(promise: *mut crate::promise::Promise) -> f64 {
     value_from_ptr(promise as *const u8)
 }
 
-fn register_abort_listener(signal: f64, promise: *mut crate::promise::Promise) {
+pub(crate) fn register_abort_listener(signal: f64, promise: *mut crate::promise::Promise) {
     let Some(signal_obj) = object_ptr_from_value(signal) else {
         return;
     };
