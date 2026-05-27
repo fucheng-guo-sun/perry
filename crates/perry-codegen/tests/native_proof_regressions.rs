@@ -255,6 +255,41 @@ fn pod_type(fields: &[(&str, Type)]) -> Type {
     }
 }
 
+fn pod_view_type(record_ty: Type) -> Type {
+    Type::Generic {
+        base: "PerryPodView".to_string(),
+        type_args: vec![record_ty],
+    }
+}
+
+fn manifest_pod_abi(
+    name: Option<&str>,
+    fields: Vec<(&str, perry_api_manifest::NativeAbiType)>,
+) -> perry_api_manifest::NativeAbiType {
+    perry_api_manifest::NativeAbiType::Pod(perry_api_manifest::NativePodAbi {
+        name: name.map(str::to_string),
+        fields: fields
+            .into_iter()
+            .map(|(name, ty)| perry_api_manifest::NativePodFieldAbi {
+                name: name.to_string(),
+                ty,
+            })
+            .collect(),
+    })
+}
+
+fn manifest_pod_view_abi(
+    name: Option<&str>,
+    fields: Vec<(&str, perry_api_manifest::NativeAbiType)>,
+) -> perry_api_manifest::NativeAbiType {
+    match manifest_pod_abi(name, fields) {
+        perry_api_manifest::NativeAbiType::Pod(pod) => {
+            perry_api_manifest::NativeAbiType::PodAndCount(pod)
+        }
+        other => unreachable!("manifest_pod_abi must return pod, got {other:?}"),
+    }
+}
+
 fn pod_let(id: u32, name: &str, ty: Type, fields: Vec<(&str, Expr)>) -> Stmt {
     Stmt::Let {
         id,
@@ -314,6 +349,27 @@ fn native_arena_owner_let(id: u32, name: &str, byte_length: Expr, mutable: bool)
         ty: Type::Any,
         mutable,
         init: Some(Expr::NativeArenaAlloc(Box::new(byte_length))),
+    }
+}
+
+fn native_pod_view_let(
+    id: u32,
+    name: &str,
+    ty: Type,
+    owner_id: u32,
+    byte_offset: Expr,
+    count: Expr,
+) -> Stmt {
+    Stmt::Let {
+        id,
+        name: name.to_string(),
+        ty,
+        mutable: false,
+        init: Some(Expr::NativePodView {
+            owner: Box::new(local(owner_id)),
+            byte_offset: Box::new(byte_offset),
+            count: Box::new(count),
+        }),
     }
 }
 
@@ -548,7 +604,7 @@ fn artifact_schema_v6_records_consumed_native_facts_for_buffer_region() {
     ];
 
     let artifact = compile_artifact_json("artifact_positive_buffer_region.ts", body);
-    assert_eq!(artifact["schema_version"], 10);
+    assert_eq!(artifact["schema_version"], 11);
     let records = artifact["records"].as_array().unwrap();
     assert!(
         records.iter().any(|record| {
@@ -581,7 +637,7 @@ fn artifact_schema_v6_records_rejected_facts_for_buffer_fallback() {
     ];
 
     let artifact = compile_artifact_json("artifact_rejected_buffer_region.ts", body);
-    assert_eq!(artifact["schema_version"], 10);
+    assert_eq!(artifact["schema_version"], 11);
     let records = artifact["records"].as_array().unwrap();
     assert!(
         records.iter().any(|record| {
@@ -627,7 +683,7 @@ fn artifact_schema_v6_records_c_layout_pod_manifest() {
     ];
 
     let artifact = compile_artifact_json("artifact_c_layout_pod_record.ts", body);
-    assert_eq!(artifact["schema_version"], 10);
+    assert_eq!(artifact["schema_version"], 11);
     assert_eq!(artifact["summary"]["pod_layout_count"], 1);
     assert_eq!(artifact["summary"]["pod_record_count"], 1);
     let layouts = artifact["pod_layouts"].as_array().unwrap();
@@ -699,7 +755,7 @@ fn artifact_schema_v6_records_pod_dynamic_write_fallback() {
     ];
 
     let artifact = compile_artifact_json("artifact_c_layout_pod_dynamic_write.ts", body);
-    assert_eq!(artifact["schema_version"], 10);
+    assert_eq!(artifact["schema_version"], 11);
     assert!(
         artifact["records"]
             .as_array()
@@ -746,7 +802,7 @@ fn artifact_schema_v8_rejects_inexact_pod_initializer_values() {
     ];
 
     let artifact = compile_artifact_json("artifact_c_layout_pod_init_reject.ts", body);
-    assert_eq!(artifact["schema_version"], 10);
+    assert_eq!(artifact["schema_version"], 11);
     assert_eq!(artifact["summary"]["pod_layout_count"], 0);
     assert_eq!(artifact["summary"]["pod_record_count"], 0);
     assert!(artifact["pod_layouts"].as_array().unwrap().is_empty());
@@ -797,7 +853,7 @@ fn artifact_schema_v6_records_pod_pointerful_field_rejection() {
     ];
 
     let artifact = compile_artifact_json("artifact_c_layout_pod_reject.ts", body);
-    assert_eq!(artifact["schema_version"], 10);
+    assert_eq!(artifact["schema_version"], 11);
     assert_eq!(artifact["summary"]["pod_layout_count"], 0);
     assert!(artifact["pod_layouts"].as_array().unwrap().is_empty());
     assert!(
@@ -1121,9 +1177,18 @@ fn native_library_manifest_lowercase_abi_params_emit_c_abi_signature() {
     let ir = String::from_utf8(compile_module(&module, opts.clone()).unwrap()).unwrap();
 
     assert!(
-        ir.contains("call i64 @js_get_string_pointer_unified")
-            && ir.contains("call ptr @js_native_buffer_data_ptr")
-            && ir.contains("call i64 @js_native_buffer_byte_len")
+        ir.contains("call i64 @js_native_abi_check_string_ptr")
+            && ir.contains("call i32 @js_native_abi_check_i32")
+            && ir.contains("call i64 @js_native_abi_check_i64")
+            && ir.contains("call i32 @js_native_abi_check_u32")
+            && ir.contains("call i64 @js_native_abi_check_u64")
+            && ir.contains("call i64 @js_native_abi_check_usize")
+            && ir.contains("call float @js_native_abi_check_f32")
+            && ir.contains("call double @js_native_abi_check_f64")
+            && ir.contains("call ptr @js_native_abi_check_buffer_data_ptr")
+            && ir.contains("call i64 @js_native_abi_check_buffer_byte_len")
+            && ir.contains("call i64 @js_native_abi_check_ptr")
+            && ir.contains("call i64 @js_native_abi_check_promise")
             && ir.contains("call i64 @js_native_handle_unwrap")
             && ir.contains("call void @native_abi_args(double")
             && ir.contains(
@@ -1163,7 +1228,39 @@ fn native_library_manifest_lowercase_abi_params_emit_c_abi_signature() {
             "expected native-library param ABI record {display}@{abi_slot_index}:\n{artifact:#}"
         );
     }
+    for (display, abi_slot_index, helper) in [
+        ("string", 1, "js_native_abi_check_string_ptr"),
+        ("bool", 2, "js_is_truthy"),
+        ("i32", 3, "js_native_abi_check_i32"),
+        ("i64", 4, "js_native_abi_check_i64"),
+        ("u32", 5, "js_native_abi_check_u32"),
+        ("u64", 6, "js_native_abi_check_u64"),
+        ("usize", 7, "js_native_abi_check_usize"),
+        ("f32", 8, "js_native_abi_check_f32"),
+        ("f64", 9, "js_native_abi_check_f64"),
+        ("buffer_len", 10, "js_native_abi_check_u32"),
+        ("buffer+len", 11, "js_native_abi_check_buffer_data_ptr"),
+        ("buffer+len", 12, "js_native_abi_check_buffer_byte_len"),
+        ("ptr", 13, "js_native_abi_check_ptr"),
+        ("handle", 14, "js_native_handle_unwrap"),
+        ("promise<jsvalue>", 15, "js_native_abi_check_promise"),
+    ] {
+        assert!(
+            records.iter().any(|record| {
+                record["expr_kind"] == "NativeLibraryParam"
+                    && record["native_abi_type"]["display"] == display
+                    && record["native_abi_type"]["abi_slot_index"] == abi_slot_index
+                    && record["native_abi_type"]["runtime_guard"]["helper"] == helper
+                    && record["materialization_reason"].is_null()
+                    && record["native_value_state"] == "region_local"
+            }),
+            "expected native-library param runtime guard {display}@{abi_slot_index}/{helper}:\n{artifact:#}"
+        );
+    }
 }
+
+#[path = "native_proof_regressions/pod_manifest.rs"]
+mod pod_manifest;
 
 #[test]
 fn native_library_handle_runtime_lowering_records_contracts() {
@@ -1240,6 +1337,7 @@ fn native_library_handle_runtime_lowering_records_contracts() {
             record["expr_kind"] == "NativeLibraryParam"
                 && record["native_abi_type"]["direction"] == "param"
                 && record["native_abi_type"]["abi_slot_index"] == 0
+                && record["native_abi_type"]["runtime_guard"]["helper"] == "js_native_handle_unwrap"
                 && contract["ownership"] == "borrowed"
                 && contract["js_argument_index"] == 0
                 && contract["has_finalizer"] == false

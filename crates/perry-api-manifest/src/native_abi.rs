@@ -75,6 +75,24 @@ pub struct NativeHandleAbi {
     pub debug_name: String,
 }
 
+/// One field in a manifest-declared POD record ABI descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NativePodFieldAbi {
+    /// JavaScript object property and C-layout field name.
+    pub name: String,
+    /// Native scalar slot used for this field in the C-layout record.
+    pub ty: NativeAbiType,
+}
+
+/// Runtime contract for a manifest-declared plain-old-data record.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NativePodAbi {
+    /// Optional author-visible record label for diagnostics and artifacts.
+    pub name: Option<String>,
+    /// Ordered C-layout fields. Field order is part of the ABI.
+    pub fields: Vec<NativePodFieldAbi>,
+}
+
 impl NativeHandleAbi {
     /// Construct a borrowed, non-null, thread-agnostic descriptor.
     pub fn borrowed(type_name: Option<String>) -> Self {
@@ -148,6 +166,10 @@ pub enum NativeAbiType {
     Ptr,
     /// Buffer byte length slot.
     BufferLen,
+    /// Pointer-free scalar handle identifier. This is distinct from
+    /// [`NativeAbiType::Handle`]: it carries an integer id inside POD bytes
+    /// and does not participate in GC handle unwrapping.
+    HandleId,
     /// Native-call convenience descriptor: one JavaScript Buffer/Uint8Array
     /// argument lowers to two ABI slots, `(ptr, usize)`.
     BufferAndLen,
@@ -156,6 +178,11 @@ pub enum NativeAbiType {
     Handle(NativeHandleAbi),
     /// Opaque native promise boundary handle with optional result metadata.
     Promise(Box<NativeAbiType>),
+    /// Pointer to a verifier-backed C-layout POD record.
+    Pod(NativePodAbi),
+    /// Native-call convenience descriptor: one JavaScript POD record view
+    /// argument lowers to two ABI slots, `(ptr, usize record_count)`.
+    PodAndCount(NativePodAbi),
     /// No return value. This is valid only as a return descriptor.
     Void,
 }
@@ -179,6 +206,7 @@ impl NativeAbiType {
             "f64" | "number" => Ok(Self::F64),
             "ptr" => Ok(Self::Ptr),
             "buffer_len" => Ok(Self::BufferLen),
+            "handle_id" => Ok(Self::HandleId),
             "buffer+len" => Ok(Self::BufferAndLen),
             "handle" => Ok(Self::Handle(NativeHandleAbi::borrowed(None))),
             "promise" => Ok(Self::Promise(Box::new(Self::JsValue))),
@@ -233,9 +261,12 @@ impl NativeAbiType {
             Self::F64 => "f64",
             Self::Ptr => "ptr",
             Self::BufferLen => "buffer_len",
+            Self::HandleId => "handle_id",
             Self::BufferAndLen => "buffer+len",
             Self::Handle(_) => "handle",
             Self::Promise(_) => "promise",
+            Self::Pod(_) => "pod",
+            Self::PodAndCount(_) => "pod+count",
             Self::Void => "void",
         }
     }
@@ -244,7 +275,7 @@ impl NativeAbiType {
     pub fn abi_slot_count(&self) -> usize {
         match self {
             Self::Void => 0,
-            Self::BufferAndLen => 2,
+            Self::BufferAndLen | Self::PodAndCount(_) => 2,
             _ => 1,
         }
     }
@@ -273,14 +304,42 @@ impl NativeAbiType {
         }
     }
 
+    /// Return the optional POD record ABI metadata attached to `pod`.
+    pub fn pod_abi(&self) -> Option<&NativePodAbi> {
+        match self {
+            Self::Pod(abi) | Self::PodAndCount(abi) => Some(abi),
+            _ => None,
+        }
+    }
+
+    /// True when this descriptor can be used as a scalar POD field.
+    pub fn is_valid_pod_field(&self) -> bool {
+        matches!(
+            self,
+            Self::I32
+                | Self::I64
+                | Self::U32
+                | Self::U64
+                | Self::USize
+                | Self::F32
+                | Self::F64
+                | Self::BufferLen
+                | Self::HandleId
+                | Self::Pod(_)
+        )
+    }
+
     /// True when this descriptor is legal in a parameter list.
     pub fn is_valid_param(&self) -> bool {
-        !matches!(self, Self::Void)
+        !matches!(self, Self::Void | Self::HandleId)
     }
 
     /// True when this descriptor is legal as a return type.
     pub fn is_valid_return(&self) -> bool {
-        !matches!(self, Self::BufferAndLen)
+        !matches!(
+            self,
+            Self::BufferAndLen | Self::Pod(_) | Self::PodAndCount(_) | Self::HandleId
+        )
     }
 
     /// Render the JavaScript-facing type used in generated docs and `.d.ts`
@@ -292,6 +351,8 @@ impl NativeAbiType {
             Self::Void => "void",
             Self::Promise(_) => "Promise<any>",
             Self::Handle(_) | Self::Ptr | Self::JsValue => "any",
+            Self::Pod(_) => "object",
+            Self::PodAndCount(_) => "PerryPodView<any>",
             Self::BufferAndLen => "Buffer",
             Self::I32
             | Self::I64
@@ -300,7 +361,8 @@ impl NativeAbiType {
             | Self::USize
             | Self::F32
             | Self::F64
-            | Self::BufferLen => "number",
+            | Self::BufferLen
+            | Self::HandleId => "number",
         }
     }
 }
@@ -313,8 +375,32 @@ impl fmt::Display for NativeAbiType {
                 None => f.write_str("handle"),
             },
             Self::Promise(result) => write!(f, "promise<{result}>"),
+            Self::Pod(pod) => write!(f, "{pod}"),
+            Self::PodAndCount(pod) => {
+                if let Some(name) = pod.name.as_deref() {
+                    write!(f, "pod+count<{name}>")
+                } else {
+                    write!(f, "pod+count<{pod}>")
+                }
+            }
             other => f.write_str(other.canonical_kind()),
         }
+    }
+}
+
+impl fmt::Display for NativePodAbi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(name) = self.name.as_deref() {
+            return write!(f, "pod<{name}>");
+        }
+        f.write_str("pod<{")?;
+        for (idx, field) in self.fields.iter().enumerate() {
+            if idx != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}:{}", field.name, field.ty)?;
+        }
+        f.write_str("}>")
     }
 }
 
