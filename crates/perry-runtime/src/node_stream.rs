@@ -1174,6 +1174,7 @@ fn register_stub_arities() {
     register(ns_undefined0 as *const u8, 0);
     register(ns_push1 as *const u8, 1);
     register(ns_compose1 as *const u8, 1);
+    async_iterator::register_arities();
 }
 
 #[inline]
@@ -2019,7 +2020,7 @@ fn readable_methods() -> [(&'static str, StubFn); 37] {
         ("flatMap", cast2(ns_iter_flat_map)),
         ("take", cast1(ns_iter_take)),
         ("drop", cast1(ns_iter_drop)),
-        ("iterator", cast0(async_iterator::ns_async_iterator)),
+        ("iterator", cast1(async_iterator::ns_iterator1)),
         // #1539 — push() backpressure return + readable.compose() instance form.
         ("push", cast1(ns_push1)),
         ("compose", cast1(ns_compose1)),
