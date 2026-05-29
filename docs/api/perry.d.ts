@@ -1,6 +1,6 @@
 // Auto-generated from Perry's API manifest (#465). Do not edit by hand.
 // Source: perry-api-manifest::API_MANIFEST
-// Coverage: 1496 entries across 82 modules
+// Coverage: 1498 entries across 82 modules
 
 declare module "@perryts/pdf" {
   /** stdlib */
@@ -183,6 +183,10 @@ declare module "buffer" {
   export function allocUnsafe(...args: any[]): any;
   /** stdlib */
   export function allocUnsafeSlow(...args: any[]): any;
+  /** stdlib */
+  export function atob(...args: any[]): any;
+  /** stdlib */
+  export function btoa(...args: any[]): any;
   /** stdlib */
   export function byteLength(...args: any[]): any;
   /** stdlib */

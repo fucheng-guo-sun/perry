@@ -2680,6 +2680,9 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("buffer", "isBuffer", false, None),
     method("buffer", "isEncoding", false, None),
     method("buffer", "byteLength", false, None),
+    // Issue #800: WHATWG base64 aliases exposed from node:buffer.
+    method("buffer", "atob", false, None),
+    method("buffer", "btoa", false, None),
     // Buffer module-level encoding probes added in PR #1257.
     method("buffer", "isAscii", false, None),
     method("buffer", "isUtf8", false, None),
