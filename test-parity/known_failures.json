@@ -620,12 +620,6 @@
     "category": "bug-open",
     "reason": "node:stream: compose() async-gen handler throw \u2014 composite does not emit 'error'. Flips to PASS when #1531 lands."
   },
-  "node-suite/stream/pipe/dest-error-propagates": {
-    "issue": "1532",
-    "added": "2026-05-24",
-    "category": "bug-open",
-    "reason": "node:stream: pipe error semantics \u2014 destination error or source close state differs from Node. Flips to PASS when #1532 lands."
-  },
   "node-suite/stream/options/auto-destroy-true-default": {
     "issue": "1532",
     "added": "2026-05-24",
@@ -727,12 +721,6 @@
     "added": "2026-05-24",
     "category": "bug-open",
     "reason": "node:stream: destroy() inside _read() \u2014 readCalls count or close-event behavior wrong. Flips to PASS when #1532 lands."
-  },
-  "node-suite/stream/writable/sink-write-rejection-becomes-error": {
-    "issue": "1532",
-    "added": "2026-05-24",
-    "category": "bug-open",
-    "reason": "node:stream: sink write cb(err) \u2014 does not emit 'error' event. Flips to PASS when #1532 lands."
   },
   "node-suite/stream/readable/empty-pure-end": {
     "issue": "1532",
