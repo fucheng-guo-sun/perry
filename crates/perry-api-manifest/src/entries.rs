@@ -2996,6 +2996,7 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("util", "inspect", false, None),
     method("util", "format", false, None),
     method("util", "convertProcessSignalToExitCode", false, None),
+    method("util", "diff", false, None),
     // #2514: libuv-style errno helpers.
     method("util", "getSystemErrorName", false, None),
     method("util", "getSystemErrorMessage", false, None),
@@ -3082,6 +3083,7 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("sys", "inspect", false, None),
     method("sys", "format", false, None),
     method("sys", "convertProcessSignalToExitCode", false, None),
+    method("sys", "diff", false, None),
     method("sys", "getSystemErrorName", false, None),
     method("sys", "getSystemErrorMessage", false, None),
     method("sys", "getSystemErrorMap", false, None),

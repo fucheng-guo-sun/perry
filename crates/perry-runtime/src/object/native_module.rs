@@ -407,6 +407,7 @@ pub(crate) fn native_module_enumerable_keys(module_name: &str) -> Option<&'stati
             b"convertProcessSignalToExitCode",
             b"debuglog",
             b"deprecate",
+            b"diff",
             b"format",
             b"formatWithOptions",
             b"getCallSites",
@@ -635,6 +636,7 @@ fn native_callable_export_arity(module: &str, prop: &str) -> Option<u32> {
         ("net", "Socket") => Some(1),
         ("net", "_normalizeArgs") => Some(1),
         ("net", "_createServerHandle") => Some(5),
+        ("util", "diff") => Some(2),
         ("dns" | "dns/promises", "Resolver") => Some(0),
         _ => None,
     }
@@ -1407,6 +1409,7 @@ pub(crate) fn is_native_module_callable_export(module: &str, prop: &str) -> bool
             | ("util", "aborted")
             | ("util", "debuglog")
             | ("util", "getCallSites")
+            | ("util", "diff")
             | ("util", "getSystemErrorName")
             | ("util", "getSystemErrorMessage")
             | ("util", "getSystemErrorMap")
