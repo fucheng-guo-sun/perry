@@ -568,6 +568,21 @@ pub extern "C" fn js_closure_call6(
 }
 
 #[inline]
+fn dispatch_registered_call(
+    closure: *const ClosureHeader,
+    func_ptr: *const u8,
+    args: &[f64],
+) -> Option<f64> {
+    if func_ptr == BOUND_METHOD_FUNC_PTR {
+        return Some(unsafe { dispatch_bound_method(closure, args) });
+    }
+    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
+        return Some(unsafe { dispatch_bound_function(closure, args) });
+    }
+    None
+}
+
+#[inline]
 fn dispatch_rest_or_declared_arity(
     closure: *const ClosureHeader,
     func_ptr: *const u8,
@@ -601,15 +616,9 @@ pub extern "C" fn js_closure_call7(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(closure, &[arg0, arg1, arg2, arg3, arg4, arg5, arg6])
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(closure, &[arg0, arg1, arg2, arg3, arg4, arg5, arg6])
-        };
+    let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6];
     if let Some(result) = dispatch_rest_or_declared_arity(closure, func_ptr, &args, 7) {
@@ -637,15 +646,9 @@ pub extern "C" fn js_closure_call8(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(closure, &[arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7])
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(closure, &[arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7])
-        };
+    let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7];
     if let Some(result) = dispatch_rest_or_declared_arity(closure, func_ptr, &args, 8) {
@@ -674,21 +677,9 @@ pub extern "C" fn js_closure_call9(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8],
-            )
-        };
+    let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8];
     if let Some(result) = dispatch_rest_or_declared_arity(closure, func_ptr, &args, 9) {
@@ -730,21 +721,9 @@ pub extern "C" fn js_closure_call10(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9],
-            )
-        };
+    let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9];
     if let Some(result) = dispatch_rest_or_declared_arity(closure, func_ptr, &args, 10) {
@@ -788,25 +767,11 @@ pub extern "C" fn js_closure_call11(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
-                ],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
-                ],
-            )
-        };
+    let args = [
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+    ];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [
         arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
@@ -854,25 +819,11 @@ pub extern "C" fn js_closure_call12(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                ],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                ],
-            )
-        };
+    let args = [
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
+    ];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [
         arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
@@ -922,25 +873,11 @@ pub extern "C" fn js_closure_call13(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
-                ],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
-                ],
-            )
-        };
+    let args = [
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+    ];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [
         arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
@@ -992,27 +929,11 @@ pub extern "C" fn js_closure_call14(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                    arg12, arg13,
-                ],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                    arg12, arg13,
-                ],
-            )
-        };
+    let args = [
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
+    ];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [
         arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
@@ -1067,27 +988,12 @@ pub extern "C" fn js_closure_call15(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                    arg12, arg13, arg14,
-                ],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                    arg12, arg13, arg14,
-                ],
-            )
-        };
+    let args = [
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
+        arg14,
+    ];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [
         arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
@@ -1145,27 +1051,12 @@ pub extern "C" fn js_closure_call16(
     if func_ptr.is_null() {
         throw_not_callable();
     }
-    if func_ptr == BOUND_METHOD_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_method(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                    arg12, arg13, arg14, arg15,
-                ],
-            )
-        };
-    }
-    if func_ptr == BOUND_FUNCTION_FUNC_PTR {
-        return unsafe {
-            dispatch_bound_function(
-                closure,
-                &[
-                    arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
-                    arg12, arg13, arg14, arg15,
-                ],
-            )
-        };
+    let args = [
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
+        arg14, arg15,
+    ];
+    if let Some(result) = dispatch_registered_call(closure, func_ptr, &args) {
+        return result;
     }
     let args = [
         arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
