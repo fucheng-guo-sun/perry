@@ -1,6 +1,6 @@
 // Auto-generated from Perry's API manifest (#465). Do not edit by hand.
 // Source: perry-api-manifest::API_MANIFEST
-// Coverage: 2391 entries across 104 modules
+// Coverage: 2392 entries across 104 modules
 
 type PerryU32 = number & { readonly __perryU32?: never };
 type PerryU64 = number & { readonly __perryU64?: never };
@@ -1339,6 +1339,8 @@ declare module "fs" {
   export const constants: any;
   /** stdlib */
   export const promises: any;
+  /** stdlib */
+  export function _toUnixTimestamp(...args: any[]): any;
   /** stdlib */
   export function access(...args: any[]): any;
   /** stdlib */
