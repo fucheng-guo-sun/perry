@@ -2,7 +2,7 @@
 
 This page is auto-generated from Perry's compile-time API manifest (`perry-api-manifest::API_MANIFEST`). It is the source of truth for what `perry compile` accepts; references to symbols not listed here produce `R005 UnimplementedApi` (issue #463). Stubs (#464) are flagged ⚠ — they link cleanly but no-op at runtime on the chosen target.
 
-Total: 2397 entries across 104 modules.
+Total: 2408 entries across 104 modules.
 
 ## Modules
 
@@ -647,6 +647,7 @@ Total: 2397 entries across 104 modules.
 - `UV_FS_SYMLINK_JUNCTION`
 - `W_OK`
 - `X_OK`
+- `default`
 - `defaultCoreCipherList`
 
 ## `cron`
@@ -1187,8 +1188,20 @@ Total: 2397 entries across 104 modules.
 
 ## `fs`
 
+### Classes
+
+- `Dir`
+- `Dirent`
+- `FileReadStream`
+- `FileWriteStream`
+- `ReadStream`
+- `Stats`
+- `Utf8Stream`
+- `WriteStream`
+
 ### Methods
 
+- `_toUnixTimestamp` — module
 - `_toUnixTimestamp` — module
 - `access` — module
 - `accessSync` — module
@@ -1237,6 +1250,7 @@ Total: 2397 entries across 104 modules.
 - `mkdir` — module
 - `mkdirSync` — module
 - `mkdtemp` — module
+- `mkdtempDisposableSync` — module
 - `mkdtempSync` — module
 - `open` — module
 - `openSync` — module
@@ -1305,6 +1319,7 @@ Total: 2397 entries across 104 modules.
 - `lutimes` — module
 - `mkdir` — module
 - `mkdtemp` — module
+- `mkdtempDisposable` — module
 - `open` — module
 - `opendir` — module
 - `readFile` — module
@@ -2441,7 +2456,6 @@ Total: 2397 entries across 104 modules.
 
 ### Properties
 
-- `default`
 - `ucs2`
 - `version`
 

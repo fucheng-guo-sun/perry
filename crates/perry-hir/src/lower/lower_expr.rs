@@ -114,10 +114,17 @@ fn is_cjs_style_native_default_import(module_name: &str) -> bool {
     matches!(
         module_name,
         "async_hooks"
+<<<<<<< HEAD
+            | "constants"
+            | "events"
+            | "os"
+            | "path"
+=======
             | "events"
             | "os"
             | "path"
             | "punycode"
+>>>>>>> origin/main
             | "querystring"
             | "sys"
             | "url"
