@@ -42,6 +42,7 @@ mod native_call_method;
 mod native_module;
 mod native_module_dispatch;
 mod native_module_stream;
+mod object_literal_ops;
 mod object_ops;
 mod object_ops_frozen;
 mod polymorphic_index;
@@ -77,6 +78,7 @@ pub use native_call_method::*;
 pub use native_module::*;
 pub(crate) use native_module_dispatch::*;
 pub(crate) use native_module_stream::*;
+pub use object_literal_ops::*;
 pub use object_ops::*;
 pub use object_ops_frozen::*;
 pub use polymorphic_index::*;
@@ -93,13 +95,8 @@ static OS_CONSTANTS_PRIORITY_CACHE: AtomicU64 = AtomicU64::new(0);
 static OS_CONSTANTS_DLOPEN_CACHE: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_THIS_PTR: AtomicI64 = AtomicI64::new(0);
 static GLOBAL_THIS_READY: AtomicBool = AtomicBool::new(false);
-// #2145: the `%TypedArray%` intrinsic constructor (a closure) and its
-// `.prototype` (an object). Lazily allocated by
-// `populate_global_this_builtins` so the per-kind typed-array constructors
-// (`Int8Array`, ...) can chain `__proto__` to `%TypedArray%`, and each per-kind
-// `.prototype` carries `OBJ_FLAG_TYPED_ARRAY_PROTO` whose
-// `js_object_get_prototype_of` returns the shared `%TypedArray%.prototype` here.
-// Both are mutable roots scanned by `scan_object_cache_roots_mut`.
+// `%TypedArray%` intrinsic constructor/prototype roots used by per-kind typed
+// array constructors and scanned by `scan_object_cache_roots_mut`.
 pub(crate) static TYPED_ARRAY_INTRINSIC_PTR: AtomicI64 = AtomicI64::new(0);
 pub(crate) static TYPED_ARRAY_INTRINSIC_PROTO_PTR: AtomicI64 = AtomicI64::new(0);
 pub(crate) static LOCAL_STORAGE_PTR: AtomicI64 = AtomicI64::new(0);
