@@ -2,6 +2,10 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.1110 — feat(webcrypto): SubtleCrypto.supports shape (#4146)
+
+Folds in external contributor PR #4146 (merged via automation without the maintainer version bump; this commit reconciles the metadata): adds `crypto.subtle.supports(...)` returning the static algorithm/usage support shape. Implemented in `crates/perry-stdlib/src/webcrypto/supports.rs` with the `globalThis`/`property_get` codegen wiring and a node-suite fixture. No manifest/entries change, so API docs are unaffected.
+
 ## v0.5.1109 — fix(process): builtin namespace bootstrap shapes (#4130)
 
 Folds in external contributor PR #4130: fixes the `process` namespace bootstrap shapes — `process.getBuiltinModule(...)` transport surfaces and the internal bootstrap/namespace shape exposed via `process`. Adds the codegen `node_core_process` native-table wiring, HIR lowering, and runtime `process.rs`/`native_module` support plus node-suite fixtures. Merged on top of current `main`; conflicts were confined to the `stream` native-module callable-export list and dispatch, where `main` had since refactored stream handling into `dispatch_stream_native_module_method` — `main`'s refactored form was kept and the PR's stale inline stream arms dropped. Docs regenerated from the manifest.
