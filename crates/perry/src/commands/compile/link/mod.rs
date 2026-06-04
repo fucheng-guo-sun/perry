@@ -37,8 +37,11 @@ use super::{
     strip_duplicate_objects_from_lib, windows_pe_subsystem_flag, CompilationContext,
 };
 
+mod link_cache;
 mod platform_cmd;
 
+use link_cache::prepare_link_cache_status;
+pub(super) use link_cache::{write_link_cache_manifest, LinkCacheStatus};
 pub use platform_cmd::select_linker_command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +225,7 @@ pub(super) fn build_and_run_link(
     ctx: &CompilationContext,
     target: Option<&str>,
     obj_paths: &[PathBuf],
+    obj_fingerprints: &[String],
     compiled_features: &[String],
     runtime_lib: &Path,
     stdlib_lib: &Option<PathBuf>,
@@ -242,7 +246,7 @@ pub(super) fn build_and_run_link(
     // `--debug-symbols`: keep symbols / emit a PDB so RUST_BACKTRACE
     // panics in the compiled app symbolize. Windows-active today.
     debug_symbols: bool,
-) -> Result<()> {
+) -> Result<LinkCacheStatus> {
     // #498 - supply-chain gate. Before any prebuilt archive hits the
     // linker, hash it and compare against `perry.lock`. First build
     // writes the lockfile; subsequent builds verify. Mismatch fails
@@ -1864,6 +1868,21 @@ pub(super) fn build_and_run_link(
         }
     }
 
+    let link_cache_status = prepare_link_cache_status(
+        &ctx.cache_root,
+        target,
+        &cmd,
+        obj_paths,
+        obj_fingerprints,
+        exe_path,
+    );
+    if !link_cache_status.linked {
+        if let Some(path) = embedded_info_plist_path {
+            let _ = fs::remove_file(path);
+        }
+        return Ok(link_cache_status);
+    }
+
     let status_result = cmd.status();
     if let Some(path) = embedded_info_plist_path {
         let _ = fs::remove_file(path);
@@ -1874,7 +1893,7 @@ pub(super) fn build_and_run_link(
         return Err(anyhow!("Linking failed"));
     }
 
-    Ok(())
+    Ok(link_cache_status)
 }
 
 #[cfg(test)]
