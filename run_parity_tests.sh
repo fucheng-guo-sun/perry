@@ -430,8 +430,14 @@ echo ""
 REPORT_FILE="$REPORT_DIR/parity_report_$(date +%Y%m%d_%H%M%S).json"
 LATEST_REPORT="$REPORT_DIR/latest.json"
 
-# Start JSON array for test results
-TEST_RESULTS="[]"
+# Compact per-test records consumed by scripts/parity_matrix_trend.py.
+declare -a TEST_RESULTS=()
+
+record_result() {
+    local test_id=$1
+    local status=$2
+    TEST_RESULTS+=("{\"id\":\"$test_id\",\"status\":\"$status\"}")
+}
 
 declare -a TEST_FILES=()
 case "$TEST_SUITE" in
@@ -510,6 +516,7 @@ for test_file in "${TEST_FILES[@]}"; do
     if should_skip "$test_name"; then
         echo -e "${YELLOW}SKIP${NC}  $test_id (async/timer test)"
         ((SKIPPED++))
+        record_result "$test_id" "skipped"
         continue
     fi
 
@@ -543,6 +550,7 @@ for test_file in "${TEST_FILES[@]}"; do
         if ! has_expected_output "$test_name"; then
             echo -e "${YELLOW}SKIP${NC}  $test_id (Node.js error: exit $node_exit)"
             ((NODE_FAIL++))
+            record_result "$test_id" "node_fail"
             [[ -n "$local_server_pid" ]] && stop_tls_upgrade_server
             continue
         fi
@@ -579,6 +587,7 @@ for test_file in "${TEST_FILES[@]}"; do
         echo -e "${RED}FAIL${NC}  $test_id (compile error)"
         ((COMPILE_FAIL++))
         COMPILE_FAILURES+=("$test_id")
+        record_result "$test_id" "compile_fail"
         echo "" > "$perry_output_file"
         # Persist the actual compile stderr so CI artifacts can be inspected
         # to diagnose long-tail compile failures (e.g. the macOS-14 SDK gap
@@ -617,7 +626,7 @@ for test_file in "${TEST_FILES[@]}"; do
             echo -e "${RED}FAIL${NC}  $test_id (expected-output mismatch)"
             ((PARITY_FAIL++))
             PARITY_FAILURES+=("$test_id")
-            status="fail"
+            status="parity_fail"
             echo "       Expected exit: $expected_exit"
             echo "       Perry exit:    $perry_exit"
             echo "       Expected: $(cat "$EXPECTED_DIR/${test_name}.txt" | head -1)"
@@ -637,13 +646,15 @@ for test_file in "${TEST_FILES[@]}"; do
             echo -e "${RED}FAIL${NC}  $test_id (output mismatch)"
             ((PARITY_FAIL++))
             PARITY_FAILURES+=("$test_id")
-            status="fail"
+            status="parity_fail"
 
             # Show diff for failures (first few lines)
             echo "       Node.js:    $(echo "$node_output" | head -1)"
             echo "       Perry:  $(echo "$perry_output" | head -1)"
         fi
     fi
+
+    record_result "$test_id" "$status"
 
     # Stop any per-test companion server that was started for this test.
     [[ -n "$local_server_pid" ]] && stop_tls_upgrade_server
@@ -690,6 +701,8 @@ if [[ ${#COMPILE_FAILURES[@]} -gt 0 ]]; then
     echo ""
 fi
 
+RESULTS_JSON=$(printf '%s\n' "${TEST_RESULTS[@]}" | paste -sd, -)
+
 # Generate JSON report
 cat > "$REPORT_FILE" << EOF
 {
@@ -708,7 +721,8 @@ cat > "$REPORT_FILE" << EOF
 ,
     "compile": [$(printf '"%s",' "${COMPILE_FAILURES[@]}" | sed 's/,$//')]
 
-  }
+  },
+  "results": [${RESULTS_JSON}]
 }
 EOF
 
