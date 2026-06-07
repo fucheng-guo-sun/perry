@@ -203,6 +203,27 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
         }
 
         Stmt::Return(Some(e)) => {
+            // Inside an inlined constructor body, an explicit `return <value>`
+            // applies spec return-override semantics and yields the `new`
+            // expression's value — it must NOT emit a function-level `ret`
+            // (that would terminate the ENCLOSING function, e.g. `main`).
+            if let Some(target) = ctx.inline_ctor_return.last().cloned() {
+                // Store the RAW returned value and branch to the construction
+                // completion block. The spec return-override check (object? /
+                // derived-primitive TypeError) is applied THERE, not here —
+                // it must run as part of [[Construct]] completion, OUTSIDE any
+                // `try` in the body, so `try { return 0; } catch {}` in a
+                // derived ctor throws uncaught (the catch can't see it).
+                let ret_val = lower_expr(ctx, e)?;
+                ctx.block().store(DOUBLE, &ret_val, &target.result_slot);
+                // Pop any open try frames before leaving the body (mirrors the
+                // ordinary `return` path below).
+                for _ in 0..ctx.try_depth {
+                    ctx.block().call_void("js_try_end", &[]);
+                }
+                ctx.block().br(&target.after_label);
+                return Ok(());
+            }
             let v = lower_expr(ctx, e)?;
             // Phase E: async functions wrap their return value in
             // js_promise_resolved so callers can await the result.
@@ -228,6 +249,16 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
             Ok(())
         }
         Stmt::Return(None) => {
+            // Inside an inlined constructor body, a bare `return;` keeps the
+            // implicit `this` (the result slot already holds it) and jumps to
+            // the shared after-block — never a function-level `ret`.
+            if let Some(target) = ctx.inline_ctor_return.last().cloned() {
+                for _ in 0..ctx.try_depth {
+                    ctx.block().call_void("js_try_end", &[]);
+                }
+                ctx.block().br(&target.after_label);
+                return Ok(());
+            }
             // Bare `return;` returns the NaN-boxed `undefined` value
             // (TAG_UNDEFINED). For async functions, wrap it in a
             // resolved promise.
