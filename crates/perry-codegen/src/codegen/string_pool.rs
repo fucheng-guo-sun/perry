@@ -352,7 +352,8 @@ pub(super) fn emit_string_pool(
     // symbols for those live in the defining module's object file.
     // Each module's init registers its own classes; the linker
     // ensures all init functions run before main.
-    let mut method_triples: Vec<(u32, String, String, u32, bool, bool)> = Vec::new();
+    // (class_id, name, llvm_symbol, total_param_count, has_synth_args, has_rest, spec_length)
+    let mut method_triples: Vec<(u32, String, String, u32, bool, bool, u32)> = Vec::new();
     // #1788: (cid, static-method name, perry_static_* symbol, param_count,
     // has_rest). Registered into the runtime CLASS_STATIC_METHODS table so a
     // subclass whose parent is a class-expression value inherits the parent's
@@ -412,6 +413,16 @@ pub(super) fn emit_string_pool(
                 .last()
                 .map(|p| p.is_rest && p.arguments_object.is_none())
                 .unwrap_or(false);
+            // Spec `.length`: count leading formal params before the first one
+            // with a default or rest (and excluding the synthesized `arguments`
+            // slot). Distinct from the total param_count used for call dispatch.
+            let mut spec_length = 0u32;
+            for p in &method.params {
+                if p.arguments_object.is_some() || p.is_rest || p.default.is_some() {
+                    break;
+                }
+                spec_length += 1;
+            }
             method_triples.push((
                 cid,
                 method.name.clone(),
@@ -419,6 +430,7 @@ pub(super) fn emit_string_pool(
                 method.params.len() as u32,
                 has_synth_args,
                 has_rest,
+                spec_length,
             ));
         }
         // #1788: static methods are emitted as `perry_static_*` (no `this`
@@ -453,7 +465,9 @@ pub(super) fn emit_string_pool(
         ));
     }
     method_triples.sort_unstable();
-    for (cid, method_name, llvm_name, param_count, has_synth_args, has_rest) in method_triples {
+    for (cid, method_name, llvm_name, param_count, has_synth_args, has_rest, spec_length) in
+        method_triples
+    {
         // The pre-intern pass before `emit_string_pool` ensured every
         // method name has a string pool entry; look it up here without
         // mutating the pool.
@@ -482,6 +496,17 @@ pub(super) fn emit_string_pool(
                 (I64, &param_count.to_string()),
                 (I64, has_synth_args_str),
                 (I64, has_rest_str),
+            ],
+        );
+        // Record the default-aware spec `.length` so `C.prototype.m.length`
+        // reflects params-before-first-default, not the raw param count.
+        blk.call_void(
+            "js_register_class_method_bind_length",
+            &[
+                (I64, &cid.to_string()),
+                (I64, &bytes_i64),
+                (I64, &len_str),
+                (I64, &spec_length.to_string()),
             ],
         );
     }
@@ -613,7 +638,9 @@ pub(super) fn emit_string_pool(
     // the logger middleware reads `c.req.url` from a JS-bundled hono
     // dist via `compilePackages`, and pre-fix `c.req` always returned
     // `undefined`.
-    let mut getter_pairs: Vec<(u32, String, String)> = Vec::new();
+    // (class_id, prop_name, llvm_symbol, is_static) — static accessors register
+    // onto the class constructor (CLASS_STATIC_ACCESSORS), not the instance vtable.
+    let mut getter_pairs: Vec<(u32, String, String, bool)> = Vec::new();
     for (class_name, class) in classes.iter() {
         // Refs #486: skip alias keys (see method-emission loop above).
         if *class_name != class.name {
@@ -638,18 +665,31 @@ pub(super) fn emit_string_pool(
             // the LLVM symbol `perry_method_<modprefix>__<class>__<sanitize(__get_get_<prop>)>`.
             // Use the same mangling here so the registered func_ptr
             // matches the actual emitted body.
-            let inner = format!("__get_{}", getter_fn.name);
-            let llvm_name = format!(
-                "perry_method_{}__{}__{}",
-                module_prefix,
-                sanitize(class_name),
-                sanitize(&inner),
-            );
-            getter_pairs.push((cid, prop.clone(), llvm_name));
+            let is_static = class.static_accessor_names.iter().any(|n| n == prop);
+            // Static accessors are emitted via compile_static_method (no-this
+            // ABI) under a `perry_static_…` symbol keyed on `__get_<prop>`;
+            // instance accessors via compile_method under `perry_method_…`.
+            let llvm_name = if is_static {
+                super::helpers::scoped_static_method_name(
+                    module_prefix,
+                    cid,
+                    class_name,
+                    &format!("__get_{}", prop),
+                )
+            } else {
+                let inner = format!("__get_{}", getter_fn.name);
+                format!(
+                    "perry_method_{}__{}__{}",
+                    module_prefix,
+                    sanitize(class_name),
+                    sanitize(&inner),
+                )
+            };
+            getter_pairs.push((cid, prop.clone(), llvm_name, is_static));
         }
     }
     getter_pairs.sort_unstable();
-    for (cid, prop_name, llvm_name) in getter_pairs {
+    for (cid, prop_name, llvm_name, is_static) in getter_pairs {
         let entry = match strings.iter().find(|e| e.value == prop_name) {
             Some(e) => e,
             None => continue,
@@ -659,8 +699,13 @@ pub(super) fn emit_string_pool(
         let func_ref = format!("@{}", llvm_name);
         let func_i64 = blk.ptrtoint(&func_ref, I64);
         let bytes_i64 = blk.ptrtoint(&bytes_global, I64);
+        let register_fn = if is_static {
+            "js_register_class_static_getter"
+        } else {
+            "js_register_class_getter"
+        };
         blk.call_void(
-            "js_register_class_getter",
+            register_fn,
             &[
                 (I64, &cid.to_string()),
                 (I64, &bytes_i64),
@@ -679,7 +724,7 @@ pub(super) fn emit_string_pool(
     // getter-pairs loop above; emission mangling matches the
     // setter-method-emission path at codegen.rs:2041 (renamed.name =
     // "__set_<prop>" → LLVM symbol perry_method_<mp>__<class>____set_<f.name>).
-    let mut setter_pairs: Vec<(u32, String, String)> = Vec::new();
+    let mut setter_pairs: Vec<(u32, String, String, bool)> = Vec::new();
     for (class_name, class) in classes.iter() {
         if *class_name != class.name {
             continue;
@@ -698,18 +743,28 @@ pub(super) fn emit_string_pool(
             _ => continue,
         };
         for (prop, setter_fn) in &class.setters {
-            let inner = format!("__set_{}", setter_fn.name);
-            let llvm_name = format!(
-                "perry_method_{}__{}__{}",
-                module_prefix,
-                sanitize(class_name),
-                sanitize(&inner),
-            );
-            setter_pairs.push((cid, prop.clone(), llvm_name));
+            let is_static = class.static_accessor_names.iter().any(|n| n == prop);
+            let llvm_name = if is_static {
+                super::helpers::scoped_static_method_name(
+                    module_prefix,
+                    cid,
+                    class_name,
+                    &format!("__set_{}", prop),
+                )
+            } else {
+                let inner = format!("__set_{}", setter_fn.name);
+                format!(
+                    "perry_method_{}__{}__{}",
+                    module_prefix,
+                    sanitize(class_name),
+                    sanitize(&inner),
+                )
+            };
+            setter_pairs.push((cid, prop.clone(), llvm_name, is_static));
         }
     }
     setter_pairs.sort_unstable();
-    for (cid, prop_name, llvm_name) in setter_pairs {
+    for (cid, prop_name, llvm_name, is_static) in setter_pairs {
         let entry = match strings.iter().find(|e| e.value == prop_name) {
             Some(e) => e,
             None => continue,
@@ -719,8 +774,13 @@ pub(super) fn emit_string_pool(
         let func_ref = format!("@{}", llvm_name);
         let func_i64 = blk.ptrtoint(&func_ref, I64);
         let bytes_i64 = blk.ptrtoint(&bytes_global, I64);
+        let register_fn = if is_static {
+            "js_register_class_static_setter"
+        } else {
+            "js_register_class_setter"
+        };
         blk.call_void(
-            "js_register_class_setter",
+            register_fn,
             &[
                 (I64, &cid.to_string()),
                 (I64, &bytes_i64),
