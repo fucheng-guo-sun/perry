@@ -17,6 +17,22 @@ unsafe fn present_array_element(elements_ptr: *const f64, index: usize) -> Optio
     (element.to_bits() != crate::value::TAG_HOLE).then_some(element)
 }
 
+/// ECMA-262 ToIntegerOrInfinity applied to a possibly non-numeric `fromIndex`
+/// argument. The codegen passes the raw (NaN-boxed) value through, so a string
+/// / boolean / null / object `fromIndex` (`"3E0"`, `"0x0003"`, `true`, `null`,
+/// `{valueOf}`) must be ToNumber-coerced first — the previous `from.is_nan()`
+/// shortcut treated every NaN-boxed value as NaN→0. Returns the truncated
+/// integer (or ±Infinity, whose `trunc()` is itself).
+#[inline]
+pub(crate) fn from_index_to_integer(from: f64) -> f64 {
+    let n = crate::builtins::js_number_coerce(from);
+    if n.is_nan() {
+        0.0
+    } else {
+        n.trunc()
+    }
+}
+
 #[inline(always)]
 unsafe fn array_element_get_value(elements_ptr: *const f64, index: usize) -> f64 {
     let element = *elements_ptr.add(index);
@@ -75,11 +91,7 @@ fn forward_start_index(length: i64, from_index: f64, has_from: i32) -> Option<i6
     if has_from == 0 {
         return Some(0);
     }
-    let n = if from_index.is_nan() {
-        0.0
-    } else {
-        from_index.trunc()
-    };
+    let n = from_index_to_integer(from_index);
     if n >= length as f64 {
         // Covers +Infinity and any fromIndex past the end.
         None
@@ -166,11 +178,7 @@ pub extern "C" fn js_array_last_index_of_jsvalue(
         let start: i64 = if has_from == 0 {
             length - 1
         } else {
-            let n = if from_index.is_nan() {
-                0.0
-            } else {
-                from_index.trunc()
-            };
+            let n = from_index_to_integer(from_index);
             if n >= length as f64 {
                 length - 1
             } else if n >= 0.0 {
@@ -203,11 +211,7 @@ pub extern "C" fn js_array_last_index_of_jsvalue(
         let start: i64 = if has_from == 0 {
             length - 1
         } else {
-            let n = if from_index.is_nan() {
-                0.0
-            } else {
-                from_index.trunc()
-            };
+            let n = from_index_to_integer(from_index);
             if n >= length as f64 {
                 length - 1
             } else if n >= 0.0 {

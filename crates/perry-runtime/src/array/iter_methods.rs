@@ -93,12 +93,23 @@ pub extern "C" fn js_array_map(
     unsafe {
         let length = (*arr).length;
         let elements_ptr = array_elements_ptr(arr);
-
-        // Allocate at the source length so skipped sparse slots remain holes.
-        let result = js_array_alloc_with_length(length);
-        let result_elements =
-            (result as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
         let arr_value = array_receiver_value(arr);
+
+        // ECMA-262 §23.1.3.20 step 5: ArraySpeciesCreate(O, len) runs BEFORE
+        // the iteration — it reads `O.constructor` / `@@species` (firing any
+        // accessor, propagating a poison throw) and throws TypeError on a
+        // non-constructor species, so a bad constructor aborts before the
+        // callback is ever invoked. For the common case (plain array whose
+        // constructor is the intrinsic `Array`) this returns a fresh plain
+        // array, identical to the prior `js_array_alloc_with_length`.
+        let result_box = crate::array::species::array_species_create(arr_value, length as usize);
+        let is_plain = crate::array::species::species_result_is_plain_array(result_box);
+        let result = crate::value::js_nanbox_get_pointer(result_box) as *mut ArrayHeader;
+        let result_elements = if is_plain {
+            (result as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64
+        } else {
+            ptr::null_mut()
+        };
 
         for i in 0..length as usize {
             let Some(element) = present_array_element(elements_ptr, i) else {
@@ -106,24 +117,18 @@ pub extern "C" fn js_array_map(
             };
             // JS .map() callback receives (element, index, array).
             let mapped = js_closure_call3(callback, element, i as f64, arr_value);
-            // GC_STORE_AUDIT(INIT): map result is unpublished; slot layout is noted immediately below.
-            ptr::write(result_elements.add(i), mapped);
-            let mapped_bits = mapped.to_bits();
-            if length <= 64 {
-                // Fast path: skip the generational write barrier.
-                // `result` was just allocated; for length ≤ 64 it stays
-                // in the nursery for the whole loop in practice, so the
-                // young→old barrier is redundant — only the layout slot
-                // metadata is needed for GC tracing. If a future GC
-                // policy starts tenuring nursery objects mid-loop
-                // (e.g. aggressive evacuation under
-                // `PERRY_GC_FORCE_EVACUATE=1` triggered by the callback
-                // allocating), this path needs the full barrier helper
-                // because subsequent stores would miss the remembered
-                // set. The 64-element cap keeps that probability low.
-                note_array_slot_layout_only(result, i, mapped_bits);
+            if is_plain {
+                // GC_STORE_AUDIT(INIT): plain result is unpublished; slot layout noted below.
+                ptr::write(result_elements.add(i), mapped);
+                let mapped_bits = mapped.to_bits();
+                if length <= 64 {
+                    note_array_slot_layout_only(result, i, mapped_bits);
+                } else {
+                    note_array_slot(result, i, mapped_bits);
+                }
             } else {
-                note_array_slot(result, i, mapped_bits);
+                // Custom species container: CreateDataPropertyOrThrow via [[Set]].
+                crate::array::species::species_result_set(result_box, i, mapped);
             }
         }
 
@@ -173,12 +178,16 @@ pub extern "C" fn js_array_filter(
     unsafe {
         let length = (*arr).length;
         let elements_ptr = array_elements_ptr(arr);
-
-        // Allocate result array with same capacity (might be smaller)
-        let mut result = js_array_alloc(length);
         let arr_value = array_receiver_value(arr);
-        // #854: `js_array_push_f64` already maintains `(*result).length`, so the
-        // separate `result_len` counter that used to live here was dead.
+
+        // ECMA-262 §23.1.3.7 step 5: ArraySpeciesCreate(O, 0) runs before the
+        // iteration (validates `O.constructor` / `@@species`, throwing on a
+        // poisoned getter or non-constructor species before the callback runs).
+        let result_box = crate::array::species::array_species_create(arr_value, 0);
+        let is_plain = crate::array::species::species_result_is_plain_array(result_box);
+        let mut result = crate::value::js_nanbox_get_pointer(result_box) as *mut ArrayHeader;
+        // #854: `js_array_push_f64` already maintains `(*result).length`.
+        let mut to = 0usize;
 
         for i in 0..length as usize {
             let Some(element) = present_array_element(elements_ptr, i) else {
@@ -187,7 +196,12 @@ pub extern "C" fn js_array_filter(
             let keep = js_closure_call3(callback, element, i as f64, arr_value);
             // Proper truthy check: handles NaN-boxed booleans (TAG_FALSE != 0.0 but is falsy)
             if crate::value::js_is_truthy(keep) != 0 {
-                result = js_array_push_f64(result, element);
+                if is_plain {
+                    result = js_array_push_f64(result, element);
+                } else {
+                    crate::array::species::species_result_set(result_box, to, element);
+                    to += 1;
+                }
             }
         }
 

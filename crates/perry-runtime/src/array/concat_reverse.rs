@@ -387,6 +387,14 @@ pub extern "C" fn js_array_fill_range(
             end,
         ) as *mut ArrayHeader;
     }
+    // ECMA-262 §23.1.3.6: ToIntegerOrInfinity(start) then (end) run BEFORE the
+    // length==0 early-out, and each fires `valueOf` / `Symbol.toPrimitive`
+    // (propagating abrupt completions — test262 fill/return-abrupt-from-start/
+    // end). The previous `idx.is_nan()` clamp silently mapped a NaN-boxed
+    // object argument to 0 and never threw. The default-end sentinel
+    // (+Infinity from codegen) is a real f64 and survives coercion unchanged.
+    let start = crate::builtins::js_to_integer_or_infinity(start);
+    let end = crate::builtins::js_to_integer_or_infinity(end);
     unsafe {
         let len = (*arr).length as i64;
         if len == 0 {

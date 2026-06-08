@@ -164,6 +164,33 @@ pub(super) fn try_local_array_methods(
                 // runtime but built-in constructors aren't first-class closure objects.
                 if is_not_string {
                     if let Some(array_id) = ctx.lookup_local(&arr_name) {
+                        // thisArg routing: the dense `Expr::Array<Method>` fast
+                        // paths drop a 2nd positional `thisArg`, so
+                        // `arr.every(cb, thisArg)` ran the callback with
+                        // `this === undefined`. Route the callback iterators
+                        // through the spec-complete `Expr::ArrayLikeMethod`
+                        // lowering (which binds the callback `this`) when an
+                        // explicit thisArg is supplied with no spread.
+                        if matches!(
+                            method_name,
+                            "map"
+                                | "filter"
+                                | "forEach"
+                                | "find"
+                                | "findIndex"
+                                | "findLast"
+                                | "findLastIndex"
+                                | "some"
+                                | "every"
+                        ) && call.args.len() >= 2
+                            && call.args.iter().all(|a| a.spread.is_none())
+                        {
+                            return Ok(Ok(Expr::ArrayLikeMethod {
+                                method: method_name.to_string(),
+                                receiver: Box::new(Expr::LocalGet(array_id)),
+                                args,
+                            }));
+                        }
                         match method_name {
                             "push" => {
                                 if args.is_empty() {

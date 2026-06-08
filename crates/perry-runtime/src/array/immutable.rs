@@ -283,39 +283,24 @@ pub extern "C" fn js_array_copy_within(
             end_value,
         ) as *mut ArrayHeader;
     }
+    // Spec order (ECMA-262 §23.1.3.4): ToIntegerOrInfinity(target), then
+    // (start), then (end). Each coerces via ToNumber → fires `valueOf` /
+    // `Symbol.toPrimitive` and propagates abrupt completions (test262
+    // copyWithin/return-abrupt-from-target/start/end). The previous `as isize`
+    // raw cast on a NaN-boxed object argument silently produced garbage and
+    // never threw.
+    let len_i64 = unsafe { (*arr).length as i64 };
+    let t = copy_within_relative_index(target, len_i64);
+    let s = copy_within_relative_index(start, len_i64);
+    let e = if has_end != 0 && !crate::value::JSValue::from_bits(end.to_bits()).is_undefined() {
+        copy_within_relative_index(end, len_i64)
+    } else {
+        len_i64
+    };
     unsafe {
-        let len = (*arr).length as isize;
+        let len = len_i64 as isize;
+        let (t, s, e) = (t as isize, s as isize, e as isize);
         let elements = (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
-
-        // Normalize target
-        let mut t = target as isize;
-        if t < 0 {
-            t += len;
-        }
-        if t < 0 {
-            t = 0;
-        }
-
-        // Normalize start
-        let mut s = start as isize;
-        if s < 0 {
-            s += len;
-        }
-        if s < 0 {
-            s = 0;
-        }
-
-        // Normalize end
-        let mut e = if has_end != 0 { end as isize } else { len };
-        if e < 0 {
-            e += len;
-        }
-        if e < 0 {
-            e = 0;
-        }
-        if e > len {
-            e = len;
-        }
 
         let count = (e - s).min(len - t);
         if count <= 0 {

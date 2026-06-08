@@ -690,7 +690,7 @@ pub extern "C" fn js_arraylike_indexOf(recv: f64, value: f64, from: f64, has_fro
     let mut start = if has_from == 0 {
         0
     } else {
-        let n = if from.is_nan() { 0.0 } else { from.trunc() };
+        let n = crate::array::search::from_index_to_integer(from);
         if n >= len as f64 {
             return -1.0;
         } else if n >= 0.0 {
@@ -726,7 +726,7 @@ pub extern "C" fn js_arraylike_lastIndexOf(recv: f64, value: f64, from: f64, has
     let mut start = if has_from == 0 {
         len - 1
     } else {
-        let n = if from.is_nan() { 0.0 } else { from.trunc() };
+        let n = crate::array::search::from_index_to_integer(from);
         if n >= 0.0 {
             (n as i64).min(len - 1)
         } else if n >= -(len as f64) {
@@ -757,7 +757,7 @@ pub extern "C" fn js_arraylike_includes(recv: f64, value: f64, from: f64, has_fr
     let mut start = if has_from == 0 {
         0
     } else {
-        let n = if from.is_nan() { 0.0 } else { from.trunc() };
+        let n = crate::array::search::from_index_to_integer(from);
         if n >= len as f64 {
             return boxed_bool(false);
         } else if n >= 0.0 {

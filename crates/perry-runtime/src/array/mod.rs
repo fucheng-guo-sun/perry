@@ -16,6 +16,7 @@ mod push_pop;
 mod reduce_right;
 mod search;
 mod sort;
+mod species;
 mod splice_slice;
 
 #[cfg(test)]

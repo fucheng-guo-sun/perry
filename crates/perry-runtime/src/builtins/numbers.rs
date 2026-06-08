@@ -315,6 +315,23 @@ mod parse_float_tests {
 /// Marked `#[inline]` so the bitcode-link path can inline + DCE the
 /// branches when the input type is statically known.
 #[no_mangle]
+/// ECMA-262 ToIntegerOrInfinity (§7.1.5): ToNumber, then map NaN→0, truncate
+/// toward zero, preserving ±Infinity. Exposed for codegen so Array index
+/// arguments (`fill`/`copyWithin` start/end/target, etc.) fire
+/// `valueOf` / `Symbol.toPrimitive` and propagate their throws (and the
+/// `Symbol`→TypeError) at the spec-mandated point instead of being silently
+/// swallowed by a downstream `is_nan()` shortcut.
+#[no_mangle]
+pub extern "C" fn js_to_integer_or_infinity(value: f64) -> f64 {
+    let n = js_number_coerce(value);
+    if n.is_nan() {
+        0.0
+    } else {
+        n.trunc()
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn js_number_coerce(value: f64) -> f64 {
     let jsval = JSValue::from_bits(value.to_bits());
 

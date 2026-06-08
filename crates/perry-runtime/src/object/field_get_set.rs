@@ -3808,6 +3808,16 @@ pub extern "C" fn js_object_get_field_by_name(
                 // through the singleton so this returns the same closure
                 // pointer as the bare `Array` identifier.
                 if key_bytes == b"constructor" {
+                    // An own `constructor` expando (`arr.constructor = Foo`)
+                    // shadows the intrinsic — observable via ArraySpeciesCreate
+                    // (map/filter/slice/splice/concat) and reflection. Only fall
+                    // back to the global `Array` when there is no own write.
+                    if let Some(v) = own_data_field_by_name(obj, key) {
+                        return v;
+                    }
+                    if let Some(v) = crate::array::array_named_property_get(arr, key) {
+                        return JSValue::from_bits(v.to_bits());
+                    }
                     let v = js_get_global_this_builtin_value(b"Array".as_ptr(), 5);
                     return JSValue::from_bits(v.to_bits());
                 }

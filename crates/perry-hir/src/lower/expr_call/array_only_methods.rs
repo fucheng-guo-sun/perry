@@ -506,6 +506,41 @@ pub(super) fn try_array_only_methods(
                     || chain_roots_at_stream(ctx, member_obj)
                     || chain_roots_at_iterator_from(member_obj)
                     || is_util_mime_params_receiver(ctx, member_obj);
+                // thisArg routing: the dense `Expr::Array<Method>` fast paths
+                // carry only the callback and silently drop a 2nd positional
+                // `thisArg` argument, so `[x].every(cb, thisArg)` ran the
+                // callback with `this === undefined` (test262 §15.4.4.* `-5-*`
+                // / `-7-*`). The generic `Expr::ArrayLikeMethod` lowering binds
+                // the callback `this` via the spec-complete `js_arraylike_*`
+                // runtime entry points (ToObject + LengthOfArrayLike + a
+                // ThisGuard around each invocation), so when an explicit thisArg
+                // is supplied route the callback iterators through it. Gated on
+                // `!recv_is_class` (which already excludes Map/Set/class
+                // receivers — those keep their own forEach contract) and on the
+                // 2nd argument being a plain positional (no spread).
+                if !recv_is_class
+                    && matches!(
+                        method_name,
+                        "map"
+                            | "filter"
+                            | "forEach"
+                            | "find"
+                            | "findIndex"
+                            | "findLast"
+                            | "findLastIndex"
+                            | "some"
+                            | "every"
+                    )
+                    && call.args.len() >= 2
+                    && call.args.iter().all(|a| a.spread.is_none())
+                {
+                    let receiver = Box::new(lower_expr(ctx, &member.obj)?);
+                    return Ok(Ok(Expr::ArrayLikeMethod {
+                        method: method_name.to_string(),
+                        receiver,
+                        args,
+                    }));
+                }
                 match method_name {
                     "reduce" if !args.is_empty() && !recv_is_class => {
                         let array_expr = lower_expr(ctx, &member.obj)?;

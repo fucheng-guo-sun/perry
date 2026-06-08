@@ -43,23 +43,37 @@ pub extern "C" fn js_array_splice(
             (delete_count as u32).min(len as u32 - start_idx)
         };
 
-        // Create array of deleted elements
-        let deleted = js_array_alloc(actual_delete);
-        (*deleted).length = actual_delete;
+        // Create array of deleted elements via ArraySpeciesCreate (ECMA-262
+        // §23.1.3.31 step 11): reads `O.constructor` / `@@species` and throws
+        // on a poisoned getter or non-constructor species before the receiver
+        // is mutated.
+        let recv_value = f64::from_bits(crate::value::JSValue::pointer(arr as *const u8).bits());
+        let deleted_box =
+            crate::array::species::array_species_create(recv_value, actual_delete as usize);
+        let deleted_is_plain = crate::array::species::species_result_is_plain_array(deleted_box);
+        let deleted = crate::value::js_nanbox_get_pointer(deleted_box) as *mut ArrayHeader;
 
         let elements_ptr = (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
-        let deleted_elements =
-            (deleted as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
 
         // Copy deleted elements to return array
-        for i in 0..actual_delete as usize {
-            // GC_STORE_AUDIT(BARRIERED): deleted-array initialization is followed by layout/barrier rebuild.
-            ptr::write(
-                deleted_elements.add(i),
-                *elements_ptr.add(start_idx as usize + i),
-            );
+        if deleted_is_plain {
+            (*deleted).length = actual_delete;
+            let deleted_elements =
+                (deleted as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
+            for i in 0..actual_delete as usize {
+                // GC_STORE_AUDIT(BARRIERED): deleted-array init is followed by layout/barrier rebuild.
+                ptr::write(
+                    deleted_elements.add(i),
+                    *elements_ptr.add(start_idx as usize + i),
+                );
+            }
+            rebuild_array_layout(deleted);
+        } else {
+            for i in 0..actual_delete as usize {
+                let v = *elements_ptr.add(start_idx as usize + i);
+                crate::array::species::species_result_set(deleted_box, i, v);
+            }
         }
-        rebuild_array_layout(deleted);
 
         // Calculate new length
         let new_len = (len as u32 - actual_delete + items_count) as u32;
@@ -186,22 +200,36 @@ pub extern "C" fn js_array_slice(
         // Calculate slice length
         let slice_len = end_idx.saturating_sub(start_idx);
 
-        // Allocate new array
-        let result = js_array_alloc(slice_len);
-        (*result).length = slice_len;
+        // ECMA-262 §23.1.3.25 step 8: ArraySpeciesCreate(O, count) — reads
+        // `O.constructor` / `@@species` and throws on a poisoned getter or
+        // non-constructor species before any element is copied.
+        let recv_value = f64::from_bits(crate::value::JSValue::pointer(arr as *const u8).bits());
+        let result_box =
+            crate::array::species::array_species_create(recv_value, slice_len as usize);
+        let is_plain = crate::array::species::species_result_is_plain_array(result_box);
+        let result = crate::value::js_nanbox_get_pointer(result_box) as *mut ArrayHeader;
 
         // Copy elements
         let src_elements = (arr as *const u8).add(std::mem::size_of::<ArrayHeader>()) as *const f64;
-        let dst_elements = (result as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
-
-        for i in 0..slice_len as usize {
-            // GC_STORE_AUDIT(BARRIERED): slice result initialization is followed by layout/barrier rebuild.
-            ptr::write(
-                dst_elements.add(i),
-                ptr::read(src_elements.add(start_idx as usize + i)),
-            );
+        if is_plain {
+            (*result).length = slice_len;
+            let dst_elements =
+                (result as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
+            for i in 0..slice_len as usize {
+                // GC_STORE_AUDIT(BARRIERED): slice result init is followed by layout/barrier rebuild.
+                ptr::write(
+                    dst_elements.add(i),
+                    ptr::read(src_elements.add(start_idx as usize + i)),
+                );
+            }
+            rebuild_array_layout(result);
+        } else {
+            // Custom species container: CreateDataPropertyOrThrow per element.
+            for i in 0..slice_len as usize {
+                let v = ptr::read(src_elements.add(start_idx as usize + i));
+                crate::array::species::species_result_set(result_box, i, v);
+            }
         }
-        rebuild_array_layout(result);
 
         result
     }

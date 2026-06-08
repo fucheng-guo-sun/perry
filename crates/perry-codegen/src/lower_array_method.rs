@@ -321,13 +321,19 @@ pub(crate) fn lower_array_method(
             Ok(blk.sitofp(I32, &i32_v, DOUBLE))
         }
         "reduce" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.len() > 2 {
                 bail!(
                     "perry-codegen: Array.reduce expects 1-2 args, got {}",
                     args.len()
                 );
             }
-            let cb_box = lower_expr(ctx, &args[0])?;
+            // 0-arg → runtime TypeError (callback validation on undefined),
+            // not compile-fail.
+            let cb_box = if let Some(arg) = args.first() {
+                lower_expr(ctx, arg)?
+            } else {
+                crate::nanbox::double_literal(f64::from_bits(TAG_UNDEFINED))
+            };
             let (has_initial, initial_box) = if args.len() == 2 {
                 let init = lower_expr(ctx, &args[1])?;
                 (1i32, init)
@@ -351,13 +357,19 @@ pub(crate) fn lower_array_method(
             ))
         }
         "reduceRight" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.len() > 2 {
                 bail!(
                     "perry-codegen: Array.reduceRight expects 1-2 args, got {}",
                     args.len()
                 );
             }
-            let cb_box = lower_expr(ctx, &args[0])?;
+            // 0-arg → runtime TypeError (callback validation on undefined),
+            // not compile-fail.
+            let cb_box = if let Some(arg) = args.first() {
+                lower_expr(ctx, arg)?
+            } else {
+                crate::nanbox::double_literal(f64::from_bits(TAG_UNDEFINED))
+            };
             let (has_initial, initial_box) = if args.len() == 2 {
                 let init = lower_expr(ctx, &args[1])?;
                 (1i32, init)
@@ -441,13 +453,18 @@ pub(crate) fn lower_array_method(
             Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)))
         }
         "includes" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.len() > 2 {
                 bail!(
                     "perry-codegen: Array.includes expects 1-2 args, got {}",
                     args.len()
                 );
             }
-            let val_box = lower_expr(ctx, &args[0])?;
+            // 0-arg → includes(undefined), not compile-fail.
+            let val_box = if let Some(arg) = args.first() {
+                lower_expr(ctx, arg)?
+            } else {
+                crate::nanbox::double_literal(f64::from_bits(TAG_UNDEFINED))
+            };
             // #2804: optional fromIndex (2nd arg). has_from=1 + lowered index
             // when present; otherwise has_from=0 with a placeholder DOUBLE.
             let (from_box, has_from) = if args.len() == 2 {
@@ -484,13 +501,18 @@ pub(crate) fn lower_array_method(
             Ok(blk.bitcast_i64_to_double(&tagged))
         }
         "indexOf" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.len() > 2 {
                 bail!(
                     "perry-codegen: Array.indexOf expects 1-2 args, got {}",
                     args.len()
                 );
             }
-            let val_box = lower_expr(ctx, &args[0])?;
+            // 0-arg → search for `undefined` from index 0, not compile-fail.
+            let val_box = if let Some(arg) = args.first() {
+                lower_expr(ctx, arg)?
+            } else {
+                crate::nanbox::double_literal(f64::from_bits(TAG_UNDEFINED))
+            };
             // #2804: optional fromIndex (2nd arg). has_from=1 + lowered index
             // when present; otherwise has_from=0 with a placeholder DOUBLE.
             let (from_box, has_from) = if args.len() == 2 {
@@ -519,13 +541,18 @@ pub(crate) fn lower_array_method(
             Ok(blk.sitofp(I32, &i32_v, DOUBLE))
         }
         "lastIndexOf" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.len() > 2 {
                 bail!(
                     "perry-codegen: Array.lastIndexOf expects 1-2 args, got {}",
                     args.len()
                 );
             }
-            let val_box = lower_expr(ctx, &args[0])?;
+            // 0-arg → search for `undefined`, not compile-fail.
+            let val_box = if let Some(arg) = args.first() {
+                lower_expr(ctx, arg)?
+            } else {
+                crate::nanbox::double_literal(f64::from_bits(TAG_UNDEFINED))
+            };
             // Optional fromIndex: with has_from=1 pass the lowered index;
             // when absent pass has_from=0 (runtime defaults to length-1) and
             // reuse `val_box` as an ignored placeholder DOUBLE operand.
