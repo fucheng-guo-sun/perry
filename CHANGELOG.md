@@ -2,6 +2,17 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.1150 — Fully-static musl Linux target + async tail-return promise adoption
+
+Release-sync bump folding in two changes that landed on `main` after the v0.5.1149
+changelog entry:
+
+- **feat(linux): fully-static musl target** (`--libc musl` / `[linux] libc`) (#4834) —
+  produce fully-static Linux executables against musl.
+- **fix(runtime): adopt returned promise state on async tail-return** (#4832) — an
+  `async` function that tail-returns a promise now adopts that promise's eventual
+  state instead of resolving to the promise object itself.
+
 ## v0.5.1149 — Honor `dangerouslySetInnerHTML` in hono/jsx rendering (#4827)
 
 Perry's built-in JSX server renderer (`crates/perry-runtime/src/jsx.rs`, which
