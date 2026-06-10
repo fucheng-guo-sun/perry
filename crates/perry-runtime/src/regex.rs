@@ -281,6 +281,134 @@ fn set_exec_array_groups(arr: *mut ArrayHeader, groups_obj: *mut ObjectHeader) {
     crate::array::js_array_set_string_key(arr, groups_key, value);
 }
 
+/// Attach the `indices` own property to a regex match-result array when the
+/// `d` flag (hasIndices) is set. Per ECMA-262 RegExpBuiltinExec, `indices` is
+/// an array where each element is `[start, end]` for the corresponding capture
+/// group. Element 0 is the full match, elements 1..N are capture groups.
+/// Unmatched groups are `undefined`. The `indices` array also has a `.groups`
+/// property with named captures mapping to `[start, end]` pairs.
+fn set_exec_array_indices(
+    arr: *mut ArrayHeader,
+    str_data: &str,
+    search_start_byte: usize,
+    caps: &regex::Captures,
+    regex: &regex::Regex,
+) {
+    if arr.is_null() {
+        return;
+    }
+
+    let scope = crate::gc::RuntimeHandleScope::new();
+
+    // Build the indices array: [[start, end], [start, end], ...]
+    let indices_arr = crate::array::js_array_alloc(caps.len() as u32);
+    let indices_handle = scope.root_raw_mut_ptr(indices_arr);
+    unsafe {
+        (*indices_handle.get_raw_mut_ptr::<ArrayHeader>()).length = caps.len() as u32;
+    }
+
+    for (i, cap) in caps.iter().enumerate() {
+        let indices_arr_ptr = indices_handle.get_raw_mut_ptr::<ArrayHeader>();
+        if let Some(m) = cap {
+            // Convert byte offsets to char indices (JS spec uses UTF-16 code units,
+            // but we use char indices for simplicity — matches existing .index behavior)
+            let start_byte = m.start() + search_start_byte;
+            let end_byte = m.end() + search_start_byte;
+            let start_char = str_data[..start_byte].chars().count() as f64;
+            let end_char = str_data[..end_byte].chars().count() as f64;
+
+            // Create [start, end] pair
+            let pair = crate::array::js_array_alloc(2);
+            let pair_handle = scope.root_raw_mut_ptr(pair);
+            unsafe {
+                (*pair_handle.get_raw_mut_ptr::<ArrayHeader>()).length = 2;
+                crate::array::store_array_slot(
+                    pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                    0,
+                    start_char.to_bits(),
+                );
+                crate::array::store_array_slot(
+                    pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                    1,
+                    end_char.to_bits(),
+                );
+            }
+
+            let pair_ptr = pair_handle.get_raw_mut_ptr::<ArrayHeader>();
+            let nanboxed = crate::value::js_nanbox_pointer(pair_ptr as i64);
+            unsafe {
+                crate::array::store_array_slot(indices_arr_ptr, i, nanboxed.to_bits());
+            }
+        } else {
+            // Unmatched capture group -> undefined
+            let undefined = f64::from_bits(0x7FFC_0000_0000_0001);
+            unsafe {
+                crate::array::store_array_slot(indices_arr_ptr, i, undefined.to_bits());
+            }
+        }
+    }
+
+    // If there are named groups, attach .groups property to indices array
+    let has_named_groups = regex.capture_names().any(|n| n.is_some());
+    if has_named_groups {
+        let groups_obj = crate::object::js_object_alloc(0, 0);
+        let groups_handle = scope.root_raw_mut_ptr(groups_obj);
+
+        for (name, m) in regex
+            .capture_names()
+            .enumerate()
+            .filter_map(|(i, name)| name.map(|n| (n, caps.get(i))))
+        {
+            let val = if let Some(m) = m {
+                let start_byte = m.start() + search_start_byte;
+                let end_byte = m.end() + search_start_byte;
+                let start_char = str_data[..start_byte].chars().count() as f64;
+                let end_char = str_data[..end_byte].chars().count() as f64;
+
+                // Create [start, end] pair for named group
+                let pair = crate::array::js_array_alloc(2);
+                let pair_handle = scope.root_raw_mut_ptr(pair);
+                unsafe {
+                    (*pair_handle.get_raw_mut_ptr::<ArrayHeader>()).length = 2;
+                    crate::array::store_array_slot(
+                        pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                        0,
+                        start_char.to_bits(),
+                    );
+                    crate::array::store_array_slot(
+                        pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                        1,
+                        end_char.to_bits(),
+                    );
+                }
+                let pair_ptr = pair_handle.get_raw_mut_ptr::<ArrayHeader>();
+                crate::value::js_nanbox_pointer(pair_ptr as i64)
+            } else {
+                f64::from_bits(0x7FFC_0000_0000_0001) // TAG_UNDEFINED
+            };
+
+            let key_ptr = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+            let groups_obj_ptr = groups_handle.get_raw_mut_ptr::<crate::object::ObjectHeader>();
+            crate::object::js_object_set_field_by_name(groups_obj_ptr, key_ptr, val);
+        }
+
+        let groups_ptr = groups_handle.get_raw_mut_ptr::<crate::object::ObjectHeader>();
+        let groups_nanboxed = crate::value::js_nanbox_pointer(groups_ptr as i64);
+        let indices_key = js_string_from_str("groups");
+        crate::array::js_array_set_string_key(
+            indices_handle.get_raw_mut_ptr::<ArrayHeader>(),
+            indices_key,
+            f64::from_bits(groups_nanboxed.to_bits()),
+        );
+    }
+
+    // Attach indices array to the match result
+    let indices_ptr = indices_handle.get_raw_mut_ptr::<ArrayHeader>();
+    let indices_nanboxed = crate::value::js_nanbox_pointer(indices_ptr as i64);
+    let indices_key = js_string_from_str("indices");
+    crate::array::js_array_set_string_key(arr, indices_key, f64::from_bits(indices_nanboxed.to_bits()));
+}
+
 fn char_index_to_byte(s: &str, char_index: usize) -> usize {
     if char_index == 0 {
         return 0;
@@ -722,6 +850,18 @@ pub extern "C" fn js_string_match(
                             arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
                             groups_obj,
                         );
+                        // Build `indices` if the `d` flag (hasIndices) is set —
+                        // non-global `String.prototype.match` delegates to
+                        // RegExpExec, so it carries the same `indices` as exec().
+                        if (*re).has_indices {
+                            set_exec_array_indices_fancy(
+                                arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                                str_data,
+                                0,
+                                &fre,
+                                &caps,
+                            );
+                        }
                         return arr_handle.get_raw_mut_ptr::<ArrayHeader>();
                     }
                     _ => {
@@ -850,6 +990,19 @@ pub extern "C" fn js_string_match(
                         set_exec_array_groups(
                             arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
                             ptr::null_mut(),
+                        );
+                    }
+
+                    // Build `indices` if the `d` flag (hasIndices) is set —
+                    // non-global `String.prototype.match` delegates to
+                    // RegExpExec, so it carries the same `indices` as exec().
+                    if (*re).has_indices {
+                        set_exec_array_indices(
+                            arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                            str_data,
+                            0,
+                            &caps,
+                            regex,
                         );
                     }
 
@@ -1008,6 +1161,117 @@ pub(crate) unsafe fn build_fancy_groups(
         crate::object::js_object_set_field_by_name(groups_obj, key_ptr, val);
     }
     groups_handle.get_raw_mut_ptr::<crate::object::ObjectHeader>()
+}
+
+/// Build and attach the `indices` property for fancy-regex captures (lookbehind/backreference fallback).
+unsafe fn set_exec_array_indices_fancy(
+    arr: *mut ArrayHeader,
+    str_data: &str,
+    search_start_byte: usize,
+    fre: &fancy_regex::Regex,
+    caps: &fancy_regex::Captures,
+) {
+    if arr.is_null() {
+        return;
+    }
+
+    let scope = crate::gc::RuntimeHandleScope::new();
+
+    // Build the indices array: [[start, end], [start, end], ...]
+    let indices_arr = crate::array::js_array_alloc(caps.len() as u32);
+    let indices_handle = scope.root_raw_mut_ptr(indices_arr);
+    (*indices_handle.get_raw_mut_ptr::<ArrayHeader>()).length = caps.len() as u32;
+
+    for i in 0..caps.len() {
+        let indices_arr_ptr = indices_handle.get_raw_mut_ptr::<ArrayHeader>();
+        if let Some(m) = caps.get(i) {
+            let start_byte = m.start() + search_start_byte;
+            let end_byte = m.end() + search_start_byte;
+            let start_char = str_data[..start_byte].chars().count() as f64;
+            let end_char = str_data[..end_byte].chars().count() as f64;
+
+            // Create [start, end] pair
+            let pair = crate::array::js_array_alloc(2);
+            let pair_handle = scope.root_raw_mut_ptr(pair);
+            (*pair_handle.get_raw_mut_ptr::<ArrayHeader>()).length = 2;
+            crate::array::store_array_slot(
+                pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                0,
+                start_char.to_bits(),
+            );
+            crate::array::store_array_slot(
+                pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                1,
+                end_char.to_bits(),
+            );
+
+            let pair_ptr = pair_handle.get_raw_mut_ptr::<ArrayHeader>();
+            let nanboxed = crate::value::js_nanbox_pointer(pair_ptr as i64);
+            crate::array::store_array_slot(indices_arr_ptr, i, nanboxed.to_bits());
+        } else {
+            // Unmatched capture group -> undefined
+            let undefined = f64::from_bits(0x7FFC_0000_0000_0001);
+            crate::array::store_array_slot(indices_arr_ptr, i, undefined.to_bits());
+        }
+    }
+
+    // If there are named groups, attach .groups property to indices array
+    let has_named_groups = fre.capture_names().any(|n| n.is_some());
+    if has_named_groups {
+        let groups_obj = crate::object::js_object_alloc(0, 0);
+        let groups_handle = scope.root_raw_mut_ptr(groups_obj);
+
+        for (name, m) in fre
+            .capture_names()
+            .enumerate()
+            .filter_map(|(i, name)| name.map(|n| (n, caps.get(i))))
+        {
+            let val = if let Some(m) = m {
+                let start_byte = m.start() + search_start_byte;
+                let end_byte = m.end() + search_start_byte;
+                let start_char = str_data[..start_byte].chars().count() as f64;
+                let end_char = str_data[..end_byte].chars().count() as f64;
+
+                // Create [start, end] pair for named group
+                let pair = crate::array::js_array_alloc(2);
+                let pair_handle = scope.root_raw_mut_ptr(pair);
+                (*pair_handle.get_raw_mut_ptr::<ArrayHeader>()).length = 2;
+                crate::array::store_array_slot(
+                    pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                    0,
+                    start_char.to_bits(),
+                );
+                crate::array::store_array_slot(
+                    pair_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                    1,
+                    end_char.to_bits(),
+                );
+                let pair_ptr = pair_handle.get_raw_mut_ptr::<ArrayHeader>();
+                crate::value::js_nanbox_pointer(pair_ptr as i64)
+            } else {
+                f64::from_bits(0x7FFC_0000_0000_0001) // TAG_UNDEFINED
+            };
+
+            let key_ptr = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+            let groups_obj_ptr = groups_handle.get_raw_mut_ptr::<crate::object::ObjectHeader>();
+            crate::object::js_object_set_field_by_name(groups_obj_ptr, key_ptr, val);
+        }
+
+        let groups_ptr = groups_handle.get_raw_mut_ptr::<crate::object::ObjectHeader>();
+        let groups_nanboxed = crate::value::js_nanbox_pointer(groups_ptr as i64);
+        let indices_key = js_string_from_str("groups");
+        crate::array::js_array_set_string_key(
+            indices_handle.get_raw_mut_ptr::<ArrayHeader>(),
+            indices_key,
+            f64::from_bits(groups_nanboxed.to_bits()),
+        );
+    }
+
+    // Attach indices array to the match result
+    let indices_ptr = indices_handle.get_raw_mut_ptr::<ArrayHeader>();
+    let indices_nanboxed = crate::value::js_nanbox_pointer(indices_ptr as i64);
+    let indices_key = js_string_from_str("indices");
+    crate::array::js_array_set_string_key(arr, indices_key, f64::from_bits(indices_nanboxed.to_bits()));
 }
 
 /// Fancy-regex fallback for the string-replacement (non-callback) forms of
@@ -1357,6 +1621,16 @@ pub extern "C" fn js_regexp_exec(
                     let groups_obj = build_fancy_groups(fre, &caps, &scope);
                     LAST_EXEC_GROUPS.with(|g| *g.borrow_mut() = groups_obj);
                     set_exec_array_groups(arr_handle.get_raw_mut_ptr::<ArrayHeader>(), groups_obj);
+                    // Build indices array if `d` flag (hasIndices) is set
+                    if (*re).has_indices {
+                        set_exec_array_indices_fancy(
+                            arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                            str_data,
+                            search_start_byte,
+                            fre,
+                            &caps,
+                        );
+                    }
                     return Some(arr_handle.get_raw_mut_ptr::<ArrayHeader>());
                 }
                 return Some(ptr::null_mut()); // fancy-regex tried but no match
@@ -1463,6 +1737,17 @@ pub extern "C" fn js_regexp_exec(
                     set_exec_array_groups(
                         arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
                         ptr::null_mut(),
+                    );
+                }
+
+                // Build indices array if `d` flag (hasIndices) is set
+                if (*re).has_indices {
+                    set_exec_array_indices(
+                        arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                        str_data,
+                        search_start_byte,
+                        &caps,
+                        regex,
                     );
                 }
 
