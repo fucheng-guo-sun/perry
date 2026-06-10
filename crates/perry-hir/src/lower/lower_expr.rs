@@ -180,6 +180,26 @@ fn wrap_with_gets(property: &str, fallback: Expr, envs: Vec<LocalId>) -> Expr {
         })
 }
 
+/// The HOLE-sentinel `Stmt::Let` for a with-fallback implicit global,
+/// emitted just ahead of the with statement that minted it.
+pub(crate) fn with_implicit_unset_let(id: LocalId, name: String) -> Stmt {
+    Stmt::Let {
+        id,
+        name,
+        ty: Type::Any,
+        mutable: true,
+        init: Some(Expr::Call {
+            callee: Box::new(Expr::ExternFuncRef {
+                name: "js_with_implicit_unset".to_string(),
+                param_types: vec![],
+                return_type: Type::Any,
+            }),
+            args: vec![],
+            type_args: vec![],
+        }),
+    }
+}
+
 pub(crate) fn with_set_fallback_for_ident(
     ctx: &mut LoweringContext,
     name: &str,
@@ -199,7 +219,15 @@ pub(crate) fn with_set_fallback_for_ident(
             "  Warning: Assignment to undeclared variable '{}', creating implicit local",
             name
         );
-        let id = ctx.define_local(name.to_string(), Type::Any);
+        // Sloppy implicit global — must survive the with-body block scope so
+        // reads AFTER the with statement resolve to the same binding
+        // (`with (o) { result = f(); } … use result` — test262 S13.2.2_A19).
+        // Whether the binding materialises is decided at RUNTIME (the env may
+        // own the property and take the write — with/12.10-0-7), so the local
+        // starts as a HOLE sentinel and reads check it.
+        let id = ctx.define_sloppy_implicit_global(name.to_string());
+        ctx.with_sloppy_implicit_ids.insert(id, name.to_string());
+        ctx.pending_with_implicit_inits.push((id, name.to_string()));
         WithSetFallback::SloppyImplicit(id)
     }
 }
@@ -364,6 +392,20 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
                 return Ok(wrap_with_gets(&name, fallback?, with_envs));
             }
             if let Some(id) = ctx.lookup_local(&name) {
+                // A with-fallback implicit global may still be the HOLE
+                // sentinel (the with-env took the write) — reading it then
+                // is a ReferenceError, not undefined.
+                if let Some(n) = ctx.with_sloppy_implicit_ids.get(&id) {
+                    return Ok(Expr::Call {
+                        callee: Box::new(Expr::ExternFuncRef {
+                            name: "js_with_implicit_read".to_string(),
+                            param_types: vec![Type::Any, Type::String],
+                            return_type: Type::Any,
+                        }),
+                        args: vec![Expr::LocalGet(id), Expr::String(n.clone())],
+                        type_args: vec![],
+                    });
+                }
                 Ok(Expr::LocalGet(id))
             } else if let Some(id) = ctx.lookup_func(&name) {
                 Ok(Expr::FuncRef(id))

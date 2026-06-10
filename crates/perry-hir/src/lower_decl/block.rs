@@ -53,7 +53,7 @@ fn collect_var_binding_names_from_var_decl(var_decl: &ast::VarDecl, out: &mut Ve
     }
 }
 
-fn collect_var_binding_names_from_stmt(stmt: &ast::Stmt, out: &mut Vec<String>) {
+pub(crate) fn collect_var_binding_names_from_stmt(stmt: &ast::Stmt, out: &mut Vec<String>) {
     match stmt {
         ast::Stmt::Block(block) => {
             for stmt in &block.stmts {
@@ -114,11 +114,22 @@ fn collect_var_binding_names_from_stmt(stmt: &ast::Stmt, out: &mut Vec<String>) 
                 }
             }
         }
+        ast::Stmt::With(with_stmt) => collect_var_binding_names_from_stmt(&with_stmt.body, out),
         _ => {}
     }
 }
 
-fn predefine_var_bindings_in_function_body(ctx: &mut LoweringContext, block: &ast::BlockStmt) {
+/// Returns the (name, id) pairs newly created here (i.e. names that did not
+/// already have a binding in the current scope, like a same-named param).
+/// The caller emits an undefined-initialised `Stmt::Let` for each at body
+/// entry: codegen creates local storage at the first `Stmt::Let` for an id,
+/// so a read compiled before the nested decl (`if (c) break;` ahead of
+/// `var c = ...` in the same loop body) would otherwise bake in an
+/// `undefined` constant and never observe the later write.
+fn predefine_var_bindings_in_function_body(
+    ctx: &mut LoweringContext,
+    block: &ast::BlockStmt,
+) -> Vec<(String, LocalId)> {
     let mut names = Vec::new();
     for stmt in &block.stmts {
         collect_var_binding_names_from_stmt(stmt, &mut names);
@@ -126,6 +137,7 @@ fn predefine_var_bindings_in_function_body(ctx: &mut LoweringContext, block: &as
     names.sort();
     names.dedup();
 
+    let mut created = Vec::new();
     let scope_start = ctx.scope_local_marks.last().copied().unwrap_or(0);
     for name in names {
         let existing_current_scope = ctx.locals[scope_start..]
@@ -133,9 +145,14 @@ fn predefine_var_bindings_in_function_body(ctx: &mut LoweringContext, block: &as
             .rev()
             .find(|(n, _, _)| n == &name)
             .map(|(_, id, _)| *id);
-        let local_id = existing_current_scope.unwrap_or_else(|| ctx.define_local(name, Type::Any));
+        let local_id = existing_current_scope.unwrap_or_else(|| {
+            let id = ctx.define_local(name.clone(), Type::Any);
+            created.push((name, id));
+            id
+        });
         ctx.var_hoisted_ids.insert(local_id);
     }
+    created
 }
 
 /// Lower a function-body block, with support for ECMAScript function-decl
@@ -163,7 +180,7 @@ pub fn lower_fn_body_block_stmt(
     let parent_strict = ctx.current_strict;
     ctx.current_strict =
         parent_strict || crate::lower::stmt_list_starts_with_use_strict_directive(&block.stmts);
-    predefine_var_bindings_in_function_body(ctx, block);
+    let hoisted_var_slots = predefine_var_bindings_in_function_body(ctx, block);
 
     // Phase 1: pre-define hoisted FnDecl locals so forward references in
     // any earlier statement resolve via `lookup_local`. Generator and
@@ -196,9 +213,24 @@ pub fn lower_fn_body_block_stmt(
         }
     };
 
+    // Undefined-initialised entry slots for hoisted `var`s declared in
+    // nested blocks (see predefine_var_bindings_in_function_body docs).
+    let var_slot_lets: Vec<Stmt> = hoisted_var_slots
+        .into_iter()
+        .map(|(name, id)| Stmt::Let {
+            id,
+            name,
+            ty: Type::Any,
+            mutable: true,
+            init: Some(Expr::Undefined),
+        })
+        .collect();
+
     if hoisted_id_set.is_empty() {
         ctx.current_strict = parent_strict;
-        return Ok(body);
+        let mut result = var_slot_lets;
+        result.extend(body);
+        return Ok(result);
     }
 
     // Phase 3: split — pull every top-level `Stmt::Let` whose id is in the
@@ -228,6 +260,7 @@ pub fn lower_fn_body_block_stmt(
     if !prealloc.is_empty() {
         result.push(Stmt::PreallocateBoxes(prealloc));
     }
+    result.extend(var_slot_lets);
     result.extend(hoisted_lets);
     result.extend(other);
     ctx.current_strict = parent_strict;

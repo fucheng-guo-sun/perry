@@ -1027,6 +1027,8 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     // RegExp.escape(str) — #2899. Takes/returns NaN-boxed f64 (string).
     module.declare_function("js_regexp_escape", DOUBLE, &[DOUBLE]);
     module.declare_function("js_get_string_pointer_unified", I64, &[DOUBLE]);
+    // Strict-equality (`===`) compare for switch case dispatch.
+    module.declare_function("js_switch_strict_equals", I32, &[DOUBLE, DOUBLE]);
     module.declare_function("js_value_to_str_ptr_for_ffi", I64, &[DOUBLE]);
     // Closes #580: alias-on-copy refcount bump for string locals. The
     // call site at `crates/perry-codegen/src/stmt.rs:725` was added by
@@ -1177,6 +1179,11 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_throw_symbol_constructor_type_error", DOUBLE, &[]);
     module.declare_function("js_throw_bigint_constructor_type_error", DOUBLE, &[]);
     module.declare_function("js_throw_strict_eval_arguments_syntax_error", DOUBLE, &[]);
+    module.declare_function(
+        "js_throw_restricted_function_property_assignment",
+        DOUBLE,
+        &[],
+    );
     module.declare_function("js_throw_math_constructor_type_error", DOUBLE, &[]);
     module.declare_function("js_webcrypto_illegal_constructor", DOUBLE, &[]);
     module.declare_function("js_throw_type_error_const_assignment", DOUBLE, &[DOUBLE]);
@@ -1186,6 +1193,11 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
         &[DOUBLE],
     );
     module.declare_function("js_throw_reference_error_unresolved_get", DOUBLE, &[]);
+    // with-statement implicit-global sentinel (HOLE) helpers.
+    module.declare_function("js_with_implicit_unset", DOUBLE, &[]);
+    module.declare_function("js_with_implicit_read", DOUBLE, &[DOUBLE, DOUBLE]);
+    // Iterator-protocol result validation (for-of lazy loop).
+    module.declare_function("js_iterator_result_validate", DOUBLE, &[DOUBLE]);
     module.declare_function("js_throw_reference_error_this_before_super", DOUBLE, &[]);
     module.declare_function("js_throw_reference_error_super_delete", DOUBLE, &[]);
     module.declare_function(

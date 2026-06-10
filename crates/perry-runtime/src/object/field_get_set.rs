@@ -2367,6 +2367,15 @@ pub extern "C" fn js_object_has_property(obj: f64, key: f64) -> f64 {
                 if key_str.is_null() {
                     return nanbox_false;
                 }
+                // `'caller' in fn` / `'arguments' in fn` — HasProperty must
+                // NOT run the poisoned getter (which throws). The accessor
+                // exists on Function.prototype, so the answer is true.
+                // Refs test262 S13.2_A8_T1/T2.
+                if let Some(key_name) = super::has_own_helpers::str_from_string_header(key_str) {
+                    if matches!(key_name, "caller" | "arguments") {
+                        return nanbox_true;
+                    }
+                }
                 let v = js_object_get_field_by_name(obj_ptr, key_str);
                 return if v.is_undefined() {
                     nanbox_false

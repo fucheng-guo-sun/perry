@@ -79,6 +79,18 @@ fn throw_type_error_const_assignment(name: &str) -> Expr {
     }
 }
 
+fn throw_restricted_function_property_assignment() -> Expr {
+    Expr::Call {
+        callee: Box::new(Expr::ExternFuncRef {
+            name: "js_throw_restricted_function_property_assignment".to_string(),
+            param_types: vec![],
+            return_type: Type::Any,
+        }),
+        args: vec![],
+        type_args: vec![],
+    }
+}
+
 fn throw_reference_error_unresolvable_assignment(name: &str) -> Expr {
     Expr::Call {
         callee: Box::new(Expr::ExternFuncRef {
@@ -229,7 +241,12 @@ pub(super) fn lower_assign(ctx: &mut LoweringContext, assign: &ast::AssignExpr) 
         .zip(expr_ident_name(assign.right.as_ref()))
         .and_then(|(left, right)| (left == right).then_some(left))
     {
-        if ctx.lookup_local(name).is_none() || ctx.pre_registered_module_var_decls.contains(name) {
+        // `x = x` with no binding anywhere → ReferenceError (the RHS read of
+        // an unresolvable reference throws before the sloppy-global create).
+        // A pre-registered module `var` declared *later* in the source is
+        // still a declared binding (var hoisting) — self-assignment before
+        // the declaration statement is fine and yields undefined.
+        if ctx.lookup_local(name).is_none() {
             return Ok(throw_reference_error_unresolvable_assignment(name));
         }
     }
@@ -470,6 +487,22 @@ fn lower_assignment_target(
             // Check if this is a static field assignment (e.g., Counter.count = 5)
             if let ast::Expr::Ident(obj_ident) = member.obj.as_ref() {
                 let obj_name = obj_ident.sym.to_string();
+                // `f.caller = v` / `f.arguments = v` on a declared function —
+                // the poisoned setter-less accessor on Function.prototype
+                // throws (strict semantics; Perry-compiled code is strict).
+                // The runtime closure-receiver path covers function VALUES;
+                // this covers `function f(){}` declarations whose property
+                // writes lower before reaching it. Refs test262 13.2-*-s.
+                if ctx.lookup_local(&obj_name).is_none() && ctx.lookup_func(&obj_name).is_some() {
+                    if let ast::MemberProp::Ident(prop_ident) = &member.prop {
+                        if matches!(prop_ident.sym.as_ref(), "caller" | "arguments") {
+                            return Ok(Expr::Sequence(vec![
+                                *value,
+                                throw_restricted_function_property_assignment(),
+                            ]));
+                        }
+                    }
+                }
                 if ctx.lookup_class(&obj_name).is_some() {
                     if let ast::MemberProp::Ident(prop_ident) = &member.prop {
                         let field_name = prop_ident.sym.to_string();

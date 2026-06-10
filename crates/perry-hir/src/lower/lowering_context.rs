@@ -280,6 +280,15 @@ pub struct LoweringContext {
     /// lowering, so closures and later top-level reads share storage.
     pub(crate) sloppy_implicit_globals: Vec<(String, LocalId)>,
     pub(crate) sloppy_implicit_global_ids: HashSet<LocalId>,
+    /// Sloppy implicit globals minted as `with`-set FALLBACKS. Whether the
+    /// binding ever materialises is a runtime question (the with-env may own
+    /// the property and take the write), so these locals start as a HOLE
+    /// sentinel and bare reads route through `js_with_implicit_read` which
+    /// throws ReferenceError while unset. id → identifier name.
+    pub(crate) with_sloppy_implicit_ids: std::collections::HashMap<LocalId, String>,
+    /// (id, name) pairs whose sentinel-init `Stmt::Let` still needs to be
+    /// emitted ahead of the with statement currently being lowered.
+    pub(crate) pending_with_implicit_inits: Vec<(LocalId, String)>,
     /// Current function/closure nesting depth (`enter_scope` bumps this,
     /// `exit_scope` decrements). 0 == still at module top level.
     pub(crate) scope_depth: usize,

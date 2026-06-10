@@ -66,8 +66,20 @@ pub(crate) fn lower_for(
     // Saves ~25-30% on `for (let i = 0; i < arr.length; i++) arr[i] = i`
     // and `for (let i = 0; i < arr.length; i++) for (let j = 0; j <
     // arr.length; j++) ...` patterns.
-    let hoist_classification: Option<(u32, u32, perry_hir::CompareOp)> =
-        condition.and_then(|cond| classify_for_length_hoist(cond, body));
+    let hoist_classification: Option<(u32, u32, perry_hir::CompareOp)> = condition
+        .and_then(|cond| classify_for_length_hoist(cond, body))
+        // `__arr_N` is the for-of desugar's holder — an ALIAS of the user's
+        // iterable local. Body mutations go through the user's name
+        // (`array.push(1)` → ArrayPush on the user id), so the walker above
+        // can't see them against the holder id. Spec ForOf reads the live
+        // length every step (array-expand/contract in test262), so never
+        // hoist for desugared for-of loops; user-written `i < arr.length`
+        // loops keep the peephole.
+        .filter(|(arr_id, _, _)| {
+            !ctx.local_id_to_name
+                .get(arr_id)
+                .is_some_and(|n| n.starts_with("__arr_"))
+        });
     let hoisted_length_arr_id: Option<u32> = hoist_classification.map(|(arr, _, _)| arr);
     let hoisted_index_bounds_are_safe = hoist_classification.is_some_and(|(_, counter_id, op)| {
         matches!(op, perry_hir::CompareOp::Lt)

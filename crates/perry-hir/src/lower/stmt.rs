@@ -1416,15 +1416,35 @@ pub(crate) fn lower_stmt(
             let catch = if let Some(ref catch_clause) = try_stmt.handler {
                 let scope_mark = ctx.enter_scope();
 
+                let mut binding_stmts: Vec<Stmt> = Vec::new();
                 let param = if let Some(ref pat) = catch_clause.param {
                     let param_name = get_pat_name(pat)?;
                     let param_id = ctx.define_local(param_name.clone(), Type::Any);
+                    // Destructured catch binding — `catch ([a, b = d()])` /
+                    // `catch ({ message })`: bind the pattern leaves off the
+                    // exception value before the user body runs.
+                    if !matches!(pat, ast::Pat::Ident(_)) {
+                        let mut leaves = Vec::new();
+                        collect_for_of_pattern_leaves(ctx, pat, &mut leaves);
+                        let mut idx = 0usize;
+                        emit_for_of_pattern_binding(
+                            ctx,
+                            pat,
+                            Expr::LocalGet(param_id),
+                            &leaves,
+                            &mut idx,
+                            &mut binding_stmts,
+                        )?;
+                    }
                     Some((param_id, param_name))
                 } else {
                     None
                 };
 
-                let catch_body = lower_block_stmt(ctx, &catch_clause.body)?;
+                let mut catch_body = lower_block_stmt(ctx, &catch_clause.body)?;
+                for (i, stmt) in binding_stmts.into_iter().enumerate() {
+                    catch_body.insert(i, stmt);
+                }
                 ctx.exit_scope(scope_mark);
 
                 Some(CatchClause {
@@ -1488,6 +1508,7 @@ pub(crate) fn lower_stmt(
                     "`with` statement is forbidden in strict mode"
                 );
             }
+            let insert_at = module.init.len();
             let env_id = ctx.define_local("__perry_with_env".to_string(), Type::Any);
             module.init.push(Stmt::Let {
                 id: env_id,
@@ -1500,6 +1521,14 @@ pub(crate) fn lower_stmt(
             let body_result = lower_body_stmt(ctx, &with_stmt.body);
             ctx.pop_with_env();
             module.init.extend(body_result?);
+            // Sentinel slots for implicit globals minted by with-set
+            // fallbacks inside this body (see with_set_fallback_for_ident).
+            for (i, (id, name)) in ctx.pending_with_implicit_inits.drain(..).enumerate() {
+                module.init.insert(
+                    insert_at + i,
+                    crate::lower::with_implicit_unset_let(id, name),
+                );
+            }
         }
         _ => {}
     }

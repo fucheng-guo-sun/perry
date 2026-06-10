@@ -389,6 +389,117 @@ pub fn collect_closure_captured_local_ids(
     }
 }
 
+/// Collect every LocalId WRITTEN by the statements — `LocalSet` and
+/// `Update` (++/--) targets, including inside nested closure bodies.
+///
+/// Used by the inliner: a parameter the body mutates must be materialised
+/// as a fresh setup `Let` (a copy) rather than substituted with the caller's
+/// argument expression in place. Substituting a `LocalGet(x)` makes the
+/// body's `param++` rewrite into `x++` and MUTATE THE CALLER'S LOCAL —
+/// test262 S13.2.1_A6 (`function f(a){ a++ } var x=1; f(x)` left x===2).
+pub fn collect_mutated_local_ids(stmts: &[Stmt], out: &mut std::collections::HashSet<LocalId>) {
+    fn visit_expr(e: &Expr, out: &mut std::collections::HashSet<LocalId>) {
+        match e {
+            Expr::LocalSet(id, _) => {
+                out.insert(*id);
+            }
+            Expr::Update { id, .. } => {
+                out.insert(*id);
+            }
+            Expr::Closure { body, .. } => collect_mutated_local_ids(body, out),
+            _ => {}
+        }
+        perry_hir::walker::walk_expr_children(e, &mut |sub| visit_expr(sub, out));
+    }
+
+    fn visit_stmt(s: &Stmt, out: &mut std::collections::HashSet<LocalId>) {
+        match s {
+            Stmt::Let { init: Some(e), .. } => visit_expr(e, out),
+            Stmt::Expr(e) | Stmt::Return(Some(e)) | Stmt::Throw(e) => visit_expr(e, out),
+            Stmt::Return(None) => {}
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                visit_expr(condition, out);
+                for s in then_branch {
+                    visit_stmt(s, out);
+                }
+                if let Some(eb) = else_branch {
+                    for s in eb {
+                        visit_stmt(s, out);
+                    }
+                }
+            }
+            Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
+                visit_expr(condition, out);
+                for s in body {
+                    visit_stmt(s, out);
+                }
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body,
+            } => {
+                if let Some(i) = init {
+                    visit_stmt(i, out);
+                }
+                if let Some(c) = condition {
+                    visit_expr(c, out);
+                }
+                if let Some(u) = update {
+                    visit_expr(u, out);
+                }
+                for s in body {
+                    visit_stmt(s, out);
+                }
+            }
+            Stmt::Switch {
+                discriminant,
+                cases,
+            } => {
+                visit_expr(discriminant, out);
+                for case in cases {
+                    if let Some(t) = &case.test {
+                        visit_expr(t, out);
+                    }
+                    for s in &case.body {
+                        visit_stmt(s, out);
+                    }
+                }
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                for s in body {
+                    visit_stmt(s, out);
+                }
+                if let Some(c) = catch {
+                    for s in &c.body {
+                        visit_stmt(s, out);
+                    }
+                }
+                if let Some(f) = finally {
+                    for s in f {
+                        visit_stmt(s, out);
+                    }
+                }
+            }
+            Stmt::Labeled { body, .. } => visit_stmt(body, out),
+            _ => {}
+        }
+    }
+
+    for s in stmts {
+        visit_stmt(s, out);
+    }
+}
+
 /// Check if a function is "pure" for init-inlining purposes: its body only
 /// references its own parameters and locally-declared variables.  No GlobalGet,
 /// GlobalSet, ExternFuncRef, or NativeMethodCall.  This makes it safe to inline

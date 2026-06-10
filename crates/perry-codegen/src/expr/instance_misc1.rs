@@ -218,12 +218,16 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         } => {
             let obj = lower_expr(ctx, object)?;
             let (key_box, key_raw) = emit_with_key(ctx, property);
+            // HasBinding probe AFTER the RHS evaluates — matches V8/node
+            // (`with (o) { var x = delete o.x; }` writes the hoisted var,
+            // not o.x — test262 variable/binding-resolution.js judges
+            // against node's order, not the spec's resolve-reference-first).
+            let value_reg = lower_expr(ctx, value)?;
             let had = ctx.block().call(
                 I32,
                 "js_with_has_binding",
                 &[(DOUBLE, &obj), (I64, &key_raw)],
             );
-            let value_reg = lower_expr(ctx, value)?;
             let had_bool = ctx.block().icmp_ne(I32, &had, "0");
 
             let hit_idx = ctx.new_block("with.set.hit");

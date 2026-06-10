@@ -1334,6 +1334,7 @@ pub fn build_inline_arg_bindings(
     params: &[Param],
     args: &[Expr],
     closure_captures: &HashSet<LocalId>,
+    mutated_params: &HashSet<LocalId>,
     next_local_id: &mut LocalId,
 ) -> Option<(Vec<Stmt>, HashMap<LocalId, Expr>)> {
     if params.iter().any(|param| param.is_rest) {
@@ -1348,7 +1349,12 @@ pub fn build_inline_arg_bindings(
             let trivial_in_closure = is_trivial_expr(arg)
                 && !matches!(arg, Expr::LocalGet(_))
                 && closure_captures.contains(&param.id);
-            if is_trivial_expr(arg) && !trivial_in_closure {
+            // A param the body WRITES must get its own copy: substituting
+            // the caller's LocalGet would alias the write onto the caller's
+            // local (`function f(a){a++}; f(x)` mutated x — S13.2.1_A6),
+            // and substituting a literal would produce `5++`.
+            let force_let = mutated_params.contains(&param.id);
+            if is_trivial_expr(arg) && !trivial_in_closure && !force_let {
                 param_map.insert(param.id, arg.clone());
             } else {
                 let fresh = *next_local_id;
@@ -1357,7 +1363,7 @@ pub fn build_inline_arg_bindings(
                     id: fresh,
                     name: param.name.clone(),
                     ty: param.ty.clone(),
-                    mutable: false,
+                    mutable: force_let,
                     init: Some(arg.clone()),
                 });
                 param_map.insert(param.id, Expr::LocalGet(fresh));
@@ -1418,10 +1424,14 @@ pub fn try_inline_simple_call(
                             std::collections::HashSet::new();
                         collect_closure_captured_local_ids(&func.body, &mut closure_capt);
 
+                        let mut mutated: std::collections::HashSet<LocalId> =
+                            std::collections::HashSet::new();
+                        collect_mutated_local_ids(&func.body, &mut mutated);
                         let (setup_stmts, param_map) = build_inline_arg_bindings(
                             &func.params,
                             args,
                             &closure_capt,
+                            &mutated,
                             next_local_id,
                         )?;
                         let mut result = return_expr.clone();
@@ -1458,10 +1468,14 @@ pub fn try_inline_simple_call(
                                 std::collections::HashSet::new();
                             collect_closure_captured_local_ids(&func.body, &mut closure_capt);
 
+                            let mut mutated: std::collections::HashSet<LocalId> =
+                                std::collections::HashSet::new();
+                            collect_mutated_local_ids(&func.body, &mut mutated);
                             let (mut setup, mut param_map) = build_inline_arg_bindings(
                                 &func.params,
                                 args,
                                 &closure_capt,
+                                &mutated,
                                 next_local_id,
                             )?;
 
@@ -1562,10 +1576,14 @@ pub fn try_inline_simple_call(
                                 &mut closure_capt,
                             );
 
+                            let mut mutated: std::collections::HashSet<LocalId> =
+                                std::collections::HashSet::new();
+                            collect_mutated_local_ids(&method_candidate.func.body, &mut mutated);
                             let (setup_stmts, mut param_map) = build_inline_arg_bindings(
                                 &method_candidate.func.params,
                                 args,
                                 &closure_capt,
+                                &mutated,
                                 next_local_id,
                             )?;
 
@@ -1614,10 +1632,14 @@ pub fn try_inline_simple_call(
                             &method_candidate.func.body,
                             &mut closure_capt,
                         );
+                        let mut mutated: std::collections::HashSet<LocalId> =
+                            std::collections::HashSet::new();
+                        collect_mutated_local_ids(&method_candidate.func.body, &mut mutated);
                         let (setup_for_params, mut shared_param_map) = build_inline_arg_bindings(
                             &method_candidate.func.params,
                             args,
                             &closure_capt,
+                            &mutated,
                             next_local_id,
                         )?;
                         if let (Some(this_id), Some(obj_id)) =
@@ -1694,11 +1716,18 @@ pub fn try_inline_call(
                     std::collections::HashSet::new();
                 collect_closure_captured_local_ids(&func.body, &mut closure_capt);
 
+                let mut mutated: std::collections::HashSet<LocalId> =
+                    std::collections::HashSet::new();
+                collect_mutated_local_ids(&func.body, &mut mutated);
+
                 for (param, arg) in func.params.iter().zip(args.iter()) {
                     let trivial_in_closure = is_trivial_expr(arg)
                         && !matches!(arg, Expr::LocalGet(_))
                         && closure_capt.contains(&param.id);
-                    if is_trivial_expr(arg) && !trivial_in_closure {
+                    // Body-written params get a copy — see
+                    // build_inline_arg_bindings (S13.2.1_A6).
+                    let force_let = mutated.contains(&param.id);
+                    if is_trivial_expr(arg) && !trivial_in_closure && !force_let {
                         param_map.insert(param.id, arg.clone());
                     } else {
                         let local_id = *next_local_id;
@@ -1708,7 +1737,7 @@ pub fn try_inline_call(
                             id: local_id,
                             name: param.name.clone(),
                             ty: param.ty.clone(),
-                            mutable: false,
+                            mutable: force_let,
                             init: Some(arg.clone()),
                         });
 

@@ -210,14 +210,17 @@ fn lower_call_inner(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Result<E
     if let Some(expr) = try_function_return_this(ctx, call, has_spread) {
         return Ok(expr);
     }
+    // Strict-mode early errors in a literal eval body must throw the
+    // SyntaxError at the eval() call — checked BEFORE the const-fold so a
+    // foldable body carrying a violation doesn't compile through.
+    if let Some(expr) = try_strict_eval_arguments_assignment(ctx, call) {
+        return Ok(expr);
+    }
     // #1679 (Phase 1): const-fold a literal `Function(...)` body into a
     // native function, and fold the `(0, eval)('this')` globalThis idiom.
     // Runs after the `Function('return this')()` fold; before the Phase 0
     // refusal so const-foldable sites compile instead of being classified.
     if let Some(expr) = super::const_fold_fn::try_eval_function_call_fold(ctx, call)? {
-        return Ok(expr);
-    }
-    if let Some(expr) = try_strict_eval_arguments_assignment(ctx, call) {
         return Ok(expr);
     }
     // #1678: classify `Function(...)` / `eval(...)`. Bails on the

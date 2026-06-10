@@ -95,6 +95,8 @@ impl LoweringContext {
             module_level_ids: HashSet::new(),
             sloppy_implicit_globals: Vec::new(),
             sloppy_implicit_global_ids: HashSet::new(),
+            with_sloppy_implicit_ids: std::collections::HashMap::new(),
+            pending_with_implicit_inits: Vec::new(),
             scope_depth: 0,
             scope_local_marks: Vec::new(),
             inside_block_scope: 0,
@@ -1259,10 +1261,14 @@ impl LoweringContext {
 
         // Preserve var-hoisted locals: move any hoisted entries defined after
         // the mark to the position just past the mark, then drop the rest.
+        // Sloppy implicit globals (`undeclared = v` inside the block) are
+        // module-scoped bindings too — keep them visible after the block.
         if self.locals.len() > locals_mark {
             let mut kept: Vec<(String, LocalId, Type)> = Vec::new();
             for entry in self.locals.drain(locals_mark..) {
-                if self.var_hoisted_ids.contains(&entry.1) {
+                if self.var_hoisted_ids.contains(&entry.1)
+                    || self.sloppy_implicit_global_ids.contains(&entry.1)
+                {
                     kept.push(entry);
                 }
             }

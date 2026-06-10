@@ -48,6 +48,8 @@ mod unimpl_hints;
 pub(crate) use context::*;
 mod stmt;
 pub(crate) use stmt::*;
+mod for_head;
+pub(crate) use for_head::{for_head_binding_stmts, predefine_for_head, ForHeadBinding};
 mod stmt_loops;
 pub(crate) use stmt_loops::{
     insert_iterator_close_on_abrupt, iterator_close_guarded_stmt, iterator_next_call,
@@ -101,7 +103,7 @@ pub use lower_module_fn::{
 mod lower_expr;
 pub(crate) use lower_expr::{
     lower_expr, lower_expr_assignment, throw_reference_error_expr, try_desugar_reactive_text,
-    with_set_fallback_for_ident,
+    with_implicit_unset_let, with_set_fallback_for_ident,
 };
 
 // Re-export extracted module functions

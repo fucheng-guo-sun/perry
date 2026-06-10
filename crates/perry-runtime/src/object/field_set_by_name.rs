@@ -479,10 +479,17 @@ pub extern "C" fn js_object_set_field_by_name(
                 let name_len = (*key).byte_len as usize;
                 let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
                 if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    // ECMAScript poison pill: `fn.caller = v` / `fn.arguments
+                    // = v` hits the setter-less %ThrowTypeError% accessor on
+                    // Function.prototype — a TypeError in strict mode (all
+                    // Perry-compiled code). Applies to every closure, not just
+                    // arrows. An explicitly defined own property (via
+                    // Object.defineProperty → dynamic-prop side table) still
+                    // wins, matching the read path. Refs test262 13.2-*-s.
                     if matches!(name_str, "caller" | "arguments")
-                        && crate::closure::closure_is_arrow(
-                            obj as *const crate::closure::ClosureHeader,
-                        )
+                        && crate::closure::closure_get_dynamic_prop(obj as usize, name_str)
+                            .to_bits()
+                            == crate::value::TAG_UNDEFINED
                     {
                         crate::fs::validate::throw_type_error_with_code(
                             "Restricted function property assignment",
@@ -512,10 +519,17 @@ pub extern "C" fn js_object_set_field_by_name(
                 let name_len = (*key).byte_len as usize;
                 let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
                 if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    // ECMAScript poison pill: `fn.caller = v` / `fn.arguments
+                    // = v` hits the setter-less %ThrowTypeError% accessor on
+                    // Function.prototype — a TypeError in strict mode (all
+                    // Perry-compiled code). Applies to every closure, not just
+                    // arrows. An explicitly defined own property (via
+                    // Object.defineProperty → dynamic-prop side table) still
+                    // wins, matching the read path. Refs test262 13.2-*-s.
                     if matches!(name_str, "caller" | "arguments")
-                        && crate::closure::closure_is_arrow(
-                            obj as *const crate::closure::ClosureHeader,
-                        )
+                        && crate::closure::closure_get_dynamic_prop(obj as usize, name_str)
+                            .to_bits()
+                            == crate::value::TAG_UNDEFINED
                     {
                         crate::fs::validate::throw_type_error_with_code(
                             "Restricted function property assignment",

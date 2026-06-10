@@ -556,16 +556,36 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                 let scope_mark = ctx.enter_scope();
 
                 // Lower catch parameter (if present)
+                let mut binding_stmts: Vec<Stmt> = Vec::new();
                 let param = if let Some(ref pat) = catch_clause.param {
                     let param_name = get_pat_name(pat)?;
                     let param_id = ctx.define_local(param_name.clone(), Type::Any);
+                    // Destructured catch binding — `catch ([a, b = d()])` /
+                    // `catch ({ message })`: bind the pattern leaves off the
+                    // exception value before the user body runs.
+                    if !matches!(pat, ast::Pat::Ident(_)) {
+                        let mut leaves = Vec::new();
+                        collect_for_of_pattern_leaves(ctx, pat, &mut leaves);
+                        let mut idx = 0usize;
+                        emit_for_of_pattern_binding(
+                            ctx,
+                            pat,
+                            Expr::LocalGet(param_id),
+                            &leaves,
+                            &mut idx,
+                            &mut binding_stmts,
+                        )?;
+                    }
                     Some((param_id, param_name))
                 } else {
                     None
                 };
 
                 // Lower catch body
-                let catch_body = lower_block_stmt(ctx, &catch_clause.body)?;
+                let mut catch_body = lower_block_stmt(ctx, &catch_clause.body)?;
+                for (i, stmt) in binding_stmts.into_iter().enumerate() {
+                    catch_body.insert(i, stmt);
+                }
 
                 ctx.exit_scope(scope_mark);
 
@@ -1159,7 +1179,11 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                     Expr::SetValues(Box::new(arr_expr))
                 }
             } else if is_iterable_typed_array {
-                Expr::ArrayFrom(Box::new(arr_expr))
+                // Iterate the typed array LIVE (holder keeps the TA type so
+                // IndexGet/.length use the typed-array accessors) — body
+                // writes like `ta[1] = 64` must be observed mid-loop.
+                // Mirrors the module-init path in stmt_loops.rs.
+                arr_expr
             } else if use_lazy_iter {
                 Expr::GetIterator(Box::new(arr_expr))
             } else {
@@ -1228,6 +1252,10 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                 }
             } else if use_lazy_iter {
                 Type::Any // holds the iterator, not an array
+            } else if is_iterable_typed_array {
+                // Keep the TA's own type so IndexGet/.length route through
+                // the typed-array accessors (live reads).
+                iterable_type.clone().unwrap_or(Type::Any)
             } else if let Some(ref elem) = inferred_elem_type {
                 Type::Array(Box::new(elem.clone()))
             } else {
@@ -1280,47 +1308,34 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                             ast::Pat::Ident(ident) => {
                                 let name = ident.id.sym.to_string();
                                 let id = ctx.define_local(name.clone(), item_hir_type.clone());
+                                if var_decl.kind == ast::VarDeclKind::Const {
+                                    // `for (const x of …) { x = 1; }` → TypeError.
+                                    ctx.mark_local_immutable(id);
+                                }
                                 vec![(name, id)]
                             }
                             ast::Pat::Array(arr_pat) => {
+                                // Collect ALL leaves — incl. defaults, rest,
+                                // and nested patterns. The Map [k, v] fast
+                                // path keeps its positional Ident-only walk
+                                // (its gate guarantees all-Ident patterns).
                                 let mut ids = Vec::new();
-                                for elem_pat in arr_pat.elems.iter().flatten() {
-                                    if let ast::Pat::Ident(ident) = elem_pat {
-                                        let name = ident.id.sym.to_string();
-                                        let id = ctx.define_local(name.clone(), Type::Any);
-                                        ids.push((name, id));
-                                    }
-                                }
-                                ids
-                            }
-                            ast::Pat::Object(obj_pat) => {
-                                let mut ids = Vec::new();
-                                for prop in &obj_pat.props {
-                                    match prop {
-                                        ast::ObjectPatProp::Assign(assign) => {
-                                            let name = assign.key.sym.to_string();
+                                if map_kv_fastpath {
+                                    for elem_pat in arr_pat.elems.iter().flatten() {
+                                        if let ast::Pat::Ident(ident) = elem_pat {
+                                            let name = ident.id.sym.to_string();
                                             let id = ctx.define_local(name.clone(), Type::Any);
                                             ids.push((name, id));
                                         }
-                                        ast::ObjectPatProp::KeyValue(kv) => {
-                                            if let ast::Pat::Ident(ident) = &*kv.value {
-                                                let name = ident.id.sym.to_string();
-                                                let id = ctx.define_local(name.clone(), Type::Any);
-                                                ids.push((name, id));
-                                            } else {
-                                                // Nested pattern (e.g. `key: [a, b]`).
-                                                // Recurse so leaves get pre-defined and the
-                                                // body can reference them. Issue #554 (the
-                                                // function-body counterpart of the lower.rs
-                                                // top-level fix in v0.5.629).
-                                                collect_for_of_pattern_leaves(
-                                                    ctx, &kv.value, &mut ids,
-                                                );
-                                            }
-                                        }
-                                        _ => {}
                                     }
+                                } else {
+                                    collect_for_of_pattern_leaves(ctx, &decl.name, &mut ids);
                                 }
+                                ids
+                            }
+                            ast::Pat::Object(_) => {
+                                let mut ids = Vec::new();
+                                collect_for_of_pattern_leaves(ctx, &decl.name, &mut ids);
                                 ids
                             }
                             _ => {
@@ -1333,12 +1348,20 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                         return Err(anyhow!("for-of requires a variable declaration"));
                     }
                 }
-                ast::ForHead::Pat(pat) => {
-                    let name = get_pat_name(pat)?;
-                    let id = ctx.define_local(name.clone(), Type::Any);
-                    vec![(name, id)]
-                }
+                ast::ForHead::Pat(_) => Vec::new(),
                 _ => return Err(anyhow!("Unsupported for-of left-hand side")),
+            };
+
+            // `for (<expr-or-pattern> of …)` heads: resolve the target
+            // before the body (see lower/stmt_loops.rs).
+            let pat_head_binding = if matches!(&for_of_stmt.left, ast::ForHead::Pat(_)) {
+                Some(crate::lower::predefine_for_head(
+                    ctx,
+                    &for_of_stmt.left,
+                    item_hir_type.clone(),
+                )?)
+            } else {
+                None
             };
 
             // NOW lower the body
@@ -1425,122 +1448,34 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                                     }
                                     stmts
                                 } else {
-                                    let mut stmts = vec![Stmt::Let {
-                                        id: item_id,
-                                        name: format!("__item_{}", item_id),
-                                        ty: Type::Any,
-                                        mutable: false,
-                                        init: Some(item_expr),
-                                    }];
-                                    let mut var_idx = 0;
-                                    for (idx, elem) in arr_pat.elems.iter().enumerate() {
-                                        if let Some(elem_pat) = elem {
-                                            if let ast::Pat::Ident(_) = elem_pat {
-                                                let (name, id) = var_ids[var_idx].clone();
-                                                var_idx += 1;
-                                                stmts.push(Stmt::Let {
-                                                    id,
-                                                    name,
-                                                    ty: Type::Any,
-                                                    mutable: false,
-                                                    init: Some(Expr::IndexGet {
-                                                        object: Box::new(Expr::LocalGet(item_id)),
-                                                        index: Box::new(Expr::Number(idx as f64)),
-                                                    }),
-                                                });
-                                            }
-                                        }
-                                    }
+                                    // Shared pattern-binding emitter — handles
+                                    // defaults, rest elements, and nested
+                                    // patterns (the previous inline walk
+                                    // silently skipped non-Ident elements).
+                                    let mut stmts = Vec::new();
+                                    let mut var_idx = 0usize;
+                                    emit_for_of_pattern_binding(
+                                        ctx,
+                                        &decl.name,
+                                        item_expr,
+                                        &var_ids,
+                                        &mut var_idx,
+                                        &mut stmts,
+                                    )?;
                                     stmts
                                 }
                             }
-                            ast::Pat::Object(obj_pat) => {
-                                let mut stmts = vec![Stmt::Let {
-                                    id: item_id,
-                                    name: format!("__item_{}", item_id),
-                                    ty: Type::Any,
-                                    mutable: false,
-                                    init: Some(item_expr),
-                                }];
-                                let mut var_idx = 0;
-                                for prop in &obj_pat.props {
-                                    match prop {
-                                        ast::ObjectPatProp::Assign(assign) => {
-                                            let prop_name = assign.key.sym.to_string();
-                                            let (name, id) = var_ids[var_idx].clone();
-                                            var_idx += 1;
-                                            let init_value = if let Some(default_expr) =
-                                                &assign.value
-                                            {
-                                                let prop_access = Expr::PropertyGet {
-                                                    object: Box::new(Expr::LocalGet(item_id)),
-                                                    property: prop_name,
-                                                };
-                                                let default_val = lower_expr(ctx, default_expr)?;
-                                                let condition = Expr::Compare {
-                                                    op: CompareOp::Ne,
-                                                    left: Box::new(prop_access.clone()),
-                                                    right: Box::new(Expr::Undefined),
-                                                };
-                                                Expr::Conditional {
-                                                    condition: Box::new(condition),
-                                                    then_expr: Box::new(prop_access),
-                                                    else_expr: Box::new(default_val),
-                                                }
-                                            } else {
-                                                Expr::PropertyGet {
-                                                    object: Box::new(Expr::LocalGet(item_id)),
-                                                    property: prop_name,
-                                                }
-                                            };
-                                            stmts.push(Stmt::Let {
-                                                id,
-                                                name,
-                                                ty: Type::Any,
-                                                mutable: false,
-                                                init: Some(init_value),
-                                            });
-                                        }
-                                        ast::ObjectPatProp::KeyValue(kv) => {
-                                            let key = match &kv.key {
-                                                ast::PropName::Ident(ident) => {
-                                                    ident.sym.to_string()
-                                                }
-                                                ast::PropName::Str(s) => {
-                                                    s.value.as_str().unwrap_or("").to_string()
-                                                }
-                                                _ => continue,
-                                            };
-                                            let key_source = Expr::PropertyGet {
-                                                object: Box::new(Expr::LocalGet(item_id)),
-                                                property: key,
-                                            };
-                                            if let ast::Pat::Ident(_) = &*kv.value {
-                                                let (name, id) = var_ids[var_idx].clone();
-                                                var_idx += 1;
-                                                stmts.push(Stmt::Let {
-                                                    id,
-                                                    name,
-                                                    ty: Type::Any,
-                                                    mutable: false,
-                                                    init: Some(key_source),
-                                                });
-                                            } else {
-                                                // Nested pattern (e.g. `key: [a, b]`).
-                                                // Issue #554 (function-body path).
-                                                emit_for_of_pattern_binding(
-                                                    ctx,
-                                                    &kv.value,
-                                                    key_source,
-                                                    &var_ids,
-                                                    &mut var_idx,
-                                                    &mut stmts,
-                                                )?;
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                            ast::Pat::Object(_) => {
+                                let mut stmts = Vec::new();
+                                let mut var_idx = 0usize;
+                                emit_for_of_pattern_binding(
+                                    ctx,
+                                    &decl.name,
+                                    item_expr,
+                                    &var_ids,
+                                    &mut var_idx,
+                                    &mut stmts,
+                                )?;
                                 stmts
                             }
                             _ => {
@@ -1564,14 +1499,19 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                     }
                 }
                 ast::ForHead::Pat(_) => {
-                    let (name, id) = var_ids[0].clone();
-                    vec![Stmt::Let {
-                        id,
-                        name,
-                        ty: Type::Any,
-                        mutable: false,
-                        init: Some(lazy_or_index_elem(use_lazy_iter, arr_id, idx_id, result_id)),
-                    }]
+                    let binding = pat_head_binding
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("for-of pattern head not pre-resolved"))?;
+                    let mut source = lazy_or_index_elem(use_lazy_iter, arr_id, idx_id, result_id);
+                    if for_of_stmt.is_await && !use_lazy_iter {
+                        source = Expr::Await(Box::new(source));
+                    }
+                    crate::lower::for_head_binding_stmts(
+                        ctx,
+                        binding,
+                        source,
+                        item_hir_type.clone(),
+                    )?
                 }
                 _ => return Err(anyhow!("Unsupported for-of left-hand side")),
             };
@@ -1630,17 +1570,8 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
             // Desugar for-in to a for-of over Object.keys(obj) (same as in lower_stmt).
             // Push a block scope so loop variables don't leak.
             let for_scope_mark = ctx.push_block_scope();
-            let key_name = match &for_in_stmt.left {
-                ast::ForHead::VarDecl(var_decl) => {
-                    if let Some(decl) = var_decl.decls.first() {
-                        get_binding_name(&decl.name)?
-                    } else {
-                        return Err(anyhow!("for-in requires a variable declaration"));
-                    }
-                }
-                ast::ForHead::Pat(pat) => get_pat_name(pat)?,
-                _ => return Err(anyhow!("Unsupported for-in left-hand side")),
-            };
+            let head_binding =
+                crate::lower::predefine_for_head(ctx, &for_in_stmt.left, Type::String)?;
 
             let obj_expr = lower_expr(ctx, &for_in_stmt.right)?;
             // for-in: own + inherited enumerable keys, nullish-safe (no throw).
@@ -1648,7 +1579,6 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
             let keys_expr = Expr::ForInKeys(Box::new(obj_expr));
             let keys_id = ctx.fresh_local();
             let idx_id = ctx.fresh_local();
-            let key_id = ctx.define_local(key_name.clone(), Type::String);
 
             // Store keys array reference
             result.push(Stmt::Let {
@@ -1659,21 +1589,17 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                 init: Some(keys_expr),
             });
 
-            // Lower the body and prepend key assignment
+            // Lower the body and prepend the key binding/assignment
             let mut loop_body = lower_body_stmt(ctx, &for_in_stmt.body)?;
-            loop_body.insert(
-                0,
-                Stmt::Let {
-                    id: key_id,
-                    name: key_name,
-                    ty: Type::String,
-                    mutable: false,
-                    init: Some(Expr::IndexGet {
-                        object: Box::new(Expr::LocalGet(keys_id)),
-                        index: Box::new(Expr::LocalGet(idx_id)),
-                    }),
-                },
-            );
+            let key_source = Expr::IndexGet {
+                object: Box::new(Expr::LocalGet(keys_id)),
+                index: Box::new(Expr::LocalGet(idx_id)),
+            };
+            let binding_stmts =
+                crate::lower::for_head_binding_stmts(ctx, &head_binding, key_source, Type::String)?;
+            for (i, stmt) in binding_stmts.into_iter().enumerate() {
+                loop_body.insert(i, stmt);
+            }
 
             // Create the for loop
             result.push(Stmt::For {
@@ -1731,6 +1657,7 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                     "`with` statement is forbidden in strict mode"
                 );
             }
+            let insert_at = result.len();
             let env_id = ctx.define_local("__perry_with_env".to_string(), Type::Any);
             result.push(Stmt::Let {
                 id: env_id,
@@ -1743,6 +1670,14 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
             let body_result = lower_body_stmt(ctx, &with_stmt.body);
             ctx.pop_with_env();
             result.extend(body_result?);
+            // Sentinel slots for implicit globals minted by with-set
+            // fallbacks inside this body (see with_set_fallback_for_ident).
+            for (i, (id, name)) in ctx.pending_with_implicit_inits.drain(..).enumerate() {
+                result.insert(
+                    insert_at + i,
+                    crate::lower::with_implicit_unset_let(id, name),
+                );
+            }
         }
         // Final catch-all: any genuinely unexpected variant (e.g. a future
         // swc Stmt variant we haven't enumerated) bails instead of silently

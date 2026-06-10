@@ -659,6 +659,19 @@ pub extern "C" fn js_throw_strict_eval_arguments_syntax_error() -> f64 {
 }
 
 #[no_mangle]
+pub extern "C" fn js_throw_restricted_function_property_assignment() -> f64 {
+    crate::fs::validate::throw_type_error_with_code(
+        "Restricted function property assignment",
+        "ERR_INVALID_ARG_TYPE",
+    )
+}
+
+// #1561-style force-keep: only generated IR calls this.
+#[used]
+static KEEP_JS_THROW_RESTRICTED_FN_PROP_ASSIGN: extern "C" fn() -> f64 =
+    js_throw_restricted_function_property_assignment;
+
+#[no_mangle]
 pub extern "C" fn js_throw_math_constructor_type_error() -> f64 {
     throw_builtin_not_constructor("Math")
 }

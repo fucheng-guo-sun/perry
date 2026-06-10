@@ -2009,6 +2009,25 @@ fn throw_value_not_iterable() -> ! {
     crate::exception::js_throw(crate::value::js_nanbox_pointer(err as i64));
 }
 
+/// Spec IteratorNext / IteratorClose step "If innerResult is not an Object,
+/// throw a TypeError". The for-of lazy-loop desugar wraps each `__iter.next()`
+/// / guarded `__iter.return()` call in this validator. Returns the result
+/// unchanged when it is an object.
+// #1561-style force-keep: only generated IR calls this.
+#[used]
+static KEEP_JS_ITERATOR_RESULT_VALIDATE: extern "C" fn(f64) -> f64 = js_iterator_result_validate;
+
+#[no_mangle]
+pub extern "C" fn js_iterator_result_validate(result: f64) -> f64 {
+    if !is_object_value(result) {
+        let msg = b"Iterator result is not an object";
+        let msg_str = crate::string::js_string_from_bytes(msg.as_ptr(), msg.len() as u32);
+        let err = crate::error::js_typeerror_new(msg_str);
+        crate::exception::js_throw(crate::value::js_nanbox_pointer(err as i64));
+    }
+    result
+}
+
 /// #1831: resolve the iterator for a `yield*` operand.
 ///
 /// `yield* X` must drive `X[Symbol.iterator]()` — for a generator **call** the

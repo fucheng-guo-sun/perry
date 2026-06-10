@@ -111,3 +111,43 @@ pub extern "C" fn js_with_delete_binding(bindings: f64, key: *const StringHeader
     let ptr = object_ptr(bindings);
     js_object_delete_field(ptr, key)
 }
+
+/// Sentinel for a sloppy implicit global created as a `with`-set FALLBACK
+/// (`with (o) { foo = 42; }` where `o` may or may not own `foo`). The local
+/// starts as this sentinel; the fallback store replaces it only when the
+/// with-env did NOT take the write. A later bare read of the name routes
+/// through `js_with_implicit_read`, which throws ReferenceError while the
+/// sentinel is still in place (test262 with/12.10-0-7 vs S13.2.2_A19).
+#[no_mangle]
+pub extern "C" fn js_with_implicit_unset() -> f64 {
+    f64::from_bits(crate::value::TAG_HOLE)
+}
+
+// #1561-style force-keep: only generated IR calls these.
+#[used]
+static KEEP_JS_WITH_IMPLICIT_UNSET: extern "C" fn() -> f64 = js_with_implicit_unset;
+#[used]
+static KEEP_JS_WITH_IMPLICIT_READ: extern "C" fn(f64, f64) -> f64 = js_with_implicit_read;
+
+/// `name` arrives as a NaN-boxed string (codegen lowers `Expr::String` args
+/// to boxed doubles).
+#[no_mangle]
+pub extern "C" fn js_with_implicit_read(value: f64, name: f64) -> f64 {
+    if value.to_bits() == crate::value::TAG_HOLE {
+        let name_ptr = crate::value::js_get_string_pointer_unified(name) as *const StringHeader;
+        let name_str = if name_ptr.is_null() {
+            "<ident>".to_string()
+        } else {
+            unsafe {
+                let ptr = (name_ptr as *const u8).add(std::mem::size_of::<StringHeader>());
+                let len = (*name_ptr).byte_len as usize;
+                String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+            }
+        };
+        let msg = format!("{} is not defined", name_str);
+        let msg_str = js_string_from_bytes(msg.as_ptr(), msg.len() as u32);
+        let err = crate::error::js_referenceerror_new(msg_str);
+        crate::exception::js_throw(js_nanbox_pointer(err as i64));
+    }
+    value
+}

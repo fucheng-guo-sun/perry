@@ -523,6 +523,52 @@ pub fn lower_module_full(
         }
     }
 
+    // Pre-register `var` bindings nested inside module-level blocks, loops,
+    // try/catch, switch and with statements. `var` is function/module-scoped,
+    // so `__x = __x` before `try { var __x; }`, or a read of `foo` after
+    // `try { ... } catch (e) { var foo = 1; }`, must resolve to one hoisted
+    // module binding (initialised to undefined) rather than an implicit-global
+    // lookup that throws ReferenceError at runtime. The ids go into
+    // `var_hoisted_ids` so the nested `Stmt::Let` reuses them (see the
+    // `is_var_decl` reuse path in destructuring/var_decl.rs) and block-scope
+    // pops preserve them.
+    for item in &ast_module.body {
+        let stmt = match item {
+            ast::ModuleItem::Stmt(stmt) => stmt,
+            _ => continue,
+        };
+        // Direct top-level var decls are handled by the pass above; only
+        // walk into compound statements for nested `var`s here.
+        if matches!(stmt, ast::Stmt::Decl(_)) {
+            continue;
+        }
+        let mut names = Vec::new();
+        crate::lower_decl::collect_var_binding_names_from_stmt(stmt, &mut names);
+        names.sort();
+        names.dedup();
+        for name in names {
+            if ctx.lookup_local(&name).is_none() {
+                let id = ctx.define_local(name.clone(), Type::Any);
+                ctx.var_hoisted_ids.insert(id);
+                // Emit an explicit undefined-initialised slot at the top of
+                // module init. Codegen creates local storage at the first
+                // `Stmt::Let` it sees for an id; without this, a read
+                // compiled before the nested decl (e.g. `if (c) break;`
+                // ahead of `var c = ...` inside the same loop body) bakes
+                // in an `undefined` constant and never observes the write.
+                // The nested `Stmt::Let` later reuses this slot via the
+                // redeclaration → LocalSet path in codegen's lower_let.
+                module.init.push(Stmt::Let {
+                    id,
+                    name,
+                    ty: Type::Any,
+                    mutable: true,
+                    init: Some(Expr::Undefined),
+                });
+            }
+        }
+    }
+
     // Pre-register all class declarations so that static method calls between
     // classes declared in the same file resolve correctly regardless of declaration order.
     // Without this, SqrtPriceMath.getAmount0Delta calling FullMath.mulDivRoundingUp
