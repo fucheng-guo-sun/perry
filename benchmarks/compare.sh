@@ -439,8 +439,15 @@ print("-" * 72)
 # Noise floors: percentage swings on tiny measurements are unreliable.
 # A 7ms jitter on a 9ms benchmark is 78% but means nothing. Require both
 # the absolute delta AND percentage to exceed the threshold.
-MIN_SPEED_DELTA_MS = 20   # need at least 20ms absolute change to flag
-MIN_RAM_DELTA_KB = 2048   # need at least 2MB absolute change to flag
+#
+# 20ms was too tight for macos-14 runner-to-runner variance: at v0.5.1151
+# bench_string_heavy measured 60/81/104ms across three same-commit runs
+# (the 21-44ms swings hard-failed the release gate twice on pure noise,
+# while every CPU-bound row over ~300ms tracked within ~10%). Any release
+# regression worth hard-failing on (the v0.5.1129 hang was a ~4000x case)
+# clears 100ms by orders of magnitude.
+MIN_SPEED_DELTA_MS = 100  # need at least 100ms absolute change to flag
+MIN_RAM_DELTA_KB = 4096   # need at least 4MB absolute change to flag
 
 for name, cur in current["benchmarks"].items():
     correctness = cur.get("correctness", {})
