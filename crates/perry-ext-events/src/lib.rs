@@ -28,6 +28,8 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 
+mod error_monitor;
+use error_monitor::dispatch_error_monitor;
 mod max_listeners;
 mod messages;
 mod target_helpers;
@@ -1169,6 +1171,7 @@ pub unsafe extern "C" fn js_event_emitter_emit(
         let first_arg = first_arg_or_undefined(args_ptr);
         let emitted_args = collect_emit_args(args_ptr);
         if event_name == "error" {
+            dispatch_error_monitor(emitter, handle, Some(first_arg));
             let has_error_once = emitter
                 .pending_once_promises
                 .get("error")
@@ -1249,6 +1252,7 @@ pub unsafe extern "C" fn js_event_emitter_emit0(handle: Handle, event_bits: i64)
         let empty_args = js_array_alloc(0);
         if event_name == "error" {
             let error_value = undefined_value();
+            dispatch_error_monitor(emitter, handle, None);
             let has_error_once = emitter
                 .pending_once_promises
                 .get("error")
