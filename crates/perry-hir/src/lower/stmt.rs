@@ -309,6 +309,26 @@ pub(crate) fn emit_for_of_pattern_binding(
     }
 }
 
+/// Does a labeled statement's body ultimately target a loop? `continue`/`break`
+/// semantics for a label depend on the *loop* the label names, but a label
+/// chain (`outer: inner: for (...)`) nests one `Labeled` inside another, so the
+/// outer label's immediate body is a `Labeled`, not the loop. Unwrap nested
+/// labels to find the real target. Used by both lowering paths (this file and
+/// `lower_decl/body_stmt.rs`) to decide whether a labeled statement is a loop
+/// label (bind the label to the loop, so `continue` works) or a non-loop label
+/// (desugar to a run-once do-while as a `break` target).
+pub(crate) fn labeled_body_targets_loop(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Labeled(labeled) => labeled_body_targets_loop(&labeled.body),
+        ast::Stmt::For(_)
+        | ast::Stmt::While(_)
+        | ast::Stmt::DoWhile(_)
+        | ast::Stmt::ForIn(_)
+        | ast::Stmt::ForOf(_) => true,
+        _ => false,
+    }
+}
+
 pub(crate) fn lower_stmt(
     ctx: &mut LoweringContext,
     module: &mut Module,
@@ -1263,12 +1283,28 @@ pub(crate) fn lower_stmt(
         }
         ast::Stmt::Labeled(labeled_stmt) => {
             let label = labeled_stmt.label.sym.to_string();
-            // #2383: a labeled *block* — `a: { ... break a; ... }` — exits the
-            // block via `break a`. Desugar to a labeled run-once do-while so the
-            // existing loop-based labeled-break codegen has an exit block to
-            // target. See the matching comment in lower_decl/body_stmt.rs.
-            if let ast::Stmt::Block(block) = &*labeled_stmt.body {
-                let body = lower_block_stmt_scoped(ctx, block)?;
+            // #2383 + #5247: a labeled *non-loop* statement — a block
+            // (`a: { ... break a; ... }`) or an `if`/`switch`/expression — exits via
+            // `break a`. It is not a loop, so the loop-based labeled-break codegen
+            // has nothing to bind the label to. Desugar any labeled non-loop to a
+            // labeled run-once do-while so it has an exit block to target (also
+            // correct when `break a` fires from inside a nested loop in the body).
+            // Labeled LOOPS skip this and keep the label bound to the loop, so
+            // `continue a` targets the loop. See the matching code in
+            // lower_decl/body_stmt.rs.
+            //
+            // #5247: a label chain ending in a loop (`outer: inner: for (...)`)
+            // is a loop label too — the outer label's immediate body is another
+            // `Labeled`, not the loop, so unwrap nested labels before deciding.
+            // Otherwise `outer` would desugar to a run-once do-while and
+            // `continue outer` would target that instead of the real loop.
+            let body_is_loop = labeled_body_targets_loop(&labeled_stmt.body);
+            if !body_is_loop {
+                let body = if let ast::Stmt::Block(block) = &*labeled_stmt.body {
+                    lower_block_stmt_scoped(ctx, block)?
+                } else {
+                    lower_body_stmt(ctx, &labeled_stmt.body)?
+                };
                 module.init.push(Stmt::Labeled {
                     label,
                     body: Box::new(Stmt::DoWhile {
