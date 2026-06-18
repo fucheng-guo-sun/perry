@@ -801,6 +801,12 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
                                 .is_some_and(|props| props.contains_key(key))
                         }) || super::class_registry::lookup_static_method_in_chain(class_id, key)
                             .is_some()
+                            // A static accessor (`static get x()`) is an own
+                            // property of the constructor — own-only, mirroring
+                            // getOwnPropertyDescriptor (class/definition/
+                            // {getters,setters}-prop-desc `staticX`).
+                            || super::class_registry::class_own_static_accessor_ptrs(class_id, key)
+                                .is_some()
                     }
                 })
                 .unwrap_or(false);
@@ -934,10 +940,28 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
         }
 
         if own_key_present(obj, key_str) {
-            f64::from_bits(TAG_TRUE)
-        } else {
-            f64::from_bits(TAG_FALSE)
+            return f64::from_bits(TAG_TRUE);
         }
+
+        // A class-declaration prototype object: instance accessors (`get x()`)
+        // and methods live in the class vtable, not the object's keys_array, yet
+        // they ARE own properties of `C.prototype` — `getOwnPropertyDescriptor`
+        // already reflects them, so `hasOwnProperty` must agree (test262
+        // class/definition/{getters,setters}-prop-desc, which assert via
+        // `verifyProperty` → `hasOwnProperty`).
+        if let Some(cid) = super::class_registry::class_id_for_decl_prototype_object(obj as usize) {
+            if let Some(key) = super::has_own_helpers::str_from_string_header(key_str) {
+                if !super::class_registry::class_is_key_deleted(cid, key)
+                    && (key == "constructor"
+                        || super::class_registry::class_own_accessor_ptrs(cid, key).is_some()
+                        || super::native_module::class_has_own_method(cid, key))
+                {
+                    return f64::from_bits(TAG_TRUE);
+                }
+            }
+        }
+
+        f64::from_bits(TAG_FALSE)
     }
 }
 
