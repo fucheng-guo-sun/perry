@@ -5475,6 +5475,16 @@ pub fn run_with_parse_cache(
         if is_dylib_windows {
             // MSVC link.exe takes the output path as `/OUT:<path>`, not `-o`.
             cmd.arg(format!("/OUT:{}", exe_path.display()));
+            // Pull in the MSVC static C runtime (libcmt) so the CRT
+            // auto-generated DllMain + `_fltused` etc. resolve. Without
+            // this, `LoadLibraryW` of the plugin DLL returns
+            // `ERROR_DLL_INIT_FAILED` (Win32 error 1114) because the
+            // plugin's auto-emitted `DllMain` references unresolved
+            // CRT symbols. `/FORCE:UNRESOLVED` lets the link succeed
+            // with those still-unresolved entries, but the loader
+            // fails DLL_PROCESS_ATTACH. Linking libcmt resolves
+            // everything in the plugin itself.
+            cmd.arg("/defaultlib:libcmt");
         } else {
             cmd.arg("-o").arg(&exe_path);
         }

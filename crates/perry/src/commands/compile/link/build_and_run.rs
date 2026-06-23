@@ -455,6 +455,77 @@ pub(crate) fn build_and_run_link(
                 for sym in PLUGIN_HOST_SYMBOLS {
                     let _ = writeln!(def_file, "    {}", sym);
                 }
+                // Enumerate every `js_*` / `perry_*` symbol from the auto-built
+                // runtime + stdlib .lib archives. Plugins reference these via
+                // `GetProcAddress` after `LoadLibraryW`, so the host must
+                // export them — listing only the static PLUGIN_HOST_SYMBOLS
+                // subset leaves hundreds of `js_gc_*`, `js_array_*`,
+                // `js_string_*` etc. unresolved at LoadLibrary time and the
+                // DLL fails to initialize (Win32 error 1114 =
+                // ERROR_DLL_INIT_FAILED). The `llvm-nm` enumeration
+                // guarantees the full surface; it costs ~5000 .def lines and
+                // a few hundred ms of `nm` time per link.
+                let mut libs: Vec<std::path::PathBuf> = vec![runtime_lib.to_path_buf()];
+                if let Some(ref s) = stdlib_lib {
+                    libs.push(s.clone());
+                }
+                if let Some(nm_path) = find_llvm_tool("llvm-nm") {
+                    let mut all_syms: std::collections::BTreeSet<String> =
+                        std::collections::BTreeSet::new();
+                    for lib in &libs {
+                        if !std::path::Path::new(lib).exists() {
+                            continue;
+                        }
+                        if let Ok(out) = std::process::Command::new(&nm_path)
+                            .args(["--extern-only", "--defined-only"])
+                            .arg(lib)
+                            .output()
+                        {
+                            if out.status.success() {
+                                let text = String::from_utf8_lossy(&out.stdout);
+                                for line in text.lines() {
+                                    // llvm-nm format: "<addr> <type> <name>" e.g.
+                                    //   "00000000 T _js_array_alloc"
+                                    //   "00000000 B PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED"
+                                    //   "00000000 D __imp_PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED"
+                                    // We capture T (text), B (BSS), D (data), R (rodata) and
+                                    // skip the __imp_ PE-import stubs (the leading-underscore
+                                    // non-prefixed name is the actual export).
+                                    let mut parts = line.split_whitespace();
+                                    let _addr = parts.next();
+                                    let ty = parts.next();
+                                    let name_field = parts.next();
+                                    if let (Some(ty), Some(rest)) = (ty, name_field) {
+                                        if !matches!(ty, "T" | "B" | "D" | "R") {
+                                            continue;
+                                        }
+                                        let bare = rest.strip_prefix('_').unwrap_or(rest);
+                                        let export_name =
+                                            if let Some(stripped) = bare.strip_prefix("__imp_") {
+                                                stripped
+                                            } else {
+                                                bare
+                                            };
+                                        if export_name.starts_with("js_")
+                                            || export_name.starts_with("perry_")
+                                            || export_name.starts_with("PERRY_")
+                                        {
+                                            all_syms.insert(export_name.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for s in &all_syms {
+                        let _ = writeln!(def_file, "    {}", s);
+                    }
+                    eprintln!(
+                        "[perry] plugin-host .def: {} symbols ({} base + enumerated)",
+                        all_syms.len() + PLUGIN_HOST_SYMBOLS.len(),
+                        PLUGIN_HOST_SYMBOLS.len()
+                    );
+                }
             }
             cmd.arg(format!("/DEF:{}", def_path.display()));
         } else {

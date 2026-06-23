@@ -93,10 +93,8 @@ pub(super) const PLUGIN_HOST_SYMBOLS: &[&str] = &[
     "perry_debug_trace_init_done",
     "perry_init_guard_check_and_set",
     // Plugin manager (perry-plugin)
-    "perry_plugin_abi_version",
     "perry_plugin_load",
     "perry_plugin_unload",
-    "perry_plugin_lookup_symbol",
     "perry_plugin_emit_hook",
     "perry_plugin_emit_event",
     "perry_plugin_invoke_tool",
@@ -112,14 +110,21 @@ pub(super) const PLUGIN_HOST_SYMBOLS: &[&str] = &[
     "perry_plugin_list_plugins",
     "perry_plugin_list_hooks",
     "perry_plugin_list_tools",
-    "perry_plugin_plugin_count",
+    "perry_plugin_count",
     "perry_plugin_set_metadata",
     "perry_plugin_get_config",
-    "perry_plugin_subscribe_event",
-    "perry_plugin_unsubscribe_event",
-    "perry_plugin_emit_event_bus",
+    "perry_plugin_on",
+    "perry_plugin_off",
+    "perry_plugin_emit",
+    "perry_plugin_log",
+    "perry_plugin_set_config",
+    "perry_plugin_discover",
     "perry_plugin_init",
-    "perry_plugin_last_load_error",
+    // Process-wide class-field inline guard (perry-runtime/src/object/mod.rs).
+    // A `#[no_mangle] pub static`; not picked up by `llvm-nm` filter heuristics
+    // for every codebase, so list it explicitly so the plugin DLL can find it
+    // at LoadLibrary time.
+    "PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
