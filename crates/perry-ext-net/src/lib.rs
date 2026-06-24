@@ -4,7 +4,8 @@
 //! stable surface as part of #466 Phase 5. Architecturally the same as the
 //! perry-stdlib copy: one tokio task per socket reads in a `select!` loop
 //! and drives an mpsc command channel for writes/end/destroy/upgrade. Read
-//! data is queued as raw `Vec<u8>` into `NET_PENDING_EVENTS` and converted
+//! data is queued as a zero-copy `Bytes` view (sliced out of the socket
+//! task's reused read buffer) into `NET_PENDING_EVENTS` and converted
 //! to `Buffer` on the main thread inside `js_net_process_pending` — the
 //! same arena-safety rule as perry-stdlib (JSValue construction MUST run
 //! on the main thread, never on a tokio worker).
@@ -32,10 +33,10 @@
 //! `tls = ["net", ...]` feature split is preserved on the perry-stdlib side
 //! for backwards compat; the well-known flip routes here.
 
+use bytes::{BufMut, Bytes, BytesMut};
 use perry_ffi::{
-    alloc_buffer, alloc_string, build_object_shape, gc_register_mutable_root_scanner_named,
-    js_object_alloc_with_shape, js_object_set_field, nanbox_string_bits, BufferHeader,
-    GcRootVisitor, JsClosure, JsPromise, JsValue, ObjectHeader, RawClosureHeader, StringHeader,
+    alloc_buffer, alloc_string, gc_register_mutable_root_scanner_named, GcRootVisitor, JsClosure,
+    JsPromise, JsValue, RawClosureHeader, StringHeader,
 };
 use std::collections::HashMap;
 use std::io;
@@ -87,6 +88,16 @@ mod server_state;
 #[cfg(test)]
 mod test_async_shims;
 pub use server_state::*;
+// NaN-box value-conversion helpers (string/buffer/number/bool extraction +
+// the `Error`-shaped object builder) split out for the file-size gate. The
+// `crate::<fn>` re-export keeps every existing call site — here and in the
+// `tls` / `classes` / `ip` / `lifecycle` / `option_setters` siblings —
+// unchanged.
+mod jsvalue;
+pub(crate) use jsvalue::{
+    build_error_object, get_object_bool_field, get_object_number_field, get_object_string_field,
+    is_nanboxed_pointer, jsvalue_to_socket_bytes, string_from_header_i64, unbox_pointer,
+};
 
 use crate::tls::do_tls_handshake;
 
@@ -308,7 +319,11 @@ pub(crate) enum SocketCommand {
 #[derive(Debug)]
 enum PendingNetEvent {
     Connect(i64),
-    Data(i64, Vec<u8>),
+    /// One chunk of read data. Carried as a refcounted `Bytes` — a zero-copy
+    /// view sliced out of the socket task's reused read buffer (`split_to`) —
+    /// so the path from the receive buffer to the main-thread drain handler
+    /// (which only borrows it as `&[u8]`) stays alloc-free per read.
+    Data(i64, Bytes),
     /// Issue #1852 — peer half-closed (FIN received, `read()` returned 0).
     /// Node fires `'end'` on the readable side *before* `'close'`; lots of
     /// net tests block on `socket.on('end', …)` to learn the peer is done,
@@ -339,232 +354,14 @@ enum PendingNetEvent {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-pub(crate) unsafe fn string_from_header_i64(ptr: i64) -> Option<String> {
-    let p = ptr as usize;
-    if p < 0x1000 {
-        return None;
-    }
-    let hdr = ptr as *const StringHeader;
-    let len = (*hdr).byte_len as usize;
-    let data_ptr = (hdr as *const u8).add(std::mem::size_of::<StringHeader>());
-    let bytes = std::slice::from_raw_parts(data_ptr, len);
-    std::str::from_utf8(bytes).ok().map(|s| s.to_string())
-}
-
-// Runtime entrypoints provided by perry-runtime (declared as extern so
-// perry-ext-net doesn't need to depend on the perry-runtime rlib).
+// Runtime entrypoint provided by perry-runtime (declared as extern so
+// perry-ext-net doesn't need to depend on the perry-runtime rlib). The
+// NaN-box value-conversion helpers and their runtime externs now live in
+// `jsvalue.rs` (split out for the file-size gate); this one stays here
+// because `js_net_create_server` below resolves the `connectionListener`
+// callback pointer with it.
 extern "C" {
-    fn js_string_from_bytes(data: *const u8, len: u32) -> *mut StringHeader;
-    fn js_object_get_field_by_name_f64(obj: *const ObjectHeader, key: *const StringHeader) -> f64;
     fn js_net_callback_ptr(value: f64) -> i64;
-    /// Issue #1131 — returns 1 if `ptr` is a registered Buffer /
-    /// Uint8Array in the runtime's `BUFFER_REGISTRY`. This is the only
-    /// safe way to tell a `BufferHeader` apart from a `StringHeader`
-    /// after both have been NaN-boxed and stripped to a raw pointer
-    /// (a `Buffer` carries `POINTER_TAG`, a JS string `STRING_TAG`, but
-    /// the dispatch shims pass us the full NaN-box bits and we still
-    /// have to distinguish a pointer-tagged Buffer from a
-    /// pointer-tagged non-buffer object). Defined in
-    /// `crates/perry-runtime/src/buffer.rs::js_buffer_is_buffer`.
-    fn js_buffer_is_buffer(ptr: i64) -> i32;
-}
-
-/// Issue #1131 — read a NaN-boxed JS value as the raw bytes to put on
-/// the wire for `socket.write(chunk)`. Outbound mirror of
-/// `perry-ext-http-server`'s `jsvalue_to_body_bytes` (#1124): a JS
-/// string and a `Buffer` have *different* memory layouts
-/// (`StringHeader` is 20 bytes, `{ utf16_len, byte_len, capacity,
-/// refcount, flags }`; `BufferHeader` is 8 bytes, `{ length, capacity
-/// }`, data immediately after). The pre-#1131 code unconditionally
-/// reinterpreted the chunk pointer as a `*const BufferHeader`, so
-/// `socket.write("ping")` read the string's `utf16_len` as the buffer
-/// length and pulled "data" from `ptr + 8` — the middle of the
-/// `StringHeader` struct — emitting garbage instead of the UTF-8
-/// bytes.
-///
-/// Probe the runtime's `BUFFER_REGISTRY` first (`js_buffer_is_buffer`)
-/// to pick the `BufferHeader` layout for real Buffers / Uint8Arrays;
-/// otherwise read through the `StringHeader` layout for JS strings;
-/// otherwise stringify numbers / bools the same way `res.write(n)`
-/// does (Node throws `ERR_INVALID_ARG_TYPE` here, but Perry's existing
-/// body-write paths are lenient and stringify — keep parity with
-/// that). `null` / `undefined` produce `None` (no bytes written).
-pub(crate) unsafe fn jsvalue_to_socket_bytes(value: f64) -> Option<Vec<u8>> {
-    let v = JsValue::from_bits(value.to_bits());
-    if v.is_undefined() || v.is_null() {
-        return None;
-    }
-    // JS string — STRING_TAG, `StringHeader` layout.
-    if v.is_string() {
-        let ptr = unbox_pointer(value) as *const StringHeader;
-        if ptr.is_null() {
-            return None;
-        }
-        let len = (*ptr).byte_len as usize;
-        let data = (ptr as *const u8).add(std::mem::size_of::<StringHeader>());
-        return Some(std::slice::from_raw_parts(data, len).to_vec());
-    }
-    // Heap pointer — could be a Buffer / Uint8Array (BufferHeader
-    // layout) or some other object. Probe the registry first.
-    if v.is_pointer() {
-        let raw = (value.to_bits() & 0x0000_FFFF_FFFF_FFFF) as i64;
-        if js_buffer_is_buffer(raw) != 0 {
-            let buf = raw as *const BufferHeader;
-            if !buf.is_null() {
-                let len = (*buf).length as usize;
-                let data = (buf as *const u8).add(std::mem::size_of::<BufferHeader>());
-                return Some(std::slice::from_raw_parts(data, len).to_vec());
-            }
-        }
-        // Non-buffer pointer — fall back to the string-shaped header
-        // for runtime strings the codegen happened to NaN-box with
-        // POINTER_TAG instead of STRING_TAG.
-        let sptr = raw as *const StringHeader;
-        if !sptr.is_null() {
-            let len = (*sptr).byte_len as usize;
-            if len <= (1 << 30) {
-                let data = (sptr as *const u8).add(std::mem::size_of::<StringHeader>());
-                return Some(std::slice::from_raw_parts(data, len).to_vec());
-            }
-        }
-        return None;
-    }
-    // Number / bool — stringify (parity with the lenient
-    // `res.write(value)` body path; Node would throw here).
-    if v.is_number() {
-        return Some(v.to_number().to_string().into_bytes());
-    }
-    if v.is_bool() {
-        return Some(
-            if v.to_bool() { "true" } else { "false" }
-                .to_string()
-                .into_bytes(),
-        );
-    }
-    None
-}
-
-/// True iff `val_f64` carries `POINTER_TAG` (0x7FFD) — a real pointer
-/// to a heap object or closure. Used to discriminate the
-/// positional `net.connect(port, host)` overload (arg1 is a plain
-/// number) from the options-object `net.connect({host, port}, cb?)`
-/// overload (arg1 is a NaN-boxed object pointer), and to detect a
-/// real `connectListener` closure in the trailing arg slot.
-///
-/// Narrower than "any NaN-tagged value": the dispatch table pads
-/// missing user args with `TAG_UNDEFINED` (`0x7FFC` band), so this
-/// check has to reject `undefined` cleanly to keep "user passed only
-/// 2 args" from misfiring as "user passed a callback". Issue #770.
-pub(crate) fn is_nanboxed_pointer(val_f64: f64) -> bool {
-    (val_f64.to_bits() >> 48) == 0x7FFD
-}
-
-/// Unbox a NaN-boxed value to the raw 48-bit pointer payload, regardless
-/// of which `0x7FFx` tag it carries.
-pub(crate) unsafe fn unbox_pointer(val_f64: f64) -> *mut u8 {
-    let bits = val_f64.to_bits();
-    (bits & 0x0000_FFFF_FFFF_FFFF) as *mut u8
-}
-
-/// Extract a string field from a NaN-boxed JS object. Accepts string
-/// values and numeric values (numbers stringified) — Node accepts both
-/// shapes for `port` etc.
-pub(crate) unsafe fn get_object_string_field(obj_f64: f64, field_name: &str) -> Option<String> {
-    if !is_nanboxed_pointer(obj_f64) {
-        return None;
-    }
-    let obj_ptr = unbox_pointer(obj_f64) as *const ObjectHeader;
-    if obj_ptr.is_null() {
-        return None;
-    }
-    let key = js_string_from_bytes(field_name.as_ptr(), field_name.len() as u32);
-    let val_f64 = js_object_get_field_by_name_f64(obj_ptr, key);
-    let val = JsValue::from_bits(val_f64.to_bits());
-    if val.is_undefined() || val.is_null() {
-        return None;
-    }
-    if val.is_string() {
-        return string_from_header_i64(val.as_string_ptr() as i64);
-    }
-    if val.is_number() {
-        return Some(format!("{}", val.to_number() as i64));
-    }
-    None
-}
-
-pub(crate) unsafe fn get_object_number_field(obj_f64: f64, field_name: &str) -> Option<f64> {
-    if !is_nanboxed_pointer(obj_f64) {
-        return None;
-    }
-    let obj_ptr = unbox_pointer(obj_f64) as *const ObjectHeader;
-    if obj_ptr.is_null() {
-        return None;
-    }
-    let key = js_string_from_bytes(field_name.as_ptr(), field_name.len() as u32);
-    let val_f64 = js_object_get_field_by_name_f64(obj_ptr, key);
-    let val = JsValue::from_bits(val_f64.to_bits());
-    if val.is_undefined() || val.is_null() {
-        return None;
-    }
-    if val.is_number() {
-        return Some(val.to_number());
-    }
-    // Some npm code passes `port` as a string — accept that too.
-    if val.is_string() {
-        if let Some(s) = string_from_header_i64(val.as_string_ptr() as i64) {
-            if let Ok(n) = s.parse::<f64>() {
-                return Some(n);
-            }
-        }
-    }
-    None
-}
-
-/// Read a boolean option off a NaN-boxed JS object. Accepts real
-/// booleans plus numbers (`rejectUnauthorized: 0` shows up in npm
-/// code). `None` when the field is absent/undefined/null. #4971.
-pub(crate) unsafe fn get_object_bool_field(obj_f64: f64, field_name: &str) -> Option<bool> {
-    if !is_nanboxed_pointer(obj_f64) {
-        return None;
-    }
-    let obj_ptr = unbox_pointer(obj_f64) as *const ObjectHeader;
-    if obj_ptr.is_null() {
-        return None;
-    }
-    let key = js_string_from_bytes(field_name.as_ptr(), field_name.len() as u32);
-    let val = JsValue::from_bits(js_object_get_field_by_name_f64(obj_ptr, key).to_bits());
-    if val.is_undefined() || val.is_null() {
-        return None;
-    }
-    if val.is_bool() {
-        return Some(val.to_bool());
-    }
-    if val.is_number() {
-        return Some(val.to_number() != 0.0);
-    }
-    None
-}
-
-/// Build an `Error`-shaped object `{ message: msg }` so user code can
-/// read `err.message` from the `'error'` listener — Node emits Error
-/// instances, not raw strings. Returns a NaN-boxed `f64` pointing at
-/// the object. Issue #770.
-unsafe fn build_error_object(msg: &str) -> f64 {
-    let keys: [&str; 1] = ["message"];
-    let (packed, shape_id) = build_object_shape(&keys);
-    let obj: *mut ObjectHeader =
-        js_object_alloc_with_shape(shape_id, 1, packed.as_ptr(), packed.len() as u32);
-    if obj.is_null() {
-        // Fall back to the bare string so the listener still receives
-        // *something* if the object alloc failed.
-        let s = alloc_string(msg);
-        return f64::from_bits(nanbox_string_bits(s.as_raw()));
-    }
-    let s = alloc_string(msg);
-    let v = JsValue::from_string_ptr(s.as_raw());
-    js_object_set_field(obj, 0, v);
-    let obj_v = JsValue::from_object_ptr(obj as *mut u8);
-    f64::from_bits(obj_v.bits())
 }
 
 pub(crate) fn next_id() -> i64 {
@@ -1287,7 +1084,15 @@ pub(crate) async fn run_socket_task(
     rx: &mut mpsc::UnboundedReceiver<SocketCommand>,
 ) {
     let mut transport: Option<Transport> = Some(initial_transport);
-    let mut buf = vec![0u8; 16 * 1024];
+    // Zero-copy read buffer. `read_buf` fills the uninitialized tail of this
+    // `BytesMut` in place (no per-read zeroing), and `split_to(n)` carves the
+    // freshly-read bytes off as a refcounted `Bytes` view that the 'data'
+    // event carries to the drain handler — eliminating the `Vec<u8>` alloc +
+    // memcpy that the old `buf[..n].to_vec()` did on every read. The per-read
+    // 16 KiB ceiling is enforced by the `BufMut::limit` wrapper at the read
+    // site (see below), so read sizing and 'data' chunk boundaries are
+    // unchanged from the fixed-`Vec` path.
+    let mut buf = BytesMut::with_capacity(16 * 1024);
 
     loop {
         let t = match transport.as_mut() {
@@ -1295,8 +1100,24 @@ pub(crate) async fn run_socket_task(
             None => break,
         };
 
+        // Cap the writable window at 16 KiB so a single `read_buf` reads the
+        // same per-call ceiling the old fixed `[u8; 16 KiB]` scratch did.
+        // `clear()` drops the (already split-off) contents and `reserve`
+        // guarantees *at least* 16 KiB of spare capacity — but `BytesMut` may
+        // over-allocate, and `read_buf` would otherwise fill all of it. Wrap
+        // the buffer in `BufMut::limit(16 KiB)` so the read cannot advance past
+        // 16 KiB regardless of the underlying capacity, keeping read sizing and
+        // 'data' chunk boundaries fixed. The adapter only borrows `buf` for the
+        // read future; `read_buf` advances `buf` itself, so `buf.len() == n`
+        // afterwards and `split_to(n)` carves off exactly the freshly-read run.
+        buf.clear();
+        buf.reserve(16 * 1024);
+        let mut window = (&mut buf).limit(16 * 1024);
         tokio::select! {
-            read_result = t.read(&mut buf) => {
+            read_result = t.read_buf(&mut window) => {
+                // Release the `Limit` borrow of `buf` before touching `buf`
+                // again; `read_buf` already advanced `buf` in place.
+                drop(window);
                 match read_result {
                     Ok(0) => {
                         // #2154 raw mode: signal EOF on the buffer, suppress
@@ -1311,8 +1132,12 @@ pub(crate) async fn run_socket_task(
                     }
                     Ok(n) => {
                         // #2154 raw mode buffers for `poll_read`; else 'data'.
-                        if !raw_bridge::route_data(id, &buf[..n]) {
-                            push_event(PendingNetEvent::Data(id, buf[..n].to_vec()));
+                        // `split_to(n)` hands out a zero-copy `Bytes` view of
+                        // the bytes just read and leaves `buf` empty for the
+                        // next `reserve`/`read_buf` cycle.
+                        let chunk = buf.split_to(n).freeze();
+                        if !raw_bridge::route_data(id, &chunk) {
+                            push_event(PendingNetEvent::Data(id, chunk));
                         }
                     }
                     Err(e) => {
