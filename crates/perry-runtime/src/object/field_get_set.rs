@@ -2263,6 +2263,23 @@ pub extern "C" fn js_object_has_property(obj: f64, key: f64) -> f64 {
         };
     }
 
+    // A Web Fetch / zlib handle-band value (Headers/Request/Response, zlib
+    // streams) at or above the fetch band is a registry id, not a heap object —
+    // the pointer paths below would dereference the id and segfault. `key in
+    // <handle>` has no own-property meaning for these, so report `false`.
+    // Common/small handles (below the fetch band) are intentionally NOT caught
+    // here: they fall through to the registered small-handle property path later
+    // in this function. Same family as the string_from_header / inline-`.length`
+    // guards.
+    if obj_val.is_pointer() {
+        let addr = (obj_val.bits() & crate::value::POINTER_MASK) as usize;
+        if addr >= crate::value::addr_class::COMMON_HANDLE_BAND_END
+            && crate::value::addr_class::is_handle_band(addr)
+        {
+            return nanbox_false;
+        }
+    }
+
     // #1758: a SYMBOL key. The class-ref path below + the keys_array scan
     // (string keys only) can't see a class-object's static `[Sym]` props nor
     // ones inherited from a class-expression parent. Delegate to the symbol

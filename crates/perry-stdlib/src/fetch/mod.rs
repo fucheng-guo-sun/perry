@@ -105,6 +105,9 @@ fn alloc_fetch_handle_id() -> usize {
 }
 
 #[cfg(test)]
+mod headers_json_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
