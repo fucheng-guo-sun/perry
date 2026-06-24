@@ -1488,6 +1488,10 @@ pub fn try_lower_property_get_method_call(
         // C's parent chain and find the FIRST class that has `property`
         // in `ctx.methods`. Register (C's id → that ancestor's fn_name).
         let mut implementors: Vec<(u32, String)> = Vec::new();
+        // #5437: (has_rest, decl_param_count) per implementor, built in the
+        // discovery loop below (aligned 1:1 with `implementors`) so each case
+        // block can build its own per-arity args without rescanning `ctx.methods`.
+        let mut impl_meta: Vec<(bool, usize)> = Vec::new();
         let mut seen_pairs: std::collections::HashSet<(u32, String)> =
             std::collections::HashSet::new();
         for (start_cls, &start_cid) in ctx.class_ids.iter() {
@@ -1496,7 +1500,12 @@ pub fn try_lower_property_get_method_call(
                 let key = (c.clone(), property.clone());
                 if let Some(fname) = ctx.methods.get(&key).cloned() {
                     if seen_pairs.insert((start_cid, fname.clone())) {
+                        // `key` is the exact (defining-class, property) where the
+                        // method resolved, so its arity metadata is available now.
+                        let has_rest = matches!(ctx.method_has_rest.get(&key), Some(&true));
+                        let decl = ctx.method_param_counts.get(&key).copied().unwrap_or(0);
                         implementors.push((start_cid, fname));
+                        impl_meta.push((has_rest, decl));
                     }
                     break;
                 }
@@ -1505,21 +1514,19 @@ pub fn try_lower_property_get_method_call(
         }
         if !implementors.is_empty() {
             let recv_box = lower_expr(ctx, object)?;
-            let mut lowered_args: Vec<String> = Vec::with_capacity(args.len() + 1);
-            lowered_args.push(recv_box.clone());
+            // #1758 / epic #1785: the raw user args (no `this`, no issue-#235
+            // padding, no rest-bundling) drive every concrete callee below. A
+            // `perry_static_*` implementor (a class-object value reaching this
+            // instance-method tower — e.g. `class X extends
+            // (make(...)).annotations(y) {}`) must dispatch through
+            // `js_class_static_method_call`, which binds `this` and applies
+            // static arity/rest semantics; the instance-style `fname(recv,
+            // args…)` direct call would pass recv as arg0 and never set
+            // IMPLICIT_THIS (the #1787 broken-tower bug).
+            let mut static_user_args: Vec<String> = Vec::with_capacity(args.len());
             for a in args {
-                lowered_args.push(lower_expr(ctx, a)?);
+                static_user_args.push(lower_expr(ctx, a)?);
             }
-            // #1758 / epic #1785: capture the raw user args (no `this`, no
-            // issue-#235 padding, no rest-bundling) before any of the
-            // instance-calling-convention mangling below. A `perry_static_*`
-            // implementor (a class-object value reaching this instance-method
-            // tower — e.g. `class X extends (make(...)).annotations(y) {}`)
-            // must dispatch through `js_class_static_method_call`, which binds
-            // `this` and applies static arity/rest semantics; the
-            // instance-style `fname(recv, args…)` direct call would pass recv
-            // as arg0 and never set IMPLICIT_THIS (the #1787 broken-tower bug).
-            let static_user_args: Vec<String> = lowered_args[1..].to_vec();
             // Issue #235: pad lowered_args with TAG_UNDEFINED so the callee's
             // default-param desugaring fires when the call site passed fewer
             // args than the method declares. Pre-fix the dispatch tower
@@ -1529,74 +1536,21 @@ pub fn try_lower_property_get_method_call(
             // real heap pointer that hung the dispatch chain on
             // `options.session` deref.
             //
-            // Take max arity across all implementors so the same arg_slices
-            // works for every concrete callee. Implementations with smaller
-            // arity silently ignore extra trailing args at runtime.
-            let mut max_explicit_arity: usize = 0;
-            for (_, fname) in &implementors {
-                for ((cls, mname), reg_fname) in ctx.methods.iter() {
-                    if reg_fname == fname && mname == property {
-                        if let Some(&n) = ctx.method_param_counts.get(&(cls.clone(), mname.clone()))
-                        {
-                            if n > max_explicit_arity {
-                                max_explicit_arity = n;
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-            let target_total = max_explicit_arity + 1; // +1 for `this`
+            // #5437: each implementor of `property` has its OWN declared arity
+            // and rest-ness. The rest-bundle (and default-param padding) MUST be
+            // applied per-implementor, not once globally — otherwise a single
+            // rest-bearing implementor forces EVERY case (including non-rest
+            // ones with more positional params) to receive a single bundled rest
+            // array, dropping the real positional args. That was the Next.js
+            // `f.get(r,u,context)` bug: `get` has rest- and non-rest impls
+            // (`LRUCache.get`/`CacheHandler.get`/`ResponseCache.get`, arities
+            // 1/2/3), so the global rest-bundle truncated `nh.get`'s 3 args into
+            // one array passed as arg0 → `context` (the 3rd param) read 0.0.
+            //
+            // (has_rest, decl_param_count) per implementor was built in the
+            // discovery loop above (`impl_meta`, aligned 1:1 with `implementors`);
+            // each case block builds its own per-arity args below.
             let undefined_lit = double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
-            // Issue #672: bundle trailing args into a rest array on the
-            // dynamic-dispatch path too. Mirrors the static-dispatch arm
-            // below — without it, `conn.command("SET","k","v")` on a
-            // `conn: any` (the @perryts/redis case) reached the callee with
-            // `name="SET"`, `args="k"` and the trailing `"v"` silently
-            // dropped, since the LLVM signature only declares N+1 doubles
-            // and any 4th double is just discarded.
-            let mut method_has_rest_dyn = false;
-            let mut method_decl_count_dyn = max_explicit_arity;
-            for (_, fname) in &implementors {
-                for ((cls, mname), reg_fname) in ctx.methods.iter() {
-                    if reg_fname == fname && mname == property {
-                        let key = (cls.clone(), mname.clone());
-                        if let Some(&true) = ctx.method_has_rest.get(&key) {
-                            method_has_rest_dyn = true;
-                            if let Some(&n) = ctx.method_param_counts.get(&key) {
-                                method_decl_count_dyn = n;
-                            }
-                            break;
-                        }
-                    }
-                }
-                if method_has_rest_dyn {
-                    break;
-                }
-            }
-            if method_has_rest_dyn {
-                let fixed_user = method_decl_count_dyn.saturating_sub(1);
-                while lowered_args.len() - 1 < fixed_user {
-                    lowered_args.push(undefined_lit.clone());
-                }
-                let split_at = 1 + fixed_user;
-                let rest_count = lowered_args.len().saturating_sub(split_at);
-                let cap = (rest_count as u32).to_string();
-                let mut rest_arr = ctx.block().call(I64, "js_array_alloc", &[(I32, &cap)]);
-                for v in &lowered_args[split_at..] {
-                    let blk = ctx.block();
-                    rest_arr = blk.call(I64, "js_array_push_f64", &[(I64, &rest_arr), (DOUBLE, v)]);
-                }
-                let rest_box = nanbox_pointer_inline(ctx.block(), &rest_arr);
-                lowered_args.truncate(split_at);
-                lowered_args.push(rest_box);
-            } else {
-                while lowered_args.len() < target_total {
-                    lowered_args.push(undefined_lit.clone());
-                }
-            }
-            let arg_slices: Vec<(crate::types::LlvmType, &str)> =
-                lowered_args.iter().map(|s| (DOUBLE, s.as_str())).collect();
 
             // Issue #628 followup (#620 in dynamic-dispatch shape): probe
             // own-property override BEFORE the class-id switch tower. The
@@ -1733,7 +1687,11 @@ pub fn try_lower_property_get_method_call(
             }
 
             let mut phi_inputs: Vec<(String, String)> = Vec::new();
-            for ((_, fname), &case_idx) in implementors.iter().zip(case_idxs.iter()) {
+            for (((_, fname), &case_idx), &(impl_has_rest, impl_decl_count)) in implementors
+                .iter()
+                .zip(case_idxs.iter())
+                .zip(impl_meta.iter())
+            {
                 ctx.current_block = case_idx;
                 // #1758: a `perry_static_*` implementor is a STATIC method on a
                 // class-object receiver. Route it through the runtime
@@ -1773,7 +1731,52 @@ pub fn try_lower_property_get_method_call(
                         ],
                     )
                 } else {
-                    ctx.block().call(DOUBLE, fname, &arg_slices)
+                    // #5437: build THIS implementor's args from the raw user
+                    // args (`static_user_args`), applying its own declared arity
+                    // + rest-ness. A non-rest callee gets its positional params
+                    // padded with `undefined`; a rest callee gets the trailing
+                    // args bundled into a single array at its rest slot. This is
+                    // per-case so one rest-bearing sibling can't force the others
+                    // to receive a bundled array in place of positional params.
+                    let mut case_args: Vec<String> = Vec::with_capacity(impl_decl_count + 1);
+                    case_args.push(recv_box.clone());
+                    if impl_has_rest {
+                        let fixed_user = impl_decl_count.saturating_sub(1);
+                        for i in 0..fixed_user {
+                            case_args.push(
+                                static_user_args
+                                    .get(i)
+                                    .cloned()
+                                    .unwrap_or_else(|| undefined_lit.clone()),
+                            );
+                        }
+                        let rest_count = static_user_args.len().saturating_sub(fixed_user);
+                        let cap = (rest_count as u32).to_string();
+                        let mut rest_arr = ctx.block().call(I64, "js_array_alloc", &[(I32, &cap)]);
+                        for v in static_user_args.iter().skip(fixed_user) {
+                            let blk = ctx.block();
+                            rest_arr = blk.call(
+                                I64,
+                                "js_array_push_f64",
+                                &[(I64, &rest_arr), (DOUBLE, v)],
+                            );
+                        }
+                        let rest_box = nanbox_pointer_inline(ctx.block(), &rest_arr);
+                        case_args.push(rest_box);
+                    } else {
+                        for v in &static_user_args {
+                            case_args.push(v.clone());
+                        }
+                        // Issue #235: pad to the declared arity so the callee's
+                        // default-param desugaring fires for skipped trailing
+                        // params instead of reading an uninitialized arg slot.
+                        while case_args.len() < impl_decl_count + 1 {
+                            case_args.push(undefined_lit.clone());
+                        }
+                    }
+                    let case_arg_slices: Vec<(crate::types::LlvmType, &str)> =
+                        case_args.iter().map(|s| (DOUBLE, s.as_str())).collect();
+                    ctx.block().call(DOUBLE, fname, &case_arg_slices)
                 };
                 let after_label = ctx.block().label.clone();
                 if !ctx.block().is_terminated() {
