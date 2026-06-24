@@ -1,7 +1,14 @@
-## v0.5.1205 — release: cargo-test gate fix + runtime/codegen fix batch
+## v0.5.1206 — release: cargo-test + iOS simctl gate fixes + runtime/codegen batch
 
+Supersedes the unshipped v0.5.1205 (whose simctl gate failed on an iOS build break).
 Rolls up the fixes that landed on main after the v0.5.1204 changelog entry:
 
+- **fix(ui-ios)**: `adbanner.rs` referenced `crate::string_header::StringHeader`, a
+  module that exists only in `perry-ui-macos`. Now uses `perry_runtime::string::StringHeader`
+  like every sibling file. `perry-ui-ios` is Apple-only and excluded from `cargo-test`,
+  so this only surfaced in the tag-time simctl build. (#5645)
+- **fix(stdlib)**: auto-opt link break — `dispatch_http` path refs after the
+  dispatch-module split (#1435). (#5639)
 - **test**: `blocklist_addsubnet_prefix` called `TempDir::join` (no such method) — an
   E0599 that broke the full-workspace cargo-test gate (red on the nightly cron since
   2026-06-20; the per-PR scoped run never builds `tests/*.rs`, so it went undetected).
