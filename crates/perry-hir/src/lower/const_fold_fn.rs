@@ -29,6 +29,7 @@ use crate::eval_classifier::{const_string_of, eval_diag_enabled, EvalSurface};
 use crate::ir::Expr;
 
 use super::expr_function::lower_fn_expr;
+use super::global_eval_hoist::apply_global_eval_hoist;
 use super::lower_expr::lower_expr;
 use super::LoweringContext;
 
@@ -746,24 +747,28 @@ pub(crate) fn try_indirect_eval_general(
     // enclosing scope would wrongly resolve module/function-locals that real
     // global eval cannot see, so defer those to the runtime global-`eval`
     // thunk. (Only the parse-/early-error SyntaxError cases above are modeled.)
-    let module_top_global = super::lower_expr::global_script_this_enabled()
-        && ctx.scope_depth == 0
-        && ctx.current_class.is_none()
-        && ctx.with_env_stack.is_empty()
-        && !ctx.is_external_module;
-    // Only fold a *declaration-free* body. A scope-capturing IIFE places any
-    // `var`/`function`/`class`/`let`/`const` the body declares inside the
-    // wrapper, but real global eval routes them to the global var environment
-    // (`var`/`function`) or the eval's own fresh lexical environment
-    // (`let`/`const`/`class`) — and Perry additionally registers class names at
-    // module scope, so a folded `class C {}` would leak `C` to the top level
-    // (test262 language/eval-code/indirect/lex-env-distinct-cls expects it to
-    // stay invisible). A body with no declarations has no such binding to
-    // misplace; it only reads/assigns the globals it names, which the IIFE
-    // resolves correctly. Any declaration → defer to the runtime thunk.
+    let module_top_global = eval_is_module_top_global(ctx);
+    // A scope-capturing IIFE places any `var`/`function`/`class`/`let`/`const`
+    // the body declares inside the wrapper, but real global eval routes them to
+    // the global var environment (`var`/`function`) or the eval's own fresh
+    // lexical environment (`let`/`const`/`class`). A declaration-free body has no
+    // such binding to misplace; it only reads/assigns the globals it names,
+    // which the IIFE resolves correctly.
     if module_top_global && !eval_body_declares_bindings(&body_stmts) {
         let eval_strict = crate::lower_decl::body_has_use_strict(&body_stmts);
         return build_eval_completion_iife(ctx, body_stmts, eval_strict, span);
+    }
+    // Annex B.3.3.3: a sloppy global (indirect) eval whose body declares
+    // `var`/`function` bindings hoists them into the global variable
+    // environment. Rewrite those to global assignments and fold; the rewrite
+    // bails (→ defer to the runtime thunk) on a `class` declaration — which
+    // Perry would otherwise register at module scope, leaking it past the eval
+    // (test262 language/eval-code/indirect/lex-env-distinct-cls expects it to
+    // stay invisible).
+    if module_top_global && !crate::lower_decl::body_has_use_strict(&body_stmts) {
+        if let Some(hoisted) = apply_global_eval_hoist(&body_stmts) {
+            return build_eval_completion_iife(ctx, hoisted, false, span);
+        }
     }
     let _ = span;
     Ok(None)
@@ -1478,7 +1483,30 @@ fn try_const_fold_eval(
     // plain assignment. (test262 language/eval-code/direct/strictness-override)
     let eval_strict = ctx.current_strict || crate::lower_decl::body_has_use_strict(&body_stmts);
 
+    // Annex B.3.3.3: a *sloppy global* direct eval routes the `var`/`function`
+    // declarations of its body into the global variable environment, so they
+    // survive after the eval returns. Rewrite them to global assignments before
+    // folding (otherwise the completion IIFE traps them as arrow-locals). Strict
+    // eval keeps its own variable environment (the IIFE already models that).
+    if !eval_strict && eval_is_module_top_global(ctx) {
+        if let Some(hoisted) = apply_global_eval_hoist(&body_stmts) {
+            return build_eval_completion_iife(ctx, hoisted, eval_strict, span);
+        }
+    }
+
     build_eval_completion_iife(ctx, body_stmts, eval_strict, span)
+}
+
+/// Is the current eval call site at module top level in global-script mode,
+/// where the enclosing variable environment *is* the global object — the only
+/// place the Annex B.3.3.3 global var-scoped hoisting ([`apply_global_eval_hoist`])
+/// applies? (Mirrors the `module_top_this`/`module_top_global` guards.)
+fn eval_is_module_top_global(ctx: &LoweringContext) -> bool {
+    super::lower_expr::global_script_this_enabled()
+        && ctx.scope_depth == 0
+        && ctx.current_class.is_none()
+        && ctx.with_env_stack.is_empty()
+        && !ctx.is_external_module
 }
 
 /// Build the completion-tracking IIFE that runs an eval body AOT and yields its
