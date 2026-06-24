@@ -1,3 +1,19 @@
+## v0.5.1205 — release: cargo-test gate fix + runtime/codegen fix batch
+
+Rolls up the fixes that landed on main after the v0.5.1204 changelog entry:
+
+- **test**: `blocklist_addsubnet_prefix` called `TempDir::join` (no such method) — an
+  E0599 that broke the full-workspace cargo-test gate (red on the nightly cron since
+  2026-06-20; the per-PR scoped run never builds `tests/*.rs`, so it went undetected).
+  Now `dir.path().join(...)`. (#5641)
+- **fix(net,http,tls)**: #1781 — handle SSO short strings in value conversion. (#5638)
+- **fix(runtime)**: bind inherited prototype-accessor methods to the receiver. (#5637)
+- **fix**: #5594 — Annex B.3.3.3 global eval function-declaration binding. (#5636)
+- **fix(temporal)**: #5580 — read era/eraYear for non-ISO calendars in
+  PlainDateTime/ZonedDateTime/PlainMonthDay field bags. (#5635)
+- **fix(runtime)**: #5592 — `class X extends <Proxy>` segfault. (#5634)
+- **fix(runtime)**: #5591 — string-coercing a class/object method no longer segfaults. (#5633)
+
 ## v0.5.1204 — fix(codegen,runtime): #5437 — require-derived captured local must not drop to undefined when no decl-site snapshot exists
 
 Follow-up to the #5437 W6 `CaptureFill` fix (v0.5.1202). That fix made `inline_constructor_param_values_with_class` always read a cap param from the decl-site snapshot `js_class_capture_value(cid, slot)` whenever the class is in `ctx.class_ids`. But a snapshot only exists for classes that reach a `RegisterClassCaptures` decl-site; an **inline anonymous class capturing a `require()`-derived local** (`const h = require(s).x`) gets a `cid` with **no registered snapshot**, so `js_class_capture_value` returned `TAG_UNDEFINED` → the captured value read `undefined` inside methods. In the Next.js bundle this surfaced as `trace.getSpan` on undefined (the OTel tracer captured a `require("@opentelemetry/api")`-derived `trace`).
