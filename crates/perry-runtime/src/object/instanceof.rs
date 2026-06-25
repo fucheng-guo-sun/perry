@@ -160,6 +160,27 @@ pub extern "C" fn js_instanceof_dynamic(value: f64, type_ref: f64) -> f64 {
             }
         }
     }
+    // Spec step (InstanceofOperator): consult the RHS's OWN `@@hasInstance`
+    // first. zod 4 builds `ZodType` as a plain FUNCTION and installs its brand
+    // check via `Object.defineProperty(ZodTypeFn, Symbol.hasInstance, { value })`,
+    // so the function RHS would otherwise fall through to the prototype-walk tail
+    // and return false. Read OWN only (`has_own` ⇒ `get` returns the own value,
+    // never the inherited Function.prototype default thunk → no recursion). Also
+    // catches a dynamic class-ref RHS (own @@hasInstance lives in CLASS_STATIC_SYMBOLS).
+    {
+        let hi_sym = crate::symbol::well_known_symbol("hasInstance");
+        if !hi_sym.is_null() {
+            let hi_f64 = f64::from_bits(crate::value::JSValue::pointer(hi_sym as *const u8).bits());
+            if unsafe { crate::symbol::js_object_has_own_symbol(type_ref, hi_f64) } {
+                let cb = unsafe { crate::symbol::js_object_get_symbol_property(type_ref, hi_f64) };
+                // A present-but-non-callable own `@@hasInstance` throws; only a
+                // `null`/`undefined` value falls through to the default below.
+                if let HasInstanceOutcome::Result(r) = dispatch_own_has_instance(cb, value) {
+                    return r;
+                }
+            }
+        }
+    }
     let bits = type_ref.to_bits();
     let top16 = bits >> 48;
     if top16 == 0x7FFE {
