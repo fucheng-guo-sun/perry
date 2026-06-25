@@ -1076,14 +1076,34 @@ fn apply_headers_flat_array(sr: &mut ServerResponse, json: &str) {
 /// (`begin_streaming` succeeded now or earlier), `None` when it isn't —
 /// the caller falls back to the legacy buffered path.
 fn stream_write(handle: i64, bytes: &[u8]) -> Option<bool> {
+    stream_write_with_cb(handle, bytes, 0)
+}
+
+/// `stream_write`, but also enqueues `callback` (if non-zero) into
+/// `pending_write_callbacks` BEFORE the data frame is published on the channel.
+///
+/// Ordering matters: the stream-frame send makes the bytes visible to the
+/// reader task, which may drain and run pending write callbacks immediately. If
+/// we pushed the callback AFTER `tx.send(...)` (as the call site used to), a
+/// receiver that drains right away could run this write's callback out of order
+/// — after later writes' callbacks or `.end()`. Registering it first keeps the
+/// callback ordered relative to the frame it belongs to and to later writes.
+fn stream_write_with_cb(handle: i64, bytes: &[u8], callback: i64) -> Option<bool> {
     if !begin_streaming(handle) {
         return None;
     }
     let sr = get_handle_mut::<ServerResponse>(handle)?;
-    let tx = sr.stream_tx.as_ref()?;
-    let in_flight = sr.stream_in_flight.as_ref()?;
+    // Clone the channel handles so the immutable borrow of `sr` ends before we
+    // mutate `pending_write_callbacks` / `needs_drain` (the sender + Arc are
+    // cheap to clone). The `fetch_add` reserves this chunk's byte count.
+    let tx = sr.stream_tx.as_ref()?.clone();
+    let in_flight = sr.stream_in_flight.as_ref()?.clone();
     let queued =
         in_flight.fetch_add(bytes.len(), std::sync::atomic::Ordering::AcqRel) + bytes.len();
+    // Register the write callback BEFORE publishing the frame (see doc comment).
+    if callback != 0 {
+        sr.pending_write_callbacks.push(callback);
+    }
     let _ = tx.send(StreamFrame::Data(Bytes::copy_from_slice(bytes)));
     let below_hwm = queued <= DEFAULT_HIGH_WATER_MARK;
     if !below_hwm {
@@ -1667,6 +1687,30 @@ pub extern "C" fn js_node_http_res_detach_socket(handle: i64, _socket: f64) {
 #[no_mangle]
 pub extern "C" fn js_node_http_res_write_with_cb(handle: i64, chunk: f64, callback: i64) -> i32 {
     let bytes = jsvalue_to_body_bytes(chunk);
+    // Honor streaming mode (after `res.flushHeaders()` / a prior streamed
+    // `res.write`) exactly like `js_node_http_res_write`: the chunk must go down
+    // the stream channel, NOT into `buffered_body`. Without this, a streamed
+    // response whose chunks arrive via the callback-aware dispatch arm
+    // (`res.write(chunk)` from Next's `pipeToNodeResponse` WritableStream)
+    // buffered every chunk while `.end()` took the stream-finalize path — which
+    // only sends the final `.end(chunk)` arg and drops `buffered_body` entirely,
+    // so the JSON API-route body never reached the wire (HTTP 200, 0 bytes).
+    // #5437 (Next.js app-route response pipe).
+    if let Some(b) = &bytes {
+        let ended = get_handle::<ServerResponse>(handle)
+            .map(|sr| sr.writable_ended)
+            .unwrap_or(true);
+        if !ended {
+            // Register the write callback BEFORE the data frame is published so
+            // a receiver that drains immediately can't run it out of order
+            // relative to later writes / `.end()` (Node fires it once the chunk
+            // is flushed; queued, it drains in order, #4904). `stream_write_with_cb`
+            // enqueues the callback ahead of the `tx.send`.
+            if let Some(below_hwm) = stream_write_with_cb(handle, b, callback) {
+                return below_hwm as i32;
+            }
+        }
+    }
     // #4909 — real backpressure boolean (mirrors `js_node_http_res_write_full`
     // on the static path): `false` past the 16 KiB high-water mark, so dynamic
     // `while (res.write(buf, cb))` producer loops terminate.
