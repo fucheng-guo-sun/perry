@@ -43,6 +43,20 @@ use crate::types::{
     TAG_UNDEFINED,
 };
 
+/// Apply a server's per-connection `noDelay` (Node's `socket.setNoDelay`
+/// default, ON) to a freshly accepted TCP stream before it is served. Node
+/// disables Nagle on every accepted connection unless the server was created
+/// with `noDelay: false`. A single named call site for the option keeps the
+/// accept loops applying the server's *configured* value rather than each
+/// re-deriving it — the HTTPS and HTTP/2-secure accept loops had both regressed
+/// to a literal `true`, ignoring `noDelay: false` (the bug this helper + its
+/// test guard against). Covered by `https_server::nodelay_tests` over a real
+/// loopback accept. `set_nodelay` is best-effort: a failure to set the socket
+/// option is non-fatal (Node likewise ignores it), so the result is discarded.
+pub(crate) fn apply_accept_no_delay(stream: &tokio::net::TcpStream, no_delay: bool) {
+    let _ = stream.set_nodelay(no_delay);
+}
+
 /// Backing struct for an `http.Server` JS-side handle.
 pub struct HttpServer {
     /// User's `(req, res) => ...` handler. Stored as raw `i64`; the
@@ -647,6 +661,7 @@ fn spawn_rr_inject_loop(
     mut shutdown_rx: oneshot::Receiver<()>,
     request_tx_for_spawn: Arc<mpsc::Sender<HttpPendingRequest>>,
     upgrade_tx_for_spawn: Arc<mpsc::Sender<HttpPendingUpgrade>>,
+    no_delay: bool,
 ) {
     use std::os::unix::io::{FromRawFd, RawFd};
 
@@ -675,13 +690,17 @@ fn spawn_rr_inject_loop(
                             .peer_addr()
                             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
                         match tokio::net::TcpStream::from_std(std_stream) {
-                            Ok(stream) => serve_http_connection(
-                                server_handle,
-                                stream,
-                                peer,
-                                request_tx_for_spawn.clone(),
-                                upgrade_tx_for_spawn.clone(),
-                            ),
+                            Ok(stream) => {
+                                // Match Node's per-connection `noDelay` (default on).
+                                let _ = stream.set_nodelay(no_delay);
+                                serve_http_connection(
+                                    server_handle,
+                                    stream,
+                                    peer,
+                                    request_tx_for_spawn.clone(),
+                                    upgrade_tx_for_spawn.clone(),
+                                );
+                            }
                             Err(e) => eprintln!("[node:http] rr adopt failed: {}", e),
                         }
                     }
@@ -759,6 +778,7 @@ pub unsafe extern "C" fn js_node_http_server_listen(server_handle: i64, args_arr
         {
             let actual_port = resolved.unwrap();
             crate::cluster_bind::notify_listening(&host, actual_port);
+            let no_delay;
             if let Some(s) = get_handle_mut::<HttpServer>(server_handle) {
                 s.bound_port = actual_port;
                 s.bound_host = host.clone();
@@ -766,6 +786,7 @@ pub unsafe extern "C" fn js_node_http_server_listen(server_handle: i64, args_arr
                 s.shutdown_tx = Some(shutdown_tx);
                 s.request_rx = Some(request_rx);
                 s.upgrade_rx = Some(upgrade_rx);
+                no_delay = s.no_delay;
             } else {
                 return server_handle;
             }
@@ -776,6 +797,7 @@ pub unsafe extern "C" fn js_node_http_server_listen(server_handle: i64, args_arr
                 shutdown_rx,
                 request_tx_for_spawn,
                 upgrade_tx_for_spawn,
+                no_delay,
             );
         }
     } else {
@@ -803,6 +825,10 @@ pub unsafe extern "C" fn js_node_http_server_listen(server_handle: i64, args_arr
         }
         crate::cluster_bind::notify_listening(&host, actual_port);
 
+        // Node applies `noDelay` (default true) to every accepted connection.
+        // Capture it before the accept loop spawns so the option can be set on
+        // each accepted socket without re-locking the handle map per accept.
+        let no_delay;
         if let Some(s) = get_handle_mut::<HttpServer>(server_handle) {
             s.bound_port = actual_port;
             s.bound_host = host.clone();
@@ -810,6 +836,7 @@ pub unsafe extern "C" fn js_node_http_server_listen(server_handle: i64, args_arr
             s.shutdown_tx = Some(shutdown_tx);
             s.request_rx = Some(request_rx);
             s.upgrade_rx = Some(upgrade_rx);
+            no_delay = s.no_delay;
         } else {
             return server_handle;
         }
@@ -840,6 +867,8 @@ pub unsafe extern "C" fn js_node_http_server_listen(server_handle: i64, args_arr
                         accepted = listener.accept() => {
                             match accepted {
                                 Ok((stream, peer)) => {
+                                    // Match Node's per-connection `noDelay` (default on).
+                                    let _ = stream.set_nodelay(no_delay);
                                     serve_http_connection(
                                         server_handle,
                                         stream,
