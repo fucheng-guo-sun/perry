@@ -250,6 +250,26 @@ pub(crate) fn build_and_run_link(
             // Native macOS/iOS via clang driver
             cmd.arg("-Wl,-dead_strip");
         }
+        // PERRY_LINK_MAP=<path> — emit a linker map (which archive each symbol
+        // resolves from) for diagnosing dup-symbol / shadowing bugs. Honor it on
+        // every non-Windows linker, not just native macOS. GNU ld (ELF) spells
+        // it `-Map=<file>`; ld64 (Apple) spells it `-map <file>`. The
+        // cross-Apple linkers are driven directly (no `-Wl,` prefix).
+        if let Some(map) = std::env::var_os("PERRY_LINK_MAP") {
+            let map = map.to_string_lossy();
+            if is_android || is_linux || is_harmonyos {
+                cmd.arg(format!("-Wl,-Map,{map}"));
+            } else if is_cross_ios || is_cross_visionos || is_cross_macos || is_cross_tvos {
+                cmd.arg("-map").arg(map.as_ref());
+            } else if is_watchos || is_visionos {
+                cmd.arg("-Xlinker")
+                    .arg("-map")
+                    .arg("-Xlinker")
+                    .arg(map.as_ref());
+            } else {
+                cmd.arg(format!("-Wl,-map,{map}"));
+            }
+        }
     } else {
         // MSVC link.exe / lld-link equivalents:
         //   /OPT:REF — drop unreferenced functions/data (= --gc-sections)
@@ -367,7 +387,21 @@ pub(crate) fn build_and_run_link(
                 // Also link runtime for symbols DCE'd from stdlib's bundled
                 // perry-runtime; on tier-3 it's first stripped of stdlib's objects.
                 if !is_android && !is_windows {
-                    cmd.arg(dedup_runtime_for_tier3(target, runtime_lib, stdlib));
+                    // #5000 (macOS/Linux): the standalone runtime archive is built
+                    // WITHOUT the `stdlib` feature, so it also defines the no-op
+                    // stdlib_stubs (js_fetch_with_options, js_headers_new,
+                    // js_request_new, js_ws_*, js_readline_*). With ELF/Mach-O
+                    // first-definition-wins those stubs can satisfy the user's
+                    // fetch ref before perry-stdlib's real impls, so `fetch()`
+                    // no-ops and a program awaiting it hangs. When this build
+                    // actually uses stdlib (fetch / ws / readline), localize those
+                    // stub symbols in a copy of the runtime so perry-stdlib wins.
+                    let runtime_for_link = if ctx.uses_fetch || ctx.needs_stdlib {
+                        localize_stdlib_stub_symbols(runtime_lib, stdlib)
+                    } else {
+                        runtime_lib.to_path_buf()
+                    };
+                    cmd.arg(dedup_runtime_for_tier3(target, &runtime_for_link, stdlib));
                 }
             } else {
                 if ctx.needs_stdlib {
@@ -383,8 +417,28 @@ pub(crate) fn build_and_run_link(
                 cmd.arg(runtime_lib);
             }
         } else {
-            // Runtime-only linking — no stdlib needed
-            cmd.arg(runtime_lib);
+            // Runtime-only linking — no stdlib needed.
+            //
+            // #5000 (Linux GTK4 UI): a bare UI program has
+            // `ctx.needs_stdlib == false`, so perry-stdlib isn't linked above —
+            // but the GTK4 UI branch below force-links it with
+            // `--whole-archive --allow-multiple-definition` to satisfy glib
+            // trampolines that call js_stdlib_process_pending /
+            // js_promise_run_microtasks. With first-definition-wins, the
+            // unlocalized runtime stubs linked here would shadow stdlib's real
+            // impls, leaving those pumps as no-ops. Localize the runtime's stub
+            // symbols first so stdlib wins, mirroring the needs_stdlib path.
+            let force_stdlib_for_linux_ui =
+                is_linux && ctx.needs_ui && find_ui_library(target).is_some();
+            let runtime_for_link = if force_stdlib_for_linux_ui {
+                match stdlib_lib.clone().or_else(|| find_stdlib_library(target)) {
+                    Some(stdlib) => localize_stdlib_stub_symbols(runtime_lib, &stdlib),
+                    None => runtime_lib.to_path_buf(),
+                }
+            } else {
+                runtime_lib.to_path_buf()
+            };
+            cmd.arg(&runtime_for_link);
         }
     } else if ctx.needs_stdlib {
         // Android + UI: runtime is provided by UI lib, but stdlib must still be linked
