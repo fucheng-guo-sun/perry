@@ -77,13 +77,30 @@ pub(crate) fn resolve_fetch_inputs(
         .map(String::into_bytes)
         .or_else(|| request_fields.as_ref().and_then(|rf| rf.body.clone()));
 
-    let custom_headers: HashMap<String, String> = match headers_json {
-        Some(j) => serde_json::from_str(&j).unwrap_or_default(),
-        None => request_fields
-            .as_ref()
-            .map(|rf| rf.headers.clone())
-            .unwrap_or_default(),
-    };
+    // Start from the `Request`'s own headers (the `fetch(Request)` form), then
+    // let any `init.headers` override per-key. WHATWG says init headers win, but
+    // an absent/empty init must NOT wipe the Request's headers — codegen always
+    // passes a headers JSON ("{}" when the init has none), so the old strict
+    // `match` (Some("{}") => empty) silently dropped every header axios sets on
+    // its `Request` (auth token, anthropic-version, …), causing 401s.
+    let mut custom_headers: HashMap<String, String> = request_fields
+        .as_ref()
+        .map(|rf| rf.headers.clone())
+        .unwrap_or_default();
+    if let Some(j) = headers_json {
+        if let Ok(init_headers) = serde_json::from_str::<HashMap<String, String>>(&j) {
+            // `request_fields.headers` are stored canonically lowercased (the
+            // Headers object lowercases keys), but `serde_json` preserves the
+            // JSON's original casing. Lowercase the init keys before merging so
+            // an init `Authorization` actually overrides the Request's
+            // `authorization` instead of both surviving and being forwarded.
+            custom_headers.extend(
+                init_headers
+                    .into_iter()
+                    .map(|(k, v)| (k.to_ascii_lowercase(), v)),
+            );
+        }
+    }
 
     Ok(FetchInputs {
         url,
@@ -91,4 +108,43 @@ pub(crate) fn resolve_fetch_inputs(
         body,
         custom_headers,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_fetch_inputs;
+
+    #[test]
+    fn init_headers_are_lowercased_so_they_override() {
+        // `url_from_header` set => the Request registry is not consulted, so
+        // this exercises only the `init.headers` merge path. The init keys must
+        // be lowercased so they collapse onto (and override) the canonical
+        // lowercase keys the Request's Headers object stores.
+        let inputs = resolve_fetch_inputs(
+            Some("https://example.com/".to_string()),
+            Some("GET".to_string()),
+            None,
+            Some(r#"{"Authorization":"Bearer tok","Content-Type":"application/json"}"#.to_string()),
+            0,
+        )
+        .expect("inputs resolve");
+
+        assert_eq!(
+            inputs
+                .custom_headers
+                .get("authorization")
+                .map(String::as_str),
+            Some("Bearer tok"),
+        );
+        assert_eq!(
+            inputs
+                .custom_headers
+                .get("content-type")
+                .map(String::as_str),
+            Some("application/json"),
+        );
+        // The original mixed-case keys must not survive as duplicates.
+        assert!(!inputs.custom_headers.contains_key("Authorization"));
+        assert!(!inputs.custom_headers.contains_key("Content-Type"));
+    }
 }
