@@ -346,6 +346,19 @@ pub fn lower_class_decl(
     // Enter type parameter scope for resolving T, U, etc. in member types
     ctx.enter_type_param_scope(&type_params);
 
+    // #5437: does the parent Ident resolve to an in-scope lexical local that
+    // shadows a same-named native/built-in parent? Computed here (same `ctx`
+    // scope state the heritage routing below uses, before the body lowers any
+    // new locals) so codegen can prefer the dynamic local over a NAME-keyed
+    // built-in special case (Error/Request/Response/Event/CustomEvent/streams).
+    let heritage_lexically_shadowed = match class_decl.class.super_class.as_deref() {
+        Some(ast::Expr::Ident(ident)) => {
+            let n = ident.sym.to_string();
+            !ctx.class_renames.contains_key(&n) && ctx.locals.lookup(&n).is_some()
+        }
+        _ => false,
+    };
+
     // Handle extends clause
     let (extends, extends_name, native_extends, extends_expr) = if let Some(ref super_class) =
         class_decl.class.super_class
@@ -404,7 +417,16 @@ pub fn lower_class_decl(
                 }
                 _ => None,
             };
-            if native_parent.is_some() {
+            // A lexical local shadowing the parent name must win over the native
+            // parent — the in-scope local IS the real parent value. Check it
+            // BEFORE `native_parent` so `const EventEmitter = …; class X extends
+            // EventEmitter {}` binds to the local via the dynamic `extends_expr`
+            // path, not the native `events` parent. ESM imports are not in
+            // `ctx.locals`, so genuine native subclassing is unchanged. Mirrors
+            // the class-expression arm below.
+            let locally_shadowed = !ctx.class_renames.contains_key(&parent_name)
+                && ctx.locals.lookup(&parent_name).is_some();
+            if native_parent.is_some() && !locally_shadowed {
                 // Keep `extends_name` populated alongside `native_extends`
                 // so SuperCall codegen + downstream chain walks still
                 // see the parent name (mirrors how stream-class
@@ -412,6 +434,15 @@ pub fn lower_class_decl(
                 // path while the native_extends carries the (module,
                 // class) tag for the runtime shim).
                 (None, Some(parent_name), native_parent, None)
+            } else if locally_shadowed {
+                // Lexical local shadow → dynamic parent via `extends_expr` (the
+                // in-scope local value), invoked by `super()` through
+                // `js_fetch_or_value_super`. See the class-expression arm below
+                // for the full rationale (Next.js p-queue `PQueue`).
+                match lower_expr(ctx, super_class) {
+                    Ok(expr) => (None, Some(parent_name), None, Some(Box::new(expr))),
+                    Err(_) => (None, Some(parent_name), None, None),
+                }
             } else {
                 // #5437 (Next.js NodeNextRequest cross-module heritage): a
                 // minified bundle declares the SAME class name in several
@@ -1334,6 +1365,7 @@ pub fn lower_class_decl(
         extends_name,
         native_extends,
         extends_expr,
+        heritage_lexically_shadowed,
         fields,
         constructor,
         methods,
@@ -1397,6 +1429,17 @@ pub fn lower_class_from_ast(
 
     ctx.enter_type_param_scope(&type_params);
 
+    // #5437: parent Ident shadowed by an in-scope lexical local? (See the
+    // matching computation in `lower_class_decl`.) Lets codegen prefer the
+    // dynamic local over a NAME-keyed built-in special case.
+    let heritage_lexically_shadowed = match class.super_class.as_deref() {
+        Some(ast::Expr::Ident(ident)) => {
+            let n = ident.sym.to_string();
+            !ctx.class_renames.contains_key(&n) && ctx.locals.lookup(&n).is_some()
+        }
+        _ => false,
+    };
+
     let (extends, extends_name, native_extends, extends_expr) = if let Some(ref super_class) =
         class.super_class
     {
@@ -1437,8 +1480,56 @@ pub fn lower_class_from_ast(
                 }
                 _ => None,
             };
-            if native_parent.is_some() {
+            // A lexical local binding shadowing the parent name must win over the
+            // native/static parent — the in-scope local IS the real parent value.
+            // Check it BEFORE `native_parent` so e.g. `const EventEmitter = …;
+            // const C = class extends EventEmitter {}` routes through the dynamic
+            // `extends_expr` path (the local) instead of recording the native
+            // `events` parent. ESM imports are NOT in `ctx.locals`, so genuine
+            // `extends EventEmitter` (imported) still takes the native path.
+            let locally_shadowed = !ctx.class_renames.contains_key(&parent_name)
+                && ctx.locals.lookup(&parent_name).is_some();
+            if native_parent.is_some() && !locally_shadowed {
                 (None, Some(parent_name), native_parent, None)
+            } else if locally_shadowed {
+                // #5437 (Next.js p-queue `PQueue` inside a minified bundle): a
+                // class EXPRESSION whose parent Ident is an IN-SCOPE LOCAL
+                // (`const t = require("events"); … class extends t {…}`) must
+                // bind to that LEXICAL local — not to an unrelated module-global
+                // class that happens to share the (minified, single-letter)
+                // name. The static `lookup_class(parent_name)` path keys
+                // codegen's `super()` on a module-wide `HashMap<name, &Class>`;
+                // in a turbopack chunk dozens of distinct webpack-factory
+                // classes are all named `t`/`u`/`i`, so that map keeps ONE `t`
+                // (whichever registered last) and `super()` inlines the WRONG
+                // class's constructor. The bundle's p-queue `PQueue extends t`
+                // (eventemitter3) resolved `t` to superstruct's `StructError`
+                // base, so `new PQueue()` ran StructError's destructuring ctor
+                // on the (undefined) options arg → "Cannot convert undefined or
+                // null to object" → HTTP 500 on the dynamic page routes.
+                //
+                // When the parent name is bound by a local in THIS body's scope,
+                // route through the dynamic `extends_expr` path: lower the Ident
+                // as a runtime value (the lexically-correct local), register the
+                // parent edge dynamically, and let `super()` invoke the real
+                // parent value via `js_fetch_or_value_super` (which already
+                // tolerates native / closure / class-ref / builtin parents).
+                // Gated on `!class_renames.contains_key` so the #5437
+                // sibling-rename path above still wins when a scope-local class
+                // rename exists (that disambiguation is exact). Pure-Ident
+                // module-global heritage (no shadowing local) is unaffected —
+                // `ctx.locals.lookup` returns `None` for a class name.
+                // Do NOT set a static `extends` (parent_cid) here: the only
+                // candidate would be `lookup_class(parent_name)`, which is the
+                // wrong same-named module-global class we are deliberately
+                // avoiding (wiring it would mis-route inherited-method / vtable
+                // dispatch to that class's members). The dynamic `extends_expr`
+                // path registers the correct parent edge at runtime via
+                // `RegisterClassParentDynamic` + `function_class_id`.
+                match lower_expr(ctx, super_class) {
+                    Ok(expr) => (None, Some(parent_name), None, Some(Box::new(expr))),
+                    Err(_) => (None, Some(parent_name), None, None),
+                }
             } else {
                 // #5437: resolve the parent through active scope-local class
                 // renames so a class EXPRESSION extending a disambiguated
@@ -1837,6 +1928,7 @@ pub fn lower_class_from_ast(
         extends_name,
         native_extends,
         extends_expr,
+        heritage_lexically_shadowed,
         fields,
         constructor,
         methods,
