@@ -751,12 +751,15 @@ pub(crate) fn intl_object_from_value(
     obj
 }
 
-pub(crate) extern "C" fn number_format_format_thunk(
-    _closure: *const ClosureHeader,
-    value: f64,
-) -> f64 {
+/// `get Intl.NumberFormat.prototype.format` — the ECMA-402 accessor. Validates
+/// that `this` is an initialized NumberFormat (TypeError otherwise) and returns
+/// the instance's bound format function ([[BoundFormat]]). It reads the hidden
+/// KEY_NF_BOUND_FORMAT slot (set at construction, name `""`, length 1) rather
+/// than the public own `format` property, so user mutation/deletion of that
+/// property can't change what the accessor returns.
+pub(crate) extern "C" fn number_format_format_getter_thunk(_closure: *const ClosureHeader) -> f64 {
     let obj = this_intl_object("format", KIND_NUMBER);
-    number_format_format_object(obj, value)
+    get_field(obj, KEY_NF_BOUND_FORMAT)
 }
 
 pub(crate) extern "C" fn number_format_bound_format_thunk(
