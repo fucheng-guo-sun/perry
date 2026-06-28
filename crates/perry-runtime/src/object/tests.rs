@@ -759,6 +759,67 @@ fn wide_object_index_reads_and_descriptor_writes() {
     }
 }
 
+/// #5736: `own_key_present` on a wide object (≥257 keys — e.g. a barrel
+/// `export *` namespace) must use the O(1) wide-key index rather than an O(n)
+/// keys_array scan, so `Object.values`/`Object.entries` (which re-check every
+/// own key) don't degrade to O(n²). Correctness must be preserved: present keys
+/// resolve, absent keys don't, and `Object.values` yields every value.
+#[test]
+fn wide_object_own_key_present_uses_index_and_object_values_is_complete() {
+    unsafe {
+        let obj = js_object_alloc(0, 0);
+        let n = 600u32;
+        for i in 0..n {
+            let name = format!("w{}", i);
+            let key = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+            js_object_set_field_by_name(obj, key, i as f64);
+        }
+        // Every present key is found through the wide-index probe.
+        for i in [0u32, 1, 42, 256, 257, 300, 599] {
+            let name = format!("w{}", i);
+            let key = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+            assert!(
+                own_key_present(obj, key),
+                "present key {name} must be found"
+            );
+        }
+        // Absent keys fall through the index miss to the linear scan → false.
+        for name in ["nope", "w600", "w-1", ""] {
+            let key = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+            assert!(
+                !own_key_present(obj, key),
+                "absent key {name:?} must not be found"
+            );
+        }
+        // `Object.values` must still enumerate every value exactly once.
+        let values = crate::object::js_object_values(obj as *const ObjectHeader);
+        assert_eq!(
+            crate::array::js_array_length(values),
+            n,
+            "Object.values must yield one value per key"
+        );
+        // Track each payload so a balanced duplicate/omission can't slip past a
+        // length+sum check: every value 0..n must appear exactly once.
+        let mut seen = vec![false; n as usize];
+        for i in 0..n {
+            let v = crate::array::js_array_get(values, i);
+            let num = f64::from_bits(v.bits());
+            let idx = num as usize;
+            assert_eq!(num, idx as f64, "Object.values must yield integer payloads");
+            assert!(
+                (idx as u32) < n,
+                "Object.values yielded out-of-range value {num}"
+            );
+            assert!(!seen[idx], "Object.values yielded duplicate value {idx}");
+            seen[idx] = true;
+        }
+        assert!(
+            seen.into_iter().all(|hit| hit),
+            "Object.values missed at least one value"
+        );
+    }
+}
+
 /// `js_object_to_string` must NOT dereference a handle-band value (a Web Fetch
 /// `Headers`/`Request`/`Response`/`Blob` registry id, or any other small native
 /// handle) as a heap pointer. Such ids are NaN-boxed as `POINTER_TAG` values but
