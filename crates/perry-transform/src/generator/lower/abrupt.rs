@@ -769,3 +769,260 @@ pub(crate) fn build_yield_star_return_routes(
     }
     out
 }
+
+/// Build the `gen.throw(e)` forwarding routes for an async generator's `.throw`
+/// closure. When the generator is suspended inside a `yield *` delegation
+/// (`state` within a recorded [`DelegationRoute`] interval), `throw(e)` must
+/// forward to the delegated iterator's `throw` method rather than routing the
+/// error into the outer generator's own catch handlers — spec `yield *` step 6.b:
+///
+/// ```text
+///   throw = GetMethod(iterator, "throw")
+///   if throw is undefined ->                         // close inner, then TypeError
+///       AsyncIteratorClose(iterator, normal); throw a TypeError
+///   innerResult = ? Await(? Call(throw, iterator, «e»))
+///   if Type(innerResult) is not Object -> throw a TypeError
+///   if IteratorComplete(innerResult) -> resume the outer body after the `yield *`
+///                                       with IteratorValue(innerResult)
+///   else -> AsyncGeneratorYield(IteratorValue(innerResult))   // re-yield, stay suspended
+/// ```
+///
+/// Unlike `return`, the *done* case does NOT complete the outer generator — it
+/// resumes execution after the `yield *` (which may yield again or run to
+/// completion). Both the done (resume) and not-done (re-yield) cases are handled
+/// uniformly: the awaited inner result is stored into the delegation's
+/// `result_id`, the state is set to the drive loop's condition state
+/// (`resume_state`), and a clone of the state-dispatch loop (`while_body`) is
+/// re-driven. The condition state reads `result.done` and either exits the loop
+/// (continuing the outer body) or re-yields `result.value`. This continuation
+/// loop is the async-generator abrupt-resume machinery the `.return()` path does
+/// not need (a `return` always completes or re-yields, never resumes the body).
+///
+/// An abrupt completion *of the delegation protocol itself* — `iterator.throw`
+/// rejecting, a non-object inner result, or the `throw`-undefined TypeError —
+/// occurs at the `yield *` site, so an outer `try/catch` around the delegation
+/// must be able to handle it (spec `?`/`ReturnIfAbrupt` semantics). The protocol
+/// work is therefore wrapped in a generated `try/catch` whose handler routes the
+/// caught error into the matching outer catch's linearized states (via
+/// [`build_abrupt_routing`], then re-driving the dispatch loop, so a `yield`
+/// inside that catch suspends) or, when no catch matches, runs pending
+/// non-yielding finallys and re-throws to reject the generator.
+///
+/// Each route returns or throws from inside its `while(true)` continuation loop,
+/// so control falls through to the catch-routing fallback only when not
+/// suspended in a delegation. Empty for sync generators (no routes recorded).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_yield_star_throw_routes(
+    delegations: &[DelegationRoute],
+    catches: &[CatchRoute],
+    finallys: &[FinallyRoute],
+    state_id: LocalId,
+    throw_param_id: LocalId,
+    pending_type_id: LocalId,
+    pending_value_id: LocalId,
+    while_body: &[Stmt],
+    hoisted_ids: &std::collections::HashSet<LocalId>,
+    next_local_id: &mut u32,
+) -> Vec<Stmt> {
+    let mut out = Vec::with_capacity(delegations.len());
+    for route in delegations {
+        let m_id = alloc_local(next_local_id); // captured `throw` method
+        let ret_m_id = alloc_local(next_local_id); // `return` method (close path)
+        let ic_id = alloc_local(next_local_id); // awaited inner-close result
+        let de_id = alloc_local(next_local_id); // caught delegation-protocol error
+
+        let in_interval = Expr::Logical {
+            op: LogicalOp::And,
+            left: Box::new(Expr::Compare {
+                op: CompareOp::Gt,
+                left: Box::new(Expr::LocalGet(state_id)),
+                right: Box::new(Expr::Number(route.suspend_state_lo as f64)),
+            }),
+            right: Box::new(Expr::Compare {
+                op: CompareOp::Le,
+                left: Box::new(Expr::LocalGet(state_id)),
+                right: Box::new(Expr::Number(route.suspend_state_hi as f64)),
+            }),
+        };
+
+        // let __m = iterator.throw;
+        let read_method = Stmt::Let {
+            id: m_id,
+            name: "__yield_star_throw_m".to_string(),
+            ty: Type::Any,
+            mutable: false,
+            init: Some(Expr::PropertyGet {
+                object: Box::new(Expr::LocalGet(route.iter_id)),
+                property: "throw".to_string(),
+            }),
+        };
+
+        // Spec step 6.b.iii: `throw` undefined ⇒ AsyncIteratorClose the inner
+        // iterator (give it a chance to run `return`) and then throw a TypeError.
+        //   let __ret = iterator.return;
+        //   if (__ret !== undefined && __ret !== null) {
+        //       let __ic = await __ret.call(iterator);
+        //       if (Type(__ic) is not Object) throw new TypeError(...);
+        //   }
+        //   throw new TypeError("The iterator does not provide a 'throw' method");
+        let read_return = Stmt::Let {
+            id: ret_m_id,
+            name: "__yield_star_close_m".to_string(),
+            ty: Type::Any,
+            mutable: false,
+            init: Some(Expr::PropertyGet {
+                object: Box::new(Expr::LocalGet(route.iter_id)),
+                property: "return".to_string(),
+            }),
+        };
+        let close_inner = Stmt::If {
+            condition: Expr::Logical {
+                op: LogicalOp::And,
+                left: Box::new(Expr::Compare {
+                    op: CompareOp::Ne,
+                    left: Box::new(Expr::LocalGet(ret_m_id)),
+                    right: Box::new(Expr::Undefined),
+                }),
+                right: Box::new(Expr::Compare {
+                    op: CompareOp::Ne,
+                    left: Box::new(Expr::LocalGet(ret_m_id)),
+                    right: Box::new(Expr::Null),
+                }),
+            },
+            then_branch: vec![
+                Stmt::Let {
+                    id: ic_id,
+                    name: "__yield_star_close_r".to_string(),
+                    ty: Type::Any,
+                    mutable: false,
+                    init: Some(Expr::Await(Box::new(Expr::Call {
+                        callee: Box::new(Expr::PropertyGet {
+                            object: Box::new(Expr::LocalGet(ret_m_id)),
+                            property: "call".to_string(),
+                        }),
+                        args: vec![Expr::LocalGet(route.iter_id)],
+                        type_args: vec![],
+                        byte_offset: 0,
+                    }))),
+                },
+                Stmt::If {
+                    condition: not_object_condition(Expr::LocalGet(ic_id)),
+                    then_branch: vec![Stmt::Throw(Expr::TypeErrorNew(Box::new(Expr::String(
+                        "Iterator result is not an object".to_string(),
+                    ))))],
+                    else_branch: None,
+                },
+            ],
+            else_branch: None,
+        };
+        let no_method = Stmt::If {
+            condition: Expr::Logical {
+                op: LogicalOp::Or,
+                left: Box::new(Expr::Compare {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::LocalGet(m_id)),
+                    right: Box::new(Expr::Undefined),
+                }),
+                right: Box::new(Expr::Compare {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::LocalGet(m_id)),
+                    right: Box::new(Expr::Null),
+                }),
+            },
+            then_branch: vec![
+                read_return,
+                close_inner,
+                Stmt::Throw(Expr::TypeErrorNew(Box::new(Expr::String(
+                    "The iterator does not provide a 'throw' method".to_string(),
+                )))),
+            ],
+            else_branch: None,
+        };
+
+        // __del_result = await __m.call(iterator, e);
+        let call_throw = Stmt::Expr(Expr::LocalSet(
+            route.result_id,
+            Box::new(Expr::Await(Box::new(Expr::Call {
+                callee: Box::new(Expr::PropertyGet {
+                    object: Box::new(Expr::LocalGet(m_id)),
+                    property: "call".to_string(),
+                }),
+                args: vec![
+                    Expr::LocalGet(route.iter_id),
+                    Expr::LocalGet(throw_param_id),
+                ],
+                type_args: vec![],
+                byte_offset: 0,
+            }))),
+        ));
+
+        // if (Type(__del_result) is not Object) throw new TypeError(...);
+        let obj_check = Stmt::If {
+            condition: not_object_condition(Expr::LocalGet(route.result_id)),
+            then_branch: vec![Stmt::Throw(Expr::TypeErrorNew(Box::new(Expr::String(
+                "Iterator result is not an object".to_string(),
+            ))))],
+            else_branch: None,
+        };
+
+        // On success, re-drive the dispatch loop from the drive loop's condition
+        // state: it reads `__del_result.done` and either exits the loop (resuming
+        // the outer body past the `yield *`) or re-yields `__del_result.value`.
+        let set_state = Stmt::Expr(Expr::LocalSet(
+            state_id,
+            Box::new(Expr::Number(route.resume_state as f64)),
+        ));
+
+        // Wrap the protocol work so an abrupt completion at the `yield *` site
+        // (inner `throw` rejection / non-object result / `throw`-undefined
+        // TypeError) routes into the enclosing `try`'s catch states instead of
+        // escaping straight to the generator-level rejection. `state` is still
+        // the delegation suspend state here (set_state runs last, only on the
+        // success path), so it falls inside the outer try's protected interval.
+        // When no catch matches, run pending non-yielding finallys and re-throw
+        // — identical to `build_async_throw_body`'s own async fallback. Routing
+        // an abrupt completion *into* a YIELDING finally needs the
+        // pending-completion re-raise machinery that is gated `!is_async_generator`
+        // (an async yielding finally never re-raises the pending throw, so routing
+        // there would swallow the error). That async-wide limitation is out of
+        // scope here; matching the existing async fallback keeps the error
+        // propagating rather than being silently dropped.
+        let mut fallback = build_finally_run_stmts(finallys, state_id, hoisted_ids);
+        fallback.push(Stmt::Throw(Expr::LocalGet(de_id)));
+        let route_to_outer_catch = build_abrupt_routing(
+            catches,
+            &[], // async can't re-raise from a yielding finally; finallys handled in fallback
+            state_id,
+            pending_type_id,
+            pending_value_id,
+            &Expr::LocalGet(de_id),
+            true,
+            1.0,
+            false,
+            false,
+            fallback,
+        );
+        let protocol = Stmt::Try {
+            body: vec![read_method, no_method, call_throw, obj_check, set_state],
+            catch: Some(CatchClause {
+                param: Some((de_id, "__yield_star_throw_e".to_string())),
+                body: route_to_outer_catch,
+            }),
+            finally: None,
+        };
+        // Both the success path (state = resume_state) and a routed catch (state
+        // = catch_entry_state) fall through to this loop, which dispatches from
+        // the freshly-set state.
+        let drive = Stmt::While {
+            condition: Expr::Bool(true),
+            body: while_body.to_vec(),
+        };
+
+        out.push(Stmt::If {
+            condition: in_interval,
+            then_branch: vec![protocol, drive],
+            else_branch: None,
+        });
+    }
+    out
+}
