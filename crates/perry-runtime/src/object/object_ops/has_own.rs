@@ -269,11 +269,14 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
             return f64::from_bits(if present { TAG_TRUE } else { TAG_FALSE });
         }
 
-        // Private elements (`#x`) sit in a class instance's keys_array but are
-        // never reflectable own properties. Plain literals keep class_id 0.
+        // Private elements (`#x`) — and perry's hidden `__perry_collection_backing__`
+        // runtime-internal field — sit in a class instance's keys_array but are
+        // never reflectable own properties, so `Object.hasOwn` must report false
+        // for them. Plain literals keep class_id 0.
         if (*obj).class_id != 0 {
             if let Some(key) = super::super::has_own_helpers::str_from_string_header(key_str) {
-                if key.starts_with('#') {
+                if key.starts_with('#') || super::super::field_get_set::is_internal_runtime_key(key)
+                {
                     return f64::from_bits(TAG_FALSE);
                 }
             }
@@ -493,6 +496,13 @@ pub extern "C" fn js_object_property_is_enumerable(obj_value: f64, key_value: f6
                     },
                 );
             }
+        }
+        // Perry's hidden `__perry_*` runtime-internal own keys (e.g. the
+        // `class … extends Map/Set` backing field) physically live in a class
+        // instance's keys_array but must never be observable, so report them as
+        // non-enumerable like private (`#`) elements.
+        if (*obj).class_id != 0 && super::super::field_get_set::is_internal_runtime_key(key_name) {
+            return f64::from_bits(TAG_FALSE);
         }
         if !own_key_present(obj, key_str) {
             return f64::from_bits(TAG_FALSE);
