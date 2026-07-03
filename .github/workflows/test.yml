@@ -273,6 +273,18 @@ jobs:
           shared-key: "${{ runner.os }}-perry"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # #5892 — the auto-opt archive cache (target/perry-auto-<hash>) keys on
+      # perry-runtime's source hash and does NOT account for ext-crate sources,
+      # so a rust-cache-restored stale dir keeps linking OUTDATED ext archives
+      # into test-compiled binaries even after the ext sources were fixed (this
+      # is how the #5911 shim fix failed to clear the issue_4903 hang: the
+      # restored cache still carried pre-fix optimized archives). Evict it so
+      # every run links archives built from the checked-out tree; costs one
+      # ~6-9 min rebuild on the first perry compile of the run.
+      - name: Evict stale auto-opt archives (#5892)
+        run: |
+          rm -rf target/perry-auto-* target/debug/libperry_ext_*.a 2>/dev/null || true
+
       - name: Run cargo test
         # Exclude UI backends that don't build on the ubuntu-latest CI image:
         # - perry-ui-macos / perry-ui-ios / perry-ui-tvos / perry-ui-watchos
