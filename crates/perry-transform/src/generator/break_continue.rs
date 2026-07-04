@@ -685,3 +685,108 @@ fn rewrite_switch_breaks_in_stmt(s: &Stmt, done_id: LocalId) -> Stmt {
         other => other.clone(),
     }
 }
+
+/// Prefix every loop-level `continue` in `stmts` with copies of `prefix`
+/// (#5933: a `for` loop's awaited update moves to the body end, and each
+/// `continue` must still run it before re-entering the loop, preserving the
+/// spec's continue → update → condition order). Descends `if`/`try` and
+/// `switch` CASES (none of which capture `continue`); stops at nested loops
+/// and labeled statements, whose `continue` binds to them, and never enters
+/// closures (statement walk only).
+pub fn prefix_loop_continues(stmts: &mut Vec<Stmt>, prefix: &[Stmt]) {
+    let mut i = 0;
+    while i < stmts.len() {
+        match &mut stmts[i] {
+            Stmt::Continue => {
+                for (k, p) in prefix.iter().enumerate() {
+                    stmts.insert(i + k, p.clone());
+                }
+                i += prefix.len() + 1;
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                prefix_loop_continues(then_branch, prefix);
+                if let Some(eb) = else_branch {
+                    prefix_loop_continues(eb, prefix);
+                }
+                i += 1;
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                prefix_loop_continues(body, prefix);
+                if let Some(c) = catch {
+                    prefix_loop_continues(&mut c.body, prefix);
+                }
+                if let Some(f) = finally {
+                    prefix_loop_continues(f, prefix);
+                }
+                i += 1;
+            }
+            Stmt::Switch { cases, .. } => {
+                for case in cases.iter_mut() {
+                    prefix_loop_continues(&mut case.body, prefix);
+                }
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+}
+
+/// Does `stmts` contain a loop-level `continue` nested inside a
+/// `try`/`catch` that has a `finally` block? Such a `continue` is an abrupt
+/// completion: the `finally` must run BEFORE the loop's update — and if the
+/// `finally` itself completes abruptly (`return`/`throw`), the update must
+/// not run at all. `prefix_loop_continues` would insert the update BEFORE
+/// the `finally`, so callers moving an awaited/yielded `for`-update into the
+/// body bail back to the previous lowering when this shape is present
+/// (#5933 review). A `continue` inside the `finally` block itself is fine —
+/// the `finally` has already run at that point — as is any `continue` under
+/// a `try` without `finally`.
+pub fn stmts_have_continue_inside_try_finally(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            stmts_have_continue_inside_try_finally(then_branch)
+                || else_branch
+                    .as_ref()
+                    .is_some_and(|e| stmts_have_continue_inside_try_finally(e))
+        }
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+        } => {
+            if finally.is_some()
+                && (stmts_have_loop_level_continue(body)
+                    || catch
+                        .as_ref()
+                        .is_some_and(|c| stmts_have_loop_level_continue(&c.body)))
+            {
+                return true;
+            }
+            stmts_have_continue_inside_try_finally(body)
+                || catch
+                    .as_ref()
+                    .is_some_and(|c| stmts_have_continue_inside_try_finally(&c.body))
+                || finally
+                    .as_ref()
+                    .is_some_and(|f| stmts_have_continue_inside_try_finally(f))
+        }
+        Stmt::Switch { cases, .. } => cases
+            .iter()
+            .any(|c| stmts_have_continue_inside_try_finally(&c.body)),
+        _ => false,
+    })
+}
