@@ -27,6 +27,9 @@ use locales::{get_canonical_locales_thunk, supported_values_of_thunk};
 mod date_collator;
 mod install;
 use install::install_constructor;
+mod subclass;
+pub(crate) use subclass::{intl_instanceof, intl_subclass_super, is_intl_constructor_value};
+use subclass::{locale_instance_tag, push_locale_element};
 mod list_relative_plural;
 mod number_format;
 mod number_format_digits;
@@ -567,28 +570,6 @@ fn js_has_index(obj: f64, index: u32) -> bool {
     crate::object::js_object_has_property(obj, key).to_bits() == crate::value::TAG_TRUE
 }
 
-/// CanonicalizeLocaleList element handler: a present element must be a String or
-/// an Object (an `Intl.Locale` or anything ToString-able), else `TypeError`; the
-/// resulting tag is canonicalized (`RangeError` if structurally invalid) and
-/// pushed if not already present.
-fn push_locale_element(out: &mut Vec<String>, value: f64) {
-    let jv = JSValue::from_bits(value.to_bits());
-    let tag = if jv.is_any_string() {
-        string_from_string_value(value).unwrap_or_default()
-    } else if object_ptr_from_value(value).is_some() {
-        value_to_string(value)
-    } else {
-        // undefined / null / boolean / number / Symbol element → TypeError.
-        throw_type_error("locale must be a String or Object");
-    };
-    let Some(canonical) = canonicalize_language_tag(&tag) else {
-        throw_invalid_language_tag(&tag);
-    };
-    if !out.iter().any(|existing| existing == &canonical) {
-        out.push(canonical);
-    }
-}
-
 fn locales_from_value(locales: f64) -> Vec<String> {
     let js = JSValue::from_bits(locales.to_bits());
     // CanonicalizeLocaleList(undefined) is the empty list; `null` fails ToObject
@@ -602,6 +583,15 @@ fn locales_from_value(locales: f64) -> Vec<String> {
     // A String argument is treated as a single-element list (not iterated by char).
     if js.is_any_string() {
         let tag = string_from_string_value(locales).unwrap_or_default();
+        let Some(canonical) = canonicalize_language_tag(&tag) else {
+            throw_invalid_language_tag(&tag);
+        };
+        return vec![canonical];
+    }
+    // CanonicalizeLocaleList step 2: a value with an `[[InitializedLocale]]`
+    // slot (an `Intl.Locale` / subclass instance) is the single-element list
+    // « locale », read from its slot — not iterated nor `toString`-ed.
+    if let Some(tag) = locale_instance_tag(locales) {
         let Some(canonical) = canonicalize_language_tag(&tag) else {
             throw_invalid_language_tag(&tag);
         };
@@ -1639,11 +1629,17 @@ fn install_bound_instance_function(
     closure
 }
 
-extern "C" fn number_format_constructor_thunk(closure: *const ClosureHeader, rest: f64) -> f64 {
+pub(super) extern "C" fn number_format_constructor_thunk(
+    closure: *const ClosureHeader,
+    rest: f64,
+) -> f64 {
     make_instance(closure, KIND_NUMBER, rest_arg(rest, 0), rest_arg(rest, 1))
 }
 
-extern "C" fn date_time_format_constructor_thunk(closure: *const ClosureHeader, rest: f64) -> f64 {
+pub(super) extern "C" fn date_time_format_constructor_thunk(
+    closure: *const ClosureHeader,
+    rest: f64,
+) -> f64 {
     make_instance(
         closure,
         KIND_DATE_TIME,
@@ -1652,11 +1648,17 @@ extern "C" fn date_time_format_constructor_thunk(closure: *const ClosureHeader, 
     )
 }
 
-extern "C" fn collator_constructor_thunk(closure: *const ClosureHeader, rest: f64) -> f64 {
+pub(super) extern "C" fn collator_constructor_thunk(
+    closure: *const ClosureHeader,
+    rest: f64,
+) -> f64 {
     make_instance(closure, KIND_COLLATOR, rest_arg(rest, 0), rest_arg(rest, 1))
 }
 
-extern "C" fn segmenter_constructor_thunk(closure: *const ClosureHeader, rest: f64) -> f64 {
+pub(super) extern "C" fn segmenter_constructor_thunk(
+    closure: *const ClosureHeader,
+    rest: f64,
+) -> f64 {
     require_new_target("Segmenter");
     make_instance(
         closure,
@@ -1666,7 +1668,10 @@ extern "C" fn segmenter_constructor_thunk(closure: *const ClosureHeader, rest: f
     )
 }
 
-extern "C" fn list_format_constructor_thunk(closure: *const ClosureHeader, rest: f64) -> f64 {
+pub(super) extern "C" fn list_format_constructor_thunk(
+    closure: *const ClosureHeader,
+    rest: f64,
+) -> f64 {
     require_new_target("ListFormat");
     make_instance(
         closure,
@@ -1676,7 +1681,7 @@ extern "C" fn list_format_constructor_thunk(closure: *const ClosureHeader, rest:
     )
 }
 
-extern "C" fn relative_time_format_constructor_thunk(
+pub(super) extern "C" fn relative_time_format_constructor_thunk(
     closure: *const ClosureHeader,
     rest: f64,
 ) -> f64 {
@@ -1689,7 +1694,10 @@ extern "C" fn relative_time_format_constructor_thunk(
     )
 }
 
-extern "C" fn plural_rules_constructor_thunk(closure: *const ClosureHeader, rest: f64) -> f64 {
+pub(super) extern "C" fn plural_rules_constructor_thunk(
+    closure: *const ClosureHeader,
+    rest: f64,
+) -> f64 {
     require_new_target("PluralRules");
     make_instance(
         closure,
