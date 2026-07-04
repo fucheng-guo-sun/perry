@@ -644,7 +644,7 @@ jobs:
           # upload step entirely.
           TAG="${{ github.event.release.tag_name }}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            TAG=$(gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             echo "workflow_dispatch fallback: uploading to latest release tag $TAG"
           fi
           gh release upload "$TAG" "${{ matrix.artifact }}.tar.gz" --clobber
@@ -658,7 +658,7 @@ jobs:
         run: |
           $tag = "${{ github.event.release.tag_name }}"
           if (-not $tag) {
-            $tag = (gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            $tag = (gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             Write-Host "workflow_dispatch fallback: uploading to latest release tag $tag"
           }
           gh release upload "$tag" "${{ matrix.artifact }}.zip" --clobber
@@ -1060,7 +1060,7 @@ jobs:
           set -euo pipefail
           TAG="${{ github.event.release.tag_name }}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            TAG=$(gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             echo "workflow_dispatch fallback: uploading to latest release tag $TAG"
           fi
           ARCHIVE="perry-cross-${{ matrix.target }}.tar.gz"
@@ -1075,7 +1075,7 @@ jobs:
         run: |
           $tag = "${{ github.event.release.tag_name }}"
           if (-not $tag) {
-            $tag = (gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            $tag = (gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             Write-Host "workflow_dispatch fallback: uploading to latest release tag $tag"
           }
           $archive = "perry-cross-${{ matrix.target }}.tar.gz"
@@ -1112,7 +1112,7 @@ jobs:
           # upload step uses (see v0.5.392 for the publish-jobs sweep).
           TAG="${{ github.event.release.tag_name }}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            TAG=$(gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             echo "workflow_dispatch fallback: using latest release tag $TAG"
           fi
           VERSION="${TAG#v}"
@@ -1237,7 +1237,7 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name }}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            TAG=$(gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             echo "workflow_dispatch fallback: using latest release tag $TAG"
           fi
           VERSION="${TAG#v}"
@@ -1438,7 +1438,7 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name }}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            TAG=$(gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             echo "workflow_dispatch fallback: using latest release tag $TAG"
           fi
           VERSION="${TAG#v}"
@@ -1548,7 +1548,7 @@ jobs:
         run: |
           $tag = "${{ github.event.release.tag_name }}"
           if (-not $tag) {
-            $tag = (gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            $tag = (gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             Write-Host "workflow_dispatch fallback: using latest release tag $tag"
           }
           $version = $tag -replace '^v', ''
@@ -1606,7 +1606,7 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name }}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+            TAG=$(gh release list -R "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
             echo "workflow_dispatch fallback: using latest release tag $TAG"
           fi
           VERSION="${TAG#v}"
