@@ -837,7 +837,25 @@ pub(crate) fn shape_is_url_search_params(obj: *const ObjectHeader) -> bool {
             return false;
         }
         let keys_arr = (*obj).keys_array;
-        if keys_arr.is_null() || (*keys_arr).length == 0 {
+        if keys_arr.is_null() {
+            return false;
+        }
+        // #5989: `keys_array` itself must be validated before deref — a
+        // GC_TYPE_OBJECT receiver reached mid-transition (or with a typed
+        // layout) can carry a non-heap word here; reading `(*keys_arr).length`
+        // on it SIGSEGV'd during Next.js request handling (config.js method
+        // dispatch probing an arbitrary receiver through this shape check).
+        // Same try_read_gc_header gate as the receiver above. Require the
+        // EAGER `GC_TYPE_ARRAY` layout specifically: an object's own key list
+        // is always eager, and `(*keys_arr).length` / `js_array_get_f64` below
+        // read the eager `ArrayHeader` fields — a `GC_TYPE_LAZY_ARRAY` doesn't
+        // share that layout, so reject it (a real URLSearchParams shape never
+        // has a lazy keys_array; returning false is correct).
+        match crate::value::addr_class::try_read_gc_header(keys_arr as usize) {
+            Some(h) if h.obj_type == crate::gc::GC_TYPE_ARRAY => {}
+            _ => return false,
+        }
+        if (*keys_arr).length == 0 {
             return false;
         }
         let key0 = crate::array::js_array_get_f64(keys_arr, 0);

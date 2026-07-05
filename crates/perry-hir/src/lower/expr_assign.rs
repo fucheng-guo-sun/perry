@@ -14,7 +14,10 @@ use crate::destructuring::lower_destructuring_assignment;
 use crate::ir::{BinaryOp, Expr, LogicalOp};
 use crate::lower_patterns::lower_assign_target_to_expr;
 
-use super::{lower_expr, lower_expr_assignment, with_set_fallback_for_ident, LoweringContext};
+use super::{
+    lower_expr, lower_expr_assignment, strict_global_assign_existing_or_throw,
+    with_set_fallback_for_ident, LoweringContext,
+};
 
 fn assignment_target_inferred_name(target: &ast::AssignTarget) -> Option<String> {
     match target {
@@ -448,10 +451,12 @@ fn lower_assignment_target(
                 Ok(*value)
             } else {
                 if ctx.current_strict {
-                    return Ok(Expr::Sequence(vec![
-                        *value,
-                        throw_reference_error_unresolvable_assignment(&name),
-                    ]));
+                    // #5989: strict-mode assignment to an existing global
+                    // builtin is a property write, not a ReferenceError. See
+                    // `strict_global_assign_existing_or_throw` for the full
+                    // rationale (shared with the sibling arm in
+                    // lower_expr/assignment.rs).
+                    return Ok(strict_global_assign_existing_or_throw(name, value));
                 }
                 eprintln!(
                     "  Warning: Assignment to undeclared variable '{}', creating sloppy global",
