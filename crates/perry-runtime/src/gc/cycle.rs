@@ -1120,6 +1120,24 @@ impl GcCycleState {
     }
 
     fn step_block_persistence(&mut self, budget: GcWorkBudget) {
+        // #6010: block persistence exists to protect REGISTER-HELD recent
+        // objects that precise (shadow-stack) roots can't see (#43/#44). A
+        // cycle whose root scan ran the FULL conservative stack+register
+        // scan (`ManualGcScanGuard::force_full_scan` — every automatic
+        // direct-arm collection in a compiled program, and explicit `gc()`)
+        // has already pinned exactly those objects, so resurrecting every
+        // dead neighbor in the recent-block window is pure over-retention.
+        // Low-allocation workloads never rotate the active block out of the
+        // window, which made garbage there immortal — dead Maps/Sets kept
+        // multi-MB external buffers for the life of the process (#6010:
+        // 1.4 GB RSS on a Map-churn benchmark whose live heap was ~1 MB).
+        if matches!(
+            super::roots::conservative_stack_scan_decision(),
+            super::roots::ConservativeStackScanDecision::Scan
+        ) {
+            self.phase = GcCyclePhase::AtomicFinalize;
+            return;
+        }
         let valid_ptrs = self.valid_ptrs.as_ref().expect("valid pointer set built");
         let phase_start = trace_phase_start(&self.trace);
         let block_persist = if budget.work_units == usize::MAX && self.block_persist.is_none() {
@@ -1366,6 +1384,7 @@ impl GcCycleState {
     fn step_sweep(&mut self, budget: GcWorkBudget) {
         let phase_start = trace_phase_start(&self.trace);
         if self.sweep_state.is_none() {
+            let full_trace = self.minor.is_none();
             let (do_age_bump, reclaim_dead_old_blocks, targeted_old_blocks, sweep_malloc) =
                 if let Some(minor) = self.minor.as_ref() {
                     let targeted_old_blocks = (minor.evacuation.old_page_moved_bytes > 0)
@@ -1374,12 +1393,22 @@ impl GcCycleState {
                 } else {
                     (false, true, None, true)
                 };
-            self.sweep_state = Some(IncrementalSweepState::new(
-                do_age_bump,
-                reclaim_dead_old_blocks,
-                targeted_old_blocks,
-                sweep_malloc,
-            ));
+            self.sweep_state = Some(
+                IncrementalSweepState::new(
+                    do_age_bump,
+                    reclaim_dead_old_blocks,
+                    targeted_old_blocks,
+                    sweep_malloc,
+                )
+                // #6010: dead Maps'/Sets' external side buffers are freed as
+                // the first sweep subphase, budget-chunked — no ordinary
+                // sweep path reaches collections that die inside the ACTIVE
+                // nursery allocation block, and bulk block resets skip
+                // per-object finalizers. Minor traces never mark the old
+                // generation, so deadness there is only trusted for
+                // untenured nursery headers.
+                .with_dead_collection_finalize(full_trace),
+            );
         }
         let done = self
             .sweep_state
