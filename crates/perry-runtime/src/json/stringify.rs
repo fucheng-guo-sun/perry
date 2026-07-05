@@ -294,6 +294,8 @@ pub(crate) unsafe fn bigint_apply_to_json(value: f64) -> Option<f64> {
     let prev_this = crate::object::js_implicit_this_set(recv);
     let result = crate::closure::js_native_call_value(f64::from_bits(method_bits), &key_f64_arg, 1);
     crate::object::js_implicit_this_set(prev_this);
+    // The user callback may have installed/removed `Object.prototype.toJSON`.
+    invalidate_object_proto_tojson_state();
     Some(result)
 }
 
@@ -402,6 +404,14 @@ pub(crate) unsafe fn object_get_to_json(ptr: *const u8) -> Option<f64> {
     {
         return None;
     }
+    // #6009 fast path: when direct reads prove no `toJSON` can resolve
+    // anywhere on this object's lookup chain, skip the generic
+    // `js_object_get_field_by_name` dispatch (whose miss path recursively
+    // re-enters itself through the subclass/prototype fallbacks) and all the
+    // per-probe allocations below.
+    if to_json_definitely_absent(ptr) {
+        return None;
+    }
     // `js_object_get_field_by_name` expects a raw (masked) heap pointer for the
     // ordinary-object path; the receiver `this` is the same value NaN-boxed
     // with POINTER_TAG.
@@ -448,6 +458,8 @@ pub(crate) unsafe fn object_get_to_json(ptr: *const u8) -> Option<f64> {
     let prev_this = crate::object::js_implicit_this_set(recv);
     let result = crate::closure::js_native_call_value(f64::from_bits(bound), &key_f64_arg, 1);
     crate::object::js_implicit_this_set(prev_this);
+    // The user callback may have installed/removed `Object.prototype.toJSON`.
+    invalidate_object_proto_tojson_state();
     Some(result)
 }
 
@@ -483,6 +495,8 @@ pub(crate) unsafe fn array_get_to_json(arr: *const crate::ArrayHeader) -> Option
     let prev_this = crate::object::js_implicit_this_set(recv_handle.get_nanbox_f64());
     let result = crate::closure::js_native_call_value(f64::from_bits(method_bits), &key_f64_arg, 1);
     crate::object::js_implicit_this_set(prev_this);
+    // The user callback may have installed/removed `Object.prototype.toJSON`.
+    invalidate_object_proto_tojson_state();
     Some(result)
 }
 
@@ -1180,9 +1194,14 @@ pub(crate) unsafe fn stringify_object_inner(ptr: *const u8, buf: &mut String, de
 
     buf.push('{');
     let mut first = true;
-    // Only own ENUMERABLE keys are serialized; gated so descriptor-free
-    // objects (the common case) pay a single relaxed atomic load.
-    let filter_non_enum = crate::object::descriptors_in_use();
+    // Only own ENUMERABLE keys are serialized; gated on the process-wide
+    // atomic AND the per-object `OBJ_FLAG_HAS_DESCRIPTORS` header flag
+    // (#6009) — the global flag flips for good the first time ANY program
+    // descriptor is installed, which made every later stringify pay a
+    // per-key thread-local HashMap probe (`json_key_non_enumerable` +
+    // `json_object_getter_value`) on objects that never had a descriptor.
+    let filter_non_enum =
+        crate::object::descriptors_in_use() && crate::object::object_has_descriptors(ptr as usize);
     // `pos(j)` maps the j-th enumerated slot to its key/field index: spec
     // order when array-index keys are present, else slot `j` (no allocation).
     let pos = |j: u32| -> u32 {
