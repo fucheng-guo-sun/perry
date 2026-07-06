@@ -971,6 +971,23 @@ fn own_set_descriptor(target: f64, key: f64) -> Option<OwnSetDescriptor> {
         return None;
     }
     let key_name = key_to_rust_string(key)?;
+    // A typed array keeps its ordinary (non-index) own expando properties and
+    // their descriptors in the typed-array side tables, which the generic
+    // address-keyed lookups below skip (`object_has_descriptors` is
+    // deliberately gated off for typed arrays). Consult that state directly so
+    // a non-writable own data property / setter-less accessor rejects the write
+    // (test262 TypedArray internals/Set key-is-not-numeric-index).
+    if crate::typedarray::lookup_typed_array_kind(obj_ptr).is_some() {
+        return match crate::typedarray_props::typed_array_own_set_descriptor(obj_ptr, &key_name) {
+            Some(crate::typedarray_props::TypedArrayOwnSetDescriptor::Data { writable }) => {
+                Some(OwnSetDescriptor::Data { writable })
+            }
+            Some(crate::typedarray_props::TypedArrayOwnSetDescriptor::Accessor { setter_bits }) => {
+                Some(OwnSetDescriptor::Accessor { setter_bits })
+            }
+            None => None,
+        };
+    }
     // `ACCESSOR_DESCRIPTORS` / `PROPERTY_DESCRIPTORS` are keyed by raw address,
     // so a fresh object reusing a freed address would otherwise read back the
     // previous tenant's stale getter-only accessor / non-writable descriptor and
