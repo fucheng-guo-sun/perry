@@ -1,3 +1,24 @@
+## v0.5.1254 — metadata catch-up fold (PRs #6036–#6054)
+
+Consolidated version bump documenting the code-only merges that landed on `main` since v0.5.1240. Each PR carries its own detailed rationale in its description and commit body.
+
+- fix: #5957 — default-derived ctor forwarding part 2 (rest + dynamic-parent mixin) (#6036)
+- fix(hir): #6037 — refresh class-capture snapshot after a forward-captured var is re-bound by destructuring (#6038)
+- fix(codegen): #5982 — module-global captures must not feed the typed-ABI closure specialization (#5466 regression) (#6039)
+- fix(codegen): resolve method dispatch on a monomorphized generic-class receiver (#6041)
+- ci(#9): shard the gap-suite conformance gate across 8 runners + fan-in (#6042)
+- fix(codegen): #6040 — resolve monomorphized-generic receiver to its specialization for scalar method dispatch (#6043)
+- feat(runtime): Temporal Dead Zone for forward-referenced lexical let/const (#6044)
+- fix(hir): #5835 — zero-arg new Function() must not trip the CSP codegen-probe throw (#6045)
+- fix(runtime): AbortSignal parity — accept in events helpers + dynamic method dispatch (#6046)
+- ci: give conformance-smoke shards timeout headroom (40 -> 55 min) for the now-required gap gate (#6047)
+- test(#5951): guard class-capture behavior + pin the shared-mutable split-cell bug (#6048)
+- fix(runtime): Date.prototype.toString brand-check + own-expando method shadow (#6050)
+- fix(link): #6023 — LNK1158 'cannot run mt.exe' on Windows MSVC UI builds (#6051)
+- fix(hir): #5951 — share a mutated class capture via a one-element array box (#6054)
+
+**Notable this window:** the gap-suite conformance check became a **required** PR gate (#6042/#6047 sharded it 8-way; #9), and immediately caught the #5835 `new Function()` regression (#6045). #5951 (shared-mutable class-capture split cell) is fixed by desugaring to a one-element array box.
+
 ## v0.5.1240 — metadata catch-up fold (PRs #5996–#6034)
 
 Consolidated version bump documenting the code-only merges that landed on `main` since v0.5.1239 during a rapid parallel-merge window where per-PR metadata folding was deferred. All entries are the merged PRs verbatim (conventional-commit subjects); each PR carries its own detailed rationale in its description and commit body.
