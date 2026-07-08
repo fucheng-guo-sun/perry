@@ -375,6 +375,65 @@ pub(crate) fn gc_note_external_side_free(bytes: usize) {
 }
 
 #[inline]
+/// The moving (copying) minor at the precise-root event-loop safepoint —
+/// **Perry's default GC.** At the outermost microtask-pump boundary the JS stack
+/// has unwound, so the copying minor runs with precise, rewritable roots and
+/// moves survivors (compacting, O(survivors), no sweep). `PERRY_GC_MOVING_SAFEPOINT=0`
+/// is a kill switch that reverts to the non-moving path (for bisecting a
+/// regression while we harden). Making the moving minor primary INSIDE loops
+/// (back-edge polls + alloc-point deferral) is the separate opt-in
+/// `PERRY_GC_MOVING_LOOP_POLLS` — off by default because the poll defeats loop
+/// vectorization until it is emitted only for allocating loops.
+pub(crate) fn gc_moving_safepoint_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    // Default ON; the kill switch is an explicit `=0`/`off`/`false`.
+    *CACHED.get_or_init(|| {
+        !matches!(
+            std::env::var("PERRY_GC_MOVING_SAFEPOINT").as_deref(),
+            Ok("0") | Ok("off") | Ok("false")
+        )
+    })
+}
+
+/// Phase 4 of the moving-GC project: gate the INCREMENTAL old-gen collector (the
+/// budgeted stepper). **EXPERIMENTAL — default OFF.** Perry has a full budgeted
+/// mark/sweep stepper but it never runs, because every compiled program
+/// registers unbudgeted mutable root scanners and
+/// `registered_root_scanners_block_budgeted_gc()` blocks the cycle from ever
+/// starting. When this is on, the stepper is allowed to start and runs those
+/// unbudgeted scanners SYNCHRONOUSLY in its initial root-scan step (a bounded
+/// initial-mark pause), then marks/sweeps the old gen incrementally across
+/// safepoints — the standard "initial-mark + incremental-mark" design. Off ⇒
+/// exactly today's non-incremental GC (the whole path is skipped). Independent
+/// of `PERRY_GC_MOVING_SAFEPOINT`; this is the concurrency layer that reduces
+/// old-gen pause time.
+pub(crate) fn gc_incremental_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        matches!(
+            std::env::var("PERRY_GC_INCREMENTAL").as_deref(),
+            Ok("1") | Ok("on") | Ok("true")
+        )
+    })
+}
+
+/// Phase 2/3 (opt-in, default OFF): also make the moving minor PRIMARY inside
+/// loops — defer the alloc-point nursery collection to a codegen loop back-edge
+/// poll (`js_gc_loop_safepoint`) instead of collecting non-moving mid-expression.
+/// Off by default because the poll emits a call in every loop, defeating
+/// vectorization; when it's emitted only for allocating loops this can flip on.
+/// Must match the codegen `moving_safepoint_polls_enabled` (same env) so the
+/// deferral and the polls that drain it stay coherent.
+pub(crate) fn gc_moving_loop_polls_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        matches!(
+            std::env::var("PERRY_GC_MOVING_LOOP_POLLS").as_deref(),
+            Ok("1") | Ok("on") | Ok("true")
+        )
+    })
+}
+
 pub(super) fn gc_trace_enabled() -> bool {
     #[cfg(test)]
     if GC_TRACE_TEST_FORCE.with(Cell::get) {
@@ -578,7 +637,23 @@ thread_local! {
     /// `gc_check_trigger`: the full collection must not recursively trigger
     /// another reclaim if a hook it runs allocates.
     pub(super) static GC_OLD_RECLAIM_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
+    /// Phase 2/3 of the moving-GC project: set when an alloc-point nursery
+    /// trigger fires while moving mode is on, deferring the collection to the
+    /// next precise-root safepoint (event-loop boundary or a codegen loop
+    /// back-edge poll) so the copying minor can MOVE survivors instead of the
+    /// conservative non-moving minor running mid-expression.
+    pub(super) static GC_SAFEPOINT_PENDING: Cell<bool> = const { Cell::new(false) };
 }
+
+/// Hard cap on committed arena bytes before which a nursery trigger may be
+/// deferred to a safepoint (Phase 2/3). Loop back-edge polls drain the pending
+/// flag every iteration, so the arena never grows near this in normal code; the
+/// cap bounds RSS for code that reaches no safepoint before the next trigger —
+/// a synchronous loop on a specialized lowering path that doesn't yet emit the
+/// poll, or a single mega-expression — where the alloc-point non-moving minor
+/// runs as the safety valve. Kept modest so those cases don't balloon under the
+/// default-on moving GC (raise once poll coverage is complete).
+pub(super) const GC_MOVING_DEFER_HARD_CAP_BYTES: usize = 128 * 1024 * 1024;
 
 /// RAII guard that marks a #5476 direct old-gen reclaim in progress so a nested
 /// `gc_check_trigger` can't re-enter it. See `GC_OLD_RECLAIM_IN_PROGRESS`.
@@ -1161,6 +1236,19 @@ pub fn gc_check_trigger() {
             _ => None,
         };
         if let Some(kind) = direct_kind {
+            // Phase 2/3: with moving mode on, DEFER this alloc-point collection
+            // to the next precise-root safepoint (event-loop boundary or a
+            // codegen loop back-edge poll) so the copying minor MOVES survivors
+            // instead of the conservative non-moving minor running here at a
+            // register-imprecise point. Safety valve: once committed arena bytes
+            // pass the hard cap (a mega-expression that reached no poll), fall
+            // through and collect non-moving here so growth stays bounded.
+            if gc_moving_loop_polls_enabled()
+                && crate::arena::arena_total_bytes() < GC_MOVING_DEFER_HARD_CAP_BYTES
+            {
+                GC_SAFEPOINT_PENDING.with(|p| p.set(true));
+                return;
+            }
             let pre_in_use = crate::arena::arena_in_use_bytes();
             let pre_malloc_count = malloc_object_count();
             let _scan = super::roots::ManualGcScanGuard::force_full_scan();
@@ -1301,6 +1389,70 @@ fn gc_budgeted_due_trigger() -> Option<BudgetedGcTrigger> {
     }
 
     None
+}
+
+/// Phase 1 of the moving-GC project: run a copying (moving) minor at a
+/// precise-root safepoint — the outermost microtask-pump boundary, where the
+/// JS stack has fully unwound so no live heap pointer sits in an unspilled
+/// register. Unlike the alloc-point nursery-churn arm, NO `force_full_scan` is
+/// taken: `conservative_stack_scan_decision()` stays `SkipDisabled`, so the
+/// copying minor is eligible with precise, rewritable roots and actually MOVES
+/// (compacting, O(survivors), no sweep) instead of falling back to the
+/// non-moving minor. Trigger detection + re-baseline mirror the nursery-churn
+/// arm; this is purely additive (the alloc-point fallback is untouched) and
+/// gated by `gc_moving_safepoint_enabled` (default off).
+pub(crate) fn gc_safepoint_moving_minor() {
+    // Same start guards the budgeted collector uses, minus the (here
+    // irrelevant) scanner block: never collect mid-allocation, inside a
+    // runtime handle scope, in an unsafe FFI zone, or during a budgeted cycle.
+    if GC_FLAGS.with(|f| f.get()) & (GC_FLAG_IN_ALLOC | GC_FLAG_SUPPRESSED) != 0
+        || gc_blocked_by_unsafe_zone()
+        || GC_ROOT_LOCK_DEPTH.with(|depth| depth.get() != 0)
+        || gc_budgeted_cycle_active()
+    {
+        // Blocked right now — leave GC_SAFEPOINT_PENDING set so the next poll
+        // retries; do not clear it here.
+        return;
+    }
+    // We are handling this safepoint (collect or find nothing due): clear the
+    // deferral flag set by the alloc-point arm (Phase 2/3).
+    GC_SAFEPOINT_PENDING.with(|p| p.set(false));
+    // Only nursery-pressure triggers take the moving minor here; OldReclaim
+    // stays on its existing full mark-sweep path.
+    let kind = match gc_budgeted_due_trigger() {
+        Some(BudgetedGcTrigger::ArenaBytes) => GcTriggerKind::ArenaBytes,
+        Some(BudgetedGcTrigger::MallocCount) => GcTriggerKind::MallocCount,
+        _ => return,
+    };
+    let pre_in_use = crate::arena::arena_in_use_bytes();
+    let pre_malloc_count = malloc_object_count();
+    // No `force_full_scan`: roots are precise at this safepoint.
+    let outcome = super::gc_collect_minor_with_trigger(GcTriggerSnapshot::capture(kind));
+    match kind {
+        GcTriggerKind::MallocCount => {
+            gc_finish_malloc_trigger_collection(pre_malloc_count, outcome);
+        }
+        _ => {
+            gc_finish_arena_trigger_collection(pre_in_use, outcome);
+        }
+    }
+}
+
+/// Phase 2 of the moving-GC project: codegen emits a call to this at loop
+/// back-edges — but ONLY when the compiler was invoked with the moving-safepoint
+/// opt-in, so default binaries carry zero loop overhead. At a back-edge the
+/// loop-body expression has completed, so no heap value lives in an unspilled
+/// register (every live value is a named local on the shadow stack): a
+/// precise-root safepoint. If moving mode is on and an alloc-point nursery
+/// trigger deferred a collection (`GC_SAFEPOINT_PENDING`), drain it here so the
+/// copying minor MOVES survivors. Cheap no-op otherwise (one cached-bool load +
+/// one thread-local read).
+#[no_mangle]
+pub extern "C" fn js_gc_loop_safepoint() {
+    if !gc_moving_loop_polls_enabled() || !GC_SAFEPOINT_PENDING.with(Cell::get) {
+        return;
+    }
+    gc_safepoint_moving_minor();
 }
 
 struct BudgetedGcStepGuard;
