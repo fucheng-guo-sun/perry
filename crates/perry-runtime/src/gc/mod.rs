@@ -54,6 +54,7 @@ mod barrier;
 pub use barrier::*;
 mod copying;
 use copying::*;
+mod dead_owner;
 mod oldgen;
 use oldgen::*;
 mod cycle;
