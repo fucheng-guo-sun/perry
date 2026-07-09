@@ -54,6 +54,23 @@ unsafe fn class_ref_has_symbol_member(class_id: u32, sym_f64: f64) -> bool {
     false
 }
 
+/// Is `name` a CanonicalNumericIndexString (ECMA-262 §7.1.21)? True for `"-0"`
+/// and any string that round-trips through `ToString(ToNumber(s))` — `"0"`,
+/// `"100"`, `"-1"`, `"1.5"`, `"NaN"`, `"Infinity"` — but NOT `"00"`, `"1e3"`,
+/// `"0x1"`, `"+1"`, or whitespace-padded forms (`ToNumber` of those does not
+/// stringify back to the original). The typed-array/Buffer `in` path uses this
+/// to short-circuit a canonical numeric index to the IntegerIndexed
+/// [[HasProperty]] result without ever consulting the prototype chain.
+fn is_canonical_numeric_index_string(name: &str) -> bool {
+    if name == "-0" {
+        return true;
+    }
+    match name.parse::<f64>() {
+        Ok(n) => crate::string::js_format_f64(n) == name,
+        Err(_) => false,
+    }
+}
+
 /// Render a value the way V8 does inside the `in`-operator TypeError message.
 /// Only the primitive RHS shapes that reach `throw_in_operator_non_object` need
 /// handling: `null`/`undefined` render literally, a Symbol as `Symbol(desc)`,
@@ -419,19 +436,46 @@ pub extern "C" fn js_object_has_property(obj: f64, key: f64) -> f64 {
                 return if present { nanbox_true } else { nanbox_false };
             }
             if key_val.is_any_string() {
-                // Own view slots, always present. Inherited prototype MEMBERS
-                // (`subarray`, `map`, `toString`, …) via `in` on a buffer are a
-                // separate follow-up — the same string-key gap the registered
-                // typed-array arm above has, tied to lazy `%TypedArray%`
-                // prototype population.
                 let mut sso = [0u8; crate::value::SHORT_STRING_MAX_LEN];
                 if let Some(name) = unsafe { crate::string::js_string_key_bytes(key_val, &mut sso) }
                     .and_then(|b| std::str::from_utf8(b).ok())
                 {
+                    // Own view slots, always present.
                     if matches!(
                         name,
                         "length" | "byteLength" | "byteOffset" | "BYTES_PER_ELEMENT" | "buffer"
                     ) {
+                        return nanbox_true;
+                    }
+                    // A CanonicalNumericIndexString (`"0"`, `"100"`, `"-1"`,
+                    // `"1.5"`, `"-0"`, `"NaN"`) is resolved ENTIRELY by the
+                    // IntegerIndexed [[HasProperty]] (ECMA-262 §10.4.9.2): present
+                    // iff it is a valid in-bounds integer index, absent otherwise,
+                    // and it NEVER consults the prototype. So an out-of-bounds
+                    // (`"100"` on a length-5 view), negative, or fractional
+                    // canonical index short-circuits to false here rather than
+                    // falling through to the prototype scan below. Non-canonical
+                    // forms (`"00"`, `"1e3"`, `"0x1"`) stay ordinary string keys.
+                    if is_canonical_numeric_index_string(name) {
+                        if let Ok(idx) = name.parse::<u32>() {
+                            if idx.to_string() == name && idx < len as u32 {
+                                return nanbox_true;
+                            }
+                        }
+                        return nanbox_false;
+                    }
+                    // A Buffer / `Uint8Array` is a `%TypedArray%`, so inherited
+                    // prototype members (`subarray`, `map`, `join`, `toString`, …)
+                    // count. `typed_array_prototype_chain_has` builds the shared
+                    // prototype intrinsic on demand, so this is order-independent
+                    // (#6164). Buffer-specific `Buffer.prototype` methods
+                    // (`readUInt8`, …) are not covered here.
+                    if unsafe {
+                        crate::typedarray_props::typed_array_prototype_chain_has(
+                            obj_addr as usize,
+                            name,
+                        )
+                    } {
                         return nanbox_true;
                     }
                 }
