@@ -1027,10 +1027,7 @@ pub(super) fn write_barrier_slot_inner(
         bump_write_barrier_trace_counter(BarrierTraceCounter::ParentNotOldSkips);
         return;
     }
-    if !matches!(
-        crate::arena::classify_heap_generation(child_addr),
-        crate::arena::HeapGeneration::Nursery
-    ) {
+    if !remembered_child_needs_tracking(child_addr) {
         bump_write_barrier_trace_counter(BarrierTraceCounter::ChildNotYoungSkips);
         return;
     }
@@ -1044,6 +1041,38 @@ pub(super) fn write_barrier_slot_inner(
     };
     if inserted {
         bump_write_barrier_trace_counter(BarrierTraceCounter::NewInserts);
+    }
+}
+
+/// Which stored children must an old parent's slot be remembered for?
+/// Minor GCs sweep BOTH the nursery and the malloc registry, and old
+/// parents are black leaves in minors — so an unremembered old→nursery OR
+/// old→malloc edge leaves the child unmarked: the nursery sweep or the
+/// malloc sweep frees it while live (and a malloc child's own nursery
+/// children die with it, since marked malloc objects are the only path
+/// that traces them). Longlived and old children need no remembering:
+/// longlived is never swept individually and old is reclaimed only by
+/// full cycles that trace everything.
+#[inline]
+pub(super) fn remembered_child_needs_tracking(child_addr: usize) -> bool {
+    match crate::arena::classify_heap_generation(child_addr) {
+        crate::arena::HeapGeneration::Nursery => true,
+        crate::arena::HeapGeneration::Old | crate::arena::HeapGeneration::Longlived => false,
+        crate::arena::HeapGeneration::Unknown => {
+            // Non-arena child: candidate malloc-GC object (RegExp, Symbol,
+            // hook-mode Promise, grown string, large-capture closure).
+            // EXACT malloc-registry membership — deliberately not a header
+            // sniff: barrier child values can be uninitialized slot
+            // contents (array-growth barrier replay passes raw slot bits),
+            // and a plausibility sniff on garbage dirtied pages whose
+            // dirty-scan then treated neighboring garbage slots as movable
+            // young pointers. Band ids and foreign pointers are never in
+            // the registry, so this also needs no pre-deref band guard.
+            child_addr > GC_HEADER_SIZE
+                && super::malloc::gc_malloc_header_is_tracked(
+                    (child_addr - GC_HEADER_SIZE) as *const GcHeader,
+                )
+        }
     }
 }
 
