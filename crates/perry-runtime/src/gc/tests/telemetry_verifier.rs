@@ -80,16 +80,21 @@ fn assert_budgeted_ordinary_trace(event: &serde_json::Value, expected_kind: &str
         Some(true)
     );
     let malloc_trim = &event["allocator_maintenance"]["malloc_trim"];
-    assert_eq!(malloc_trim["status"].as_str(), Some("skipped"));
-    assert_eq!(malloc_trim["reason"].as_str(), Some("ordinary_budgeted"));
+    // #6180 RSS floor: budgeted cycles now RUN allocator trim (previously
+    // skipped with reason ordinary_budgeted). The outcome is platform-
+    // dependent: executed on glibc, unsupported elsewhere — but never the
+    // old budgeted skip.
+    assert_ne!(malloc_trim["reason"].as_str(), Some("ordinary_budgeted"));
+    assert!(matches!(
+        malloc_trim["status"].as_str(),
+        Some("executed") | Some("unsupported")
+    ));
     assert_eq!(malloc_trim["progress_kind"].as_str(), Some(expected_kind));
     assert_eq!(malloc_trim["class"].as_str(), Some("ordinary_budgeted"));
     assert_eq!(
         malloc_trim["ordinary_pause_stats_include"].as_bool(),
         Some(false)
     );
-    assert_eq!(malloc_trim["elapsed_us"].as_u64(), Some(0));
-    assert_eq!(event["phase_us"]["malloc_trim"].as_u64(), Some(0));
     for (index, step) in event["pause_steps"]
         .as_array()
         .expect("ordinary trace should include pause steps")
@@ -289,7 +294,8 @@ fn emergency_full_trace_is_excluded_from_ordinary_pause_stats() {
         malloc_trim["ordinary_pause_stats_include"].as_bool(),
         Some(false)
     );
-    if cfg!(target_env = "gnu") {
+    if cfg!(any(target_env = "gnu", target_os = "macos")) {
+        // glibc malloc_trim / darwin malloc_zone_pressure_relief (#6180).
         assert_eq!(malloc_trim["status"].as_str(), Some("executed"));
         assert_eq!(
             malloc_trim["reason"].as_str(),

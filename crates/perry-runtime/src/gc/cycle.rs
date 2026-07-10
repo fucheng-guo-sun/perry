@@ -562,6 +562,15 @@ impl RootScanCycleState {
                 if budget == 0 {
                     return false;
                 }
+                // #6179: classifier-mode (budgeted) cycles have no exact set
+                // and traced conservative words cannot tolerate heuristic
+                // false positives — never conservative-scan here, even if a
+                // ManualGcScanGuard appears mid-cycle (drain-before-manual-gc
+                // finishing a parked cycle under the guard).
+                if valid_ptrs.classifier_mode {
+                    self.subphase = RootScanSubphase::MutableSlots;
+                    return false;
+                }
                 let conservative_scan_decision = conservative_stack_scan_decision();
                 // #5029: minors retain old-gen conservative discoveries
                 // pin-only (no trace) — see try_mark_conservative_word.
@@ -734,19 +743,17 @@ pub(super) fn test_malloc_trim_call_count() -> usize {
     TEST_MALLOC_TRIM_CALLS.with(Cell::get)
 }
 
-#[cfg(all(test, target_env = "gnu"))]
+#[cfg(all(test, any(target_env = "gnu", target_os = "macos")))]
 fn record_test_malloc_trim_call() {
     TEST_MALLOC_TRIM_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
 }
 
 fn run_malloc_trim(progress_kind: GcProgressKind) -> MallocTrimOutcome {
-    if progress_kind.is_budgeted() {
-        return MallocTrimOutcome {
-            status: AllocatorMaintenanceStatus::Skipped,
-            reason: AllocatorMaintenanceReason::OrdinaryBudgeted,
-            elapsed_us: 0,
-        };
-    }
+    // #6179/#6180 RSS floor: budgeted cycles are the DEFAULT-path collector
+    // once incremental graduates — skipping allocator trim there meant a
+    // long-lived incremental process never returned freed allocator pages to
+    // the OS (2026-07-09 audit finding). Trim runs at Reclaim, outside the
+    // atomic tail, and is itself bounded allocator maintenance.
 
     #[cfg(target_env = "gnu")]
     {
@@ -764,7 +771,30 @@ fn run_malloc_trim(progress_kind: GcProgressKind) -> MallocTrimOutcome {
         };
     }
 
-    #[cfg(not(target_env = "gnu"))]
+    #[cfg(target_os = "macos")]
+    {
+        #[cfg(test)]
+        record_test_malloc_trim_call();
+
+        // Darwin counterpart of glibc's malloc_trim: ask every malloc zone
+        // to return clean pages to the OS. Bounded allocator maintenance —
+        // same placement (Reclaim, outside the atomic tail).
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut core::ffi::c_void, goal: usize) -> usize;
+        }
+        let start = Instant::now();
+        unsafe {
+            // NULL zone = all zones; goal 0 = release as much as possible.
+            malloc_zone_pressure_relief(core::ptr::null_mut(), 0);
+        }
+        return MallocTrimOutcome {
+            status: AllocatorMaintenanceStatus::Executed,
+            reason: AllocatorMaintenanceReason::ExplicitOrEmergency,
+            elapsed_us: start.elapsed().as_micros() as u64,
+        };
+    }
+
+    #[cfg(not(any(target_env = "gnu", target_os = "macos")))]
     {
         MallocTrimOutcome {
             status: AllocatorMaintenanceStatus::Unsupported,
@@ -1050,9 +1080,20 @@ impl GcCycleState {
 
     fn step_build_valid_pointer_set(&mut self, budget: GcWorkBudget) {
         let phase_start = trace_phase_start(&self.trace);
-        let builder = self
-            .valid_builder
-            .get_or_insert_with(ValidPointerSetBuilder::new);
+        let builder = self.valid_builder.get_or_insert_with(|| {
+            // #6179: budgeted cycles are precise (no conservative scan,
+            // non-moving) — skip the O(heap) exact census and resolve
+            // membership via the page-metadata classifier, which the
+            // differential mode proves is a census superset. Synchronous
+            // cycles keep the exact set: they force the conservative
+            // scan, whose TRACED roots cannot tolerate a heuristic
+            // false positive.
+            if self.progress_kind.is_budgeted() {
+                ValidPointerSetBuilder::new_classifier()
+            } else {
+                ValidPointerSetBuilder::new()
+            }
+        });
         if !builder.step(budget.work_units) {
             trace_phase_record(&mut self.trace, "build_valid_pointer_set", phase_start);
             return;
@@ -1545,7 +1586,18 @@ impl GcCycleState {
                 if let Some(minor) = self.minor.as_ref() {
                     let targeted_old_blocks = (minor.evacuation.old_page_moved_bytes > 0)
                         .then(|| minor.old_page_source_blocks.block_indices.clone());
-                    (true, false, targeted_old_blocks, minor.malloc_sweep_due)
+                    // Budgeted cycles must NOT age-bump: whole-cycle
+                    // allocate-black (#6224 soundness) marks every mid-cycle
+                    // birth, and the age-bump reads MARKED as "survived" —
+                    // dead churn then tenures into old-gen two cycles later,
+                    // where minors never reclaim it (measured: ~700 MB of
+                    // tenured garbage on a churn loop, 928 MB RSS vs the
+                    // synchronous collector's 524 MB with identical arena
+                    // block counts). Promotion under incremental happens via
+                    // the copied-minor path, which runs between budgeted
+                    // cycles and ages genuinely-surviving objects only.
+                    let age_bump = !self.progress_kind.is_budgeted();
+                    (age_bump, false, targeted_old_blocks, minor.malloc_sweep_due)
                 } else {
                     (false, true, None, true)
                 };
