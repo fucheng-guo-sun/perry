@@ -1,3 +1,54 @@
+## v0.5.1257 — feat(runtime): ArrayBuffer.prototype.transfer (ES2024) + perry/gc explicit GC control (#6273)
+
+`transfer(newLength?)` / `transferToFixedLength(newLength?)` / `detached` with
+real memory release: detach zeroes the source header and every registered
+view's length (views report length 0 like Node; `ArrayBuffer.prototype.slice`
+copies — the only view-table entries marked as ArrayBuffers — are skipped and
+survive), records the buffer in a detached side-registry (pruned in
+`finalize_collected_dead_buffer` against the #6080 ABA class), and hands the
+page-aligned interior of the payload back to the OS (`MADV_FREE_REUSABLE` →
+`MADV_FREE` on macOS, `MADV_DONTNEED` on Linux). Buffer bytes live inline in
+the GC old arena, so this is what makes "detach = release" true immediately: a
+256 MB buffer drops the process footprint 291 → 32 MB the moment `transfer(0)`
+runs, while the detached object is still reachable. The GcHeader `size` stays
+untouched — the arena sweep walks the full allocation; only pages entirely
+inside the payload are decommitted. Note macOS accounting: `phys_footprint`
+(Activity Monitor, `vmmap`) drops instantly; `task_info` `resident_size` (what
+`process.memoryUsage().rss` reads) lags until reuse/pressure.
+
+Spec ToIndex ordering honored across the detach surface (CodeRabbit review):
+`ToIndex(newLength/byteOffset/length)` runs BEFORE the IsDetachedBuffer check —
+user `valueOf` code can detach the buffer mid-call — in `transfer`, the
+DataView constructor (including the spec's second re-check after `byteLength`
+coercion), and typed-array view construction. `new Uint8Array(buffer,
+byteOffset, length?)` previously codegen'd a raw `fptosi` cast (object offsets
+never ran `valueOf`; `undefined` length was a -1 sentinel) — it now passes raw
+NaN-boxed args like every other typed-array view kind. structuredClone:
+transfer shares the same detach path (`detached` reports true), cloning an
+already-detached buffer throws `DataCloneError`, transferring one is rejected
+in `collect_transfer_list`, and transfer-list detachment is deferred until the
+whole clone succeeds so a failed clone leaves sources attached.
+
+New `perry/gc` built-in module (runtime-only, `perry/thread` pattern; does not
+resolve under Node/Bun): `collect()` full collection (same as global `gc()`),
+`minor()` synchronous nursery collection returning freed bytes (manual-gc
+guards: unsafe-zone skip + forced conservative scan per #4977), and
+`idleHint()` — runs `gc_check_trigger()` at a caller-declared idle point
+(frame boundary) and reports whether a collection ran; O(1) when nothing is
+due, no new GC invariants. Wired end-to-end: NATIVE_MODULES +
+RUNTIME_ONLY_MODULES + manifest signatures (API docs regenerated), codegen
+native-table rows (buffer proto methods need NO codegen wiring — dispatch is
+by name), `types/perry/gc/index.d.ts` written by `perry init`/`perry types`,
+docs page `docs/src/internals/explicit-memory.md`.
+
+Validation: `test-files/test_gap_arraybuffer_transfer.ts` byte-for-byte vs
+node v26 (move/grow/shrink, error cases, valueOf-detach ordering,
+structuredClone semantics); `test-files/test_perry_gc_module.ts` perry-only
+functional test; full gap suite zero regressions (all 19 mismatches reproduce
+identically on unmodified pre-PR main — 16 triaged, 3 verified pre-existing
+via in-place A/B revert: disposablestack_2875, events_import_4995,
+http_overloads_3226plus).
+
 ## v0.5.1256 — fix(hir): user class shadowing a global name loses to the intrinsic in `new` expressions (#6233, PR #6270)
 
 A module-scope `class Symbol extends Base {}` legally shadows the global
