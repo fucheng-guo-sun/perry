@@ -726,13 +726,13 @@ fn string_view_from_bits(
         return Some((scratch.as_ptr(), len as u32));
     }
     let ptr = extract_string_ptr_from_value(bits);
-    if ptr.is_null() || (ptr as usize) < 0x1000 {
-        return None;
-    }
-    unsafe {
-        let len = (*ptr).byte_len;
-        let data = (ptr as *const u8).add(std::mem::size_of::<StringHeader>());
-        Some((data, len))
+    match unsafe { crate::value::addr_class::try_read_gc_header(ptr as usize) } {
+        Some(header) if header.obj_type == crate::gc::GC_TYPE_STRING => unsafe {
+            let len = (*ptr).byte_len;
+            let data = (ptr as *const u8).add(std::mem::size_of::<StringHeader>());
+            Some((data, len))
+        },
+        _ => None,
     }
 }
 
@@ -761,14 +761,10 @@ fn is_string_like(bits: u64) -> bool {
         return !extract_string_ptr_from_value(bits).is_null();
     }
     let ptr = extract_string_ptr_from_value(bits);
-    if ptr.is_null() || (ptr as usize) < 0x1000 {
-        return false;
-    }
-    unsafe {
-        let gc_hdr =
-            (ptr as *const u8).sub(crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;
-        (*gc_hdr).obj_type == crate::gc::GC_TYPE_STRING
-    }
+    matches!(
+        unsafe { crate::value::addr_class::try_read_gc_header(ptr as usize) },
+        Some(header) if header.obj_type == crate::gc::GC_TYPE_STRING
+    )
 }
 
 /// Check if two JSValues are equal (for map key comparison)
