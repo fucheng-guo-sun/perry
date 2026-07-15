@@ -75,6 +75,46 @@ pub(in crate::lower_call) fn lower_fetch_native_method(
                                 }
                             }
                         }
+                    } else {
+                        // The init arg is a RUNTIME object, not a literal — a bound
+                        // variable (`Response.json(data, init)` where `init` is a param
+                        // or local, or another `Response`). `extract_options_fields`
+                        // only sees object literals, so the whole init was dropped and
+                        // the status defaulted to 200: `Response.json(x, {status:401})`
+                        // returned 401 at module scope (literal) but 200 the moment the
+                        // init was passed through a variable — e.g. inside
+                        // `NextResponse.json`, so every authenticated route's 401 became
+                        // a 200. Mirror the `new Response(body, init)` runtime path and
+                        // read the fields at runtime.
+                        // `init` is a runtime value that need not be an object:
+                        // `Response.json(x, 3.14)` is legal TS. Unboxing it to a
+                        // raw pointer and dereferencing would SIGSEGV (a
+                        // non-integer double's bits land in the heap-pointer
+                        // magnitude window). Read each field through the boxed
+                        // helper, which validates the receiver and returns
+                        // `undefined` for a non-object instead of derefing.
+                        let opts_val = lower_expr(ctx, &args[1])?;
+                        let get_field = |ctx_inner: &mut FnCtx<'_>, key: &str| -> Result<String> {
+                            let key_idx = ctx_inner.strings.intern(key);
+                            let key_global =
+                                format!("@{}", ctx_inner.strings.entry(key_idx).handle_global);
+                            let blk = ctx_inner.block();
+                            let key_box = blk.load(DOUBLE, &key_global);
+                            let key_bits = blk.bitcast_double_to_i64(&key_box);
+                            let key_raw = blk.and(I64, &key_bits, crate::nanbox::POINTER_MASK_I64);
+                            let opts_val_local = opts_val.clone();
+                            Ok(blk.call(
+                                DOUBLE,
+                                "js_object_get_field_by_name_boxed",
+                                &[(DOUBLE, &opts_val_local), (I64, &key_raw)],
+                            ))
+                        };
+                        status_val = get_field(ctx, "status")?;
+                        let st_box = get_field(ctx, "statusText")?;
+                        let blk = ctx.block();
+                        status_text_ptr =
+                            blk.call(I64, "js_get_string_pointer_unified", &[(DOUBLE, &st_box)]);
+                        headers_handle = get_field(ctx, "headers")?;
                     }
                 }
                 let handle = ctx.block().call(
