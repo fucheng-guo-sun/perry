@@ -215,6 +215,52 @@ pub extern "C" fn js_object_get_field_by_name(
         && crate::value::addr_class::is_above_handle_band(obj as usize)
         && crate::object::class_registry::is_class_object_ptr(obj as *const u8)
     {
+        // #6438: precedence for a per-evaluation class object is
+        //   own  ->  THIS object's pinned parent  ->  generic tail.
+        //
+        // The generic tail folds the own lookup together with a class_id-keyed
+        // prototype-chain walk (`resolve_proto_chain_field_with_receiver`). That
+        // chain goes through the TEMPLATE's parent edge, which is last-wins
+        // across evaluations, so for a factory called twice it answers with the
+        // SIBLING's inherited value and never reports undefined — which would
+        // silently pre-empt the pinned walk below. effect:
+        //
+        //   make(ast)                -> class SchemaClass { static ast = ast }
+        //   makeTypeLiteralClass(..) -> class TypeLiteralClass extends make(ast) {…}
+        //
+        // `Struct(a)` then `Struct(b)` left `structA.ast === astB`, because
+        // `structA.ast` resolved through TypeLiteralClass's TEMPLATE parent edge
+        // (last registered = b's SchemaClass) instead of structA's own parent.
+        // Check the object's OWN fields first, then ITS pinned parent, and only
+        // then fall through to the tail.
+        unsafe {
+            if !key.is_null() {
+                let name_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
+                let name_len = (*key).byte_len as usize;
+                let want = std::slice::from_raw_parts(name_ptr, name_len);
+                if let Some(v) =
+                    crate::object::class_registry::class_object_own_field_bytes(obj, want)
+                {
+                    return JSValue::from_bits(v.to_bits());
+                }
+                if let Some(parent) = crate::object::class_registry::class_object_pinned_parent(obj)
+                {
+                    let pbits = parent.to_bits();
+                    if (pbits >> 48) == 0x7FFD {
+                        let praw = (pbits & 0x0000_FFFF_FFFF_FFFF) as *mut ObjectHeader;
+                        if praw as usize != obj as usize
+                            && crate::value::addr_class::is_above_handle_band(praw as usize)
+                            && crate::object::is_valid_obj_ptr(praw as *const u8)
+                        {
+                            let v = js_object_get_field_by_name(praw, key);
+                            if !v.is_undefined() {
+                                return v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let own = get_field_by_name_object_tail(obj, key);
         if !own.is_undefined() {
             return own;
