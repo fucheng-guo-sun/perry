@@ -479,6 +479,7 @@ pub unsafe extern "C" fn js_register_class_computed_method(
         if sym_key == 0 {
             return;
         }
+        crate::symbol::note_symbol_key_installed(sym_key);
         {
             let mut guard = CLASS_SYMBOL_METHODS.write().unwrap();
             if guard.is_none() {
@@ -615,6 +616,7 @@ pub unsafe extern "C" fn js_register_class_computed_accessor(
         if sym_key == 0 {
             return;
         }
+        crate::symbol::note_symbol_key_installed(sym_key);
         let mut guard = CLASS_SYMBOL_ACCESSORS.write().unwrap();
         if guard.is_none() {
             *guard = Some(HashMap::new());
