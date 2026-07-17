@@ -481,16 +481,28 @@ unsafe fn guard_transferable(values: &[SerializedValue]) {
 
 /// Serialize an ArrayHeader into a SerializedValue::Array.
 unsafe fn serialize_array(arr: *const crate::array::ArrayHeader) -> SerializedValue {
-    if arr.is_null() || (arr as usize) < 0x1000 {
+    // #6518 (forwarding-chain family of #6486): the caller may hold a stale
+    // pre-grow pointer — `js_array_grow` moves the array and leaves a
+    // GC_FLAG_FORWARDED stub at the old address (#233) whose first 8 bytes
+    // (length+capacity) are the forwarding pointer. Raw-dereferencing
+    // `(*arr).length` here read those bytes as the element count and
+    // serialized a garbage-length array across the thread boundary.
+    // `clean_arr_ptr` follows the chain, validates the header, and
+    // materializes lazy arrays.
+    let arr = crate::array::clean_arr_ptr(arr);
+    if arr.is_null() {
         return SerializedValue::Array(Vec::new());
     }
     let len = (*arr).length as usize;
-    let elements_ptr =
-        (arr as *const u8).add(std::mem::size_of::<crate::array::ArrayHeader>()) as *const f64;
 
+    // Element reads go through `js_array_get_f64`, not a raw pointer walk:
+    // a sparse array (length > capacity, far slots in ARRAY_NAMED_PROPS)
+    // legally passes `clean_arr_ptr`, so walking `length` raw slots reads
+    // out of bounds (same rule as #6517's from-array constructors). The
+    // accessor resolves far-index slots and reads holes as undefined.
     let mut elements = Vec::with_capacity(len);
     for i in 0..len {
-        let elem_bits = (*elements_ptr.add(i)).to_bits();
+        let elem_bits = crate::array::js_array_get_f64(arr, i as u32).to_bits();
         elements.push(serialize_nanbox_for_thread(elem_bits));
     }
     SerializedValue::Array(elements)
@@ -809,10 +821,31 @@ pub extern "C" fn js_thread_parallel_map(array_val: f64, closure_val: f64) -> f6
 }
 
 unsafe fn parallel_map_impl(array_val: f64, closure_val: f64) -> i64 {
-    // ── 1. Extract array pointer from NaN-boxed value ────────────────
+    // ── 1. Extract closure pointer and func_ptr, and root the closure ─
+    // The closure is validated and rooted BEFORE `clean_arr_ptr`: resolving
+    // the array can force-materialize a lazy array — a GC point — and a
+    // moving minor there would strand a raw closure pointer held in an
+    // unrooted local (#6521 review follow-up).
+    let closure_bits = closure_val.to_bits();
+    let closure = (closure_bits & POINTER_MASK) as *const ClosureHeader;
+    if closure.is_null() || (closure as usize) < 0x1000 {
+        // No valid closure — can't call anything
+        return crate::array::js_array_alloc(0) as i64;
+    }
+    let func = (*closure).func_ptr;
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let closure_handle = scope.root_raw_mut_ptr(closure as *mut ClosureHeader);
+
+    // ── 1b. Extract array pointer from NaN-boxed value ───────────────
     let array_bits = array_val.to_bits();
     let arr = (array_bits & POINTER_MASK) as *const crate::array::ArrayHeader;
-    if arr.is_null() || (arr as usize) < 0x1000 {
+    // #6518: follow a push-grown array's forwarding stub (#233, the #6486
+    // family) before reading length — `parallelMap` on a caller's stale
+    // pre-grow pointer read the forwarding pointer's bytes as the element
+    // count. `clean_arr_ptr` also validates the header and materializes
+    // lazy arrays.
+    let arr = crate::array::clean_arr_ptr(arr);
+    if arr.is_null() {
         return crate::array::js_array_alloc(0) as i64;
     }
 
@@ -821,15 +854,9 @@ unsafe fn parallel_map_impl(array_val: f64, closure_val: f64) -> i64 {
         return crate::array::js_array_alloc(0) as i64;
     }
 
-    // ── 1b. Extract closure pointer and func_ptr ─────────────────────
-    let closure_bits = closure_val.to_bits();
-    let closure = (closure_bits & POINTER_MASK) as *const ClosureHeader;
-    let func = if !closure.is_null() && (closure as usize) >= 0x1000 {
-        (*closure).func_ptr
-    } else {
-        // No valid closure — can't call anything
-        return crate::array::js_array_alloc(0) as i64;
-    };
+    // Re-derive the (possibly moved) closure now that the GC points above
+    // are behind us; no further GC points before the derefs below.
+    let closure = closure_handle.get_raw_const_ptr::<ClosureHeader>();
     let closure_ptr_raw = closure as i64;
 
     // ── 2. Determine thread count ────────────────────────────────────
@@ -845,11 +872,12 @@ unsafe fn parallel_map_impl(array_val: f64, closure_val: f64) -> i64 {
     }
 
     // ── 4. Serialize all input elements ──────────────────────────────
-    let elements_ptr =
-        (arr as *const u8).add(std::mem::size_of::<crate::array::ArrayHeader>()) as *const f64;
+    // Per-element via `js_array_get_f64`: a sparse array (length > capacity)
+    // legally passes `clean_arr_ptr`, so a raw walk over `length` slots
+    // reads out of bounds (same rule as in `serialize_array`).
     let mut serialized_elements = Vec::with_capacity(len);
     for i in 0..len {
-        let bits = (*elements_ptr.add(i)).to_bits();
+        let bits = crate::array::js_array_get_f64(arr, i as u32).to_bits();
         serialized_elements.push(serialize_nanbox_for_thread(bits));
     }
     // #6185: a non-transferable element (e.g. a Map in the input array) would
@@ -1010,27 +1038,33 @@ unsafe fn single_thread_map(
     func: *const u8,
     closure_ptr: i64,
 ) -> i64 {
-    // Root the input array BEFORE allocating the result (the allocation can
-    // trigger a moving minor), and re-derive the elements pointer from the
-    // rooted handle each iteration — the user callback can allocate too.
+    // Root the input array AND the closure BEFORE allocating the result (the
+    // allocation can trigger a moving minor), and re-derive both from their
+    // rooted handles each iteration — the user callback can allocate too, and
+    // a moved closure would leave later iterations calling through a dangling
+    // capture block (#6521 review).
     let scope = crate::gc::RuntimeHandleScope::new();
     let arr_handle = scope.root_raw_mut_ptr(arr as *mut crate::array::ArrayHeader);
+    let closure_handle = if closure_ptr != 0 {
+        Some(scope.root_raw_mut_ptr(closure_ptr as *mut ClosureHeader))
+    } else {
+        None
+    };
     let result_arr = crate::array::js_array_alloc(len as u32);
     let result_handle = scope.root_raw_mut_ptr(result_arr);
-
-    let closure = if closure_ptr != 0 {
-        closure_ptr as *const ClosureHeader
-    } else {
-        ptr::null()
-    };
 
     let call_fn: ClosureCallFn = std::mem::transmute(func as usize);
 
     for i in 0..len {
-        let elements_ptr = (arr_handle.get_raw_mut_ptr::<crate::array::ArrayHeader>() as *const u8)
-            .add(std::mem::size_of::<crate::array::ArrayHeader>())
-            as *const f64;
-        let arg = *elements_ptr.add(i);
+        // Sparse-safe element read (see `parallel_map_impl`); re-derived from
+        // the rooted handle each iteration because the callback can move it.
+        let arg = crate::array::js_array_get_f64(
+            arr_handle.get_raw_mut_ptr::<crate::array::ArrayHeader>(),
+            i as u32,
+        );
+        let closure = closure_handle
+            .as_ref()
+            .map_or(ptr::null(), |h| h.get_raw_const_ptr::<ClosureHeader>());
         let result = call_fn(closure, arg);
         let result_arr = result_handle.get_raw_mut_ptr::<crate::array::ArrayHeader>();
         // GC_STORE_AUDIT(BARRIERED): single-thread map result slot uses the shared array slot-store helper.
@@ -1061,9 +1095,22 @@ pub extern "C" fn js_thread_parallel_filter(array_val: f64, closure_val: f64) ->
 }
 
 unsafe fn parallel_filter_impl(array_val: f64, closure_val: f64) -> i64 {
+    // Closure validated and rooted BEFORE `clean_arr_ptr` — same GC-point
+    // ordering as `parallel_map_impl` above (#6521 review follow-up).
+    let closure_bits = closure_val.to_bits();
+    let closure = (closure_bits & POINTER_MASK) as *const ClosureHeader;
+    if closure.is_null() || (closure as usize) < 0x1000 {
+        return crate::array::js_array_alloc(0) as i64;
+    }
+    let func = (*closure).func_ptr;
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let closure_handle = scope.root_raw_mut_ptr(closure as *mut ClosureHeader);
+
     let array_bits = array_val.to_bits();
     let arr = (array_bits & POINTER_MASK) as *const crate::array::ArrayHeader;
-    if arr.is_null() || (arr as usize) < 0x1000 {
+    // #6518: same forwarding-stub resolution as `parallel_map_impl` above.
+    let arr = crate::array::clean_arr_ptr(arr);
+    if arr.is_null() {
         return crate::array::js_array_alloc(0) as i64;
     }
 
@@ -1072,13 +1119,9 @@ unsafe fn parallel_filter_impl(array_val: f64, closure_val: f64) -> i64 {
         return crate::array::js_array_alloc(0) as i64;
     }
 
-    let closure_bits = closure_val.to_bits();
-    let closure = (closure_bits & POINTER_MASK) as *const ClosureHeader;
-    let func = if !closure.is_null() && (closure as usize) >= 0x1000 {
-        (*closure).func_ptr
-    } else {
-        return crate::array::js_array_alloc(0) as i64;
-    };
+    // Re-derive the (possibly moved) closure now that the GC points above
+    // are behind us; no further GC points before the derefs below.
+    let closure = closure_handle.get_raw_const_ptr::<ClosureHeader>();
 
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1090,12 +1133,11 @@ unsafe fn parallel_filter_impl(array_val: f64, closure_val: f64) -> i64 {
         return single_thread_filter(arr, len, func, closure);
     }
 
-    // Serialize input elements
-    let elements_ptr =
-        (arr as *const u8).add(std::mem::size_of::<crate::array::ArrayHeader>()) as *const f64;
+    // Serialize input elements (per-element accessor: sparse-safe, see
+    // `parallel_map_impl`).
     let mut serialized_elements = Vec::with_capacity(len);
     for i in 0..len {
-        let bits = (*elements_ptr.add(i)).to_bits();
+        let bits = crate::array::js_array_get_f64(arr, i as u32).to_bits();
         serialized_elements.push(serialize_nanbox_for_thread(bits));
     }
     // #6185: fail loudly on a non-transferable input element.
@@ -1235,9 +1277,16 @@ unsafe fn single_thread_filter(
     closure: *const ClosureHeader,
 ) -> i64 {
     // Same rooting discipline as single_thread_map: the result allocation
-    // and every user callback can trigger a moving minor.
+    // and every user callback can trigger a moving minor, so the array AND
+    // the closure are re-derived from rooted handles each iteration
+    // (#6521 review).
     let scope = crate::gc::RuntimeHandleScope::new();
     let arr_handle = scope.root_raw_mut_ptr(arr as *mut crate::array::ArrayHeader);
+    let closure_handle = if closure.is_null() {
+        None
+    } else {
+        Some(scope.root_raw_mut_ptr(closure as *mut ClosureHeader))
+    };
     let result_arr = crate::array::js_array_alloc(len as u32);
     let result_handle = scope.root_raw_mut_ptr(result_arr);
 
@@ -1245,10 +1294,15 @@ unsafe fn single_thread_filter(
     let mut count = 0u32;
 
     for i in 0..len {
-        let elements_ptr = (arr_handle.get_raw_mut_ptr::<crate::array::ArrayHeader>() as *const u8)
-            .add(std::mem::size_of::<crate::array::ArrayHeader>())
-            as *const f64;
-        let arg = *elements_ptr.add(i);
+        // Sparse-safe element read (see `parallel_map_impl`); re-derived from
+        // the rooted handle each iteration because the callback can move it.
+        let arg = crate::array::js_array_get_f64(
+            arr_handle.get_raw_mut_ptr::<crate::array::ArrayHeader>(),
+            i as u32,
+        );
+        let closure = closure_handle
+            .as_ref()
+            .map_or(ptr::null(), |h| h.get_raw_const_ptr::<ClosureHeader>());
         let result = call_fn(closure, arg);
         let keep = is_truthy_bits(result.to_bits());
         if keep {
