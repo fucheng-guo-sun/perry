@@ -1,3 +1,56 @@
+## v0.5.1260 — fix(hir): abstract class fields are type-only, emit no runtime slot (#6498, PR #6499)
+
+`abstract readonly _tag: string;` on a base class was lowered into a real
+runtime property slot. TypeScript treats abstract members as type-only and
+erases them (`node --experimental-strip-types` emits no runtime slot). When a
+subclass declared the same field with an initializer, the instance carried two
+physical slots of the same name (`Object.keys` → `_tag|_tag`); a read through a
+base- or union-typed local variable resolved to the phantom (undefined) base
+slot instead of the concrete subclass value. Reads via `any` or a function
+parameter typed as the base/union were unaffected — only a local statically
+typed as the base/union hit the wrong slot.
+
+This is the exact shape of `@effect/platform`'s `HttpBody`
+(`abstract class BodyBase { abstract readonly _tag }` with concrete
+`Uint8ArrayImpl` / `EmptyImpl` / `RawImpl`). The Node HTTP response writer does
+`switch (body._tag)` with no default; with `_tag` reading `undefined` the switch
+fell through, the `Effect.suspend` thunk returned `undefined`, and the fiber
+runtime reported `Not a valid effect: undefined` — an Effect HTTP server
+(`HttpLayerRouter` / `HttpApi`) answered `500` to every request. Since
+`HttpBody.text` / `.html` / `.json` / `.uint8Array` all produce `Uint8Array`-tagged
+bodies, this affected essentially all response bodies.
+
+Fix: skip abstract instance fields during class lowering, exactly as `declare`
+fields are already skipped, at both lowering entry points in
+`crates/perry-hir/src/lower_decl/class_decl.rs`. Abstract fields cannot carry
+initializers and are always overridden by a concrete subclass, so removing the
+phantom slot is semantically safe. `is_abstract` was previously unused across
+the compiler. Regression test:
+`test-files/test_gap_abstract_field_shadow_union_read.ts` (byte-identical to
+`node --experimental-strip-types`).
+
+Completes the Effect web-server campaign: all four effect example apps
+(logger / forking / api / web) now match Node byte-for-byte. web.ts serves its
+homepage and JSON API responses identically; the only residual difference is a
+non-deterministic tracer span duration (`http.span.1=Nms`).
+
+## v0.5.1259 — fix: static/namespace resolution for effect Tag & Schema — web.ts server starts (#6475, PR #6496)
+
+Five fixes that let an Effect HTTP server start under Perry:
+
+- Bind `this` to the receiver on both proto-method call paths.
+- Substitute a function-object call-site `this` for canonical bound class
+  methods, so a method looked up on a callable function object still runs with
+  the caller's receiver.
+- Invalidate the cached dispatch strategy on every closure registration, so a
+  re-registered closure can't keep serving a stale resolution.
+- Static-member CALL now walks the parent-closure chain: `class X extends Tag(id)()`
+  (effect's `Context.Tag` / `HttpRouter.Tag`) inherits static `use` / `serve`
+  from the parent function's own properties instead of returning the class ref.
+- Namespace-member spread call resolves the function, not a same-named class:
+  `Schema.Union(...arr)` no longer bakes an unrelated `Union` class ref as the
+  spread callee.
+
 ## v0.5.1258 — fix(thread): compile-time containment for perry/thread worker closures (#6185 Tier 1, PR #6276)
 
 The closure passed to `spawn` / `parallelMap` / `parallelFilter` is now
