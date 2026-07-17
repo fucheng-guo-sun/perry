@@ -1312,21 +1312,17 @@ pub(crate) fn get_field_by_name_object_tail(
             let key_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
             let key_len = (*key).byte_len as usize;
             let key_bytes = std::slice::from_raw_parts(key_ptr, key_len);
-            // #4949: heap class-expression values (`ClassExprFresh`) are real
-            // OBJECT_TYPE_CLASS objects, not INT32 class refs. Their `.prototype`
-            // read must still expose the live declared-class prototype object so
-            // tsc/tslib decorator code can inspect and mutate method descriptors.
-            if key_bytes == b"prototype"
-                && (*obj).object_type == crate::error::OBJECT_TYPE_CLASS
-                && (*obj).class_id != 0
-            {
-                let class_id = (*obj).class_id;
-                let value = super::super::class_registry::class_decl_prototype_value(class_id);
-                if value.to_bits() == crate::value::TAG_UNDEFINED {
-                    let value = super::super::class_prototype_ref_value(class_id);
-                    return JSValue::from_bits(value.to_bits());
+            // #4949 `.prototype` / #6497 `.name` on heap class-expression
+            // values — see `class_object_props`.
+            if (*obj).object_type == crate::error::OBJECT_TYPE_CLASS && (*obj).class_id != 0 {
+                if key_bytes == b"prototype" {
+                    return super::class_object_props::class_object_prototype_value(obj);
                 }
-                return JSValue::from_bits(value.to_bits());
+                if key_bytes == b"name" {
+                    if let Some(v) = super::class_object_props::class_object_name_value(obj, key) {
+                        return v;
+                    }
+                }
             }
             if (*obj).class_id == CLASS_ID_BOXED_STRING {
                 if let Some((_, payload)) = crate::builtins::boxed_primitive_payload(
