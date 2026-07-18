@@ -2440,6 +2440,120 @@ pub fn run_with_parse_cache(
                     };
                     if let Some(local) = namespace_like_local {
                         namespace_imports.push(local.clone());
+                        // Issue #6586: a namespace import of a CommonJS module
+                        // whose `module.exports` value is itself the export
+                        // (`module.exports = function equal(){}`, no
+                        // `__esModule` marker) is TypeScript's
+                        // esModuleInterop=false interop — `import * as equal
+                        // from "fast-deep-equal"` binds `equal` to the whole
+                        // `require()` result (the default export), so a DIRECT
+                        // call `equal(a, b)` is a call OF that value. ajv's
+                        // `lib/compile/resolve.ts` does exactly this for
+                        // `fast-deep-equal` and `json-schema-traverse`, and
+                        // fast-json-stringify pulls ajv in. The CJS wrap emits
+                        // the value under the module's `default` symbol, but the
+                        // namespace binding had no `import_function_prefixes`
+                        // entry, so the direct call fell through to a bare
+                        // `equal` extern and the link died with
+                        // `Undefined symbols: "_equal"`. Wire the whole-value
+                        // binding to the `default` export exactly like a Default
+                        // specifier does below (member reads `ns.foo` are keyed
+                        // per-namespace via `namespace_member_prefixes` and are
+                        // unaffected). Only genuine namespace imports of a module
+                        // that actually HAS a `default` export qualify — the
+                        // #4872 default-import-of-a-named-only-barrel case that
+                        // also lands here has no `default` and is skipped.
+                        if matches!(spec, perry_hir::ImportSpecifier::Namespace { .. }) {
+                            if let Some(default_origin_path) = all_module_exports
+                                .get(&resolved_path_str)
+                                .and_then(|exports| exports.get("default"))
+                                .cloned()
+                            {
+                                let default_prefix = compute_module_prefix(
+                                    &default_origin_path,
+                                    &ctx.project_root,
+                                );
+                                let default_suffix = all_module_export_origin_names
+                                    .get(&resolved_path_str)
+                                    .and_then(|m| m.get("default"))
+                                    .cloned()
+                                    .unwrap_or_else(|| "default".to_string());
+                                import_function_prefixes
+                                    .entry(local.clone())
+                                    .or_insert(default_prefix.clone());
+                                import_function_origin_names
+                                    .entry(local.clone())
+                                    .or_insert(default_suffix.clone());
+                                // The metadata maps are keyed by
+                                // (declaring-path, exported-name); the default
+                                // is declared at `default_origin_path` under
+                                // `default_suffix` (== "default" unless a
+                                // re-export renamed it).
+                                let key = (default_origin_path.clone(), default_suffix);
+                                // A CJS `module.exports = <expr>` becomes a
+                                // var-shaped default: a value binding emitted as
+                                // a zero-arg getter. A direct call must fetch the
+                                // closure via that getter and THEN invoke it with
+                                // the args (`js_closure_callN`), so mark the local
+                                // as an imported var — otherwise the call site
+                                // treats the getter's return value AS the call
+                                // result and `equal(1, 1)` yields the function
+                                // itself instead of `true`. Mirrors the
+                                // Default-import var classification below.
+                                if exported_var_names.contains(&key)
+                                    || exported_var_names.contains(&(
+                                        resolved_path_str.clone(),
+                                        "default".to_string(),
+                                    ))
+                                {
+                                    imported_vars.insert(local.clone());
+                                }
+                                // A non-var-shaped default — a `module.exports =
+                                // function foo(){}` static-function or a
+                                // `module.exports = class Foo{}` — is called /
+                                // instantiated through the direct
+                                // `perry_fn_<mod>__default` symbol, so it needs
+                                // the same arity / rest / synthetic-arguments /
+                                // return-type / async / class / enum metadata the
+                                // Default specifier propagates below. Without it a
+                                // rest-param default mis-bundles its trailing args
+                                // and a class default has no ImportedClass entry
+                                // (so `new ns()` can't resolve). Key everything by
+                                // the namespace LOCAL, the name the consumer's
+                                // ExternFuncRef carries.
+                                if let Some(&param_count) = exported_func_param_counts.get(&key) {
+                                    imported_param_counts.insert(local.clone(), param_count);
+                                }
+                                if exported_func_has_rest.get(&key).copied().unwrap_or(false) {
+                                    imported_has_rest.insert(local.clone());
+                                }
+                                if exported_func_synthetic_arguments.contains(&key) {
+                                    imported_synthetic_arguments.insert(local.clone());
+                                }
+                                if let Some(return_type) = exported_func_return_types.get(&key) {
+                                    imported_return_types.insert(local.clone(), return_type.clone());
+                                }
+                                if exported_async_funcs.contains(&key) {
+                                    imported_async_set.insert(local.clone());
+                                }
+                                if let Some(class) = exported_classes.get(&key) {
+                                    let class_prefix = canonical_class_source_prefix(
+                                        class,
+                                        &class_canonical_path,
+                                        &ctx.project_root,
+                                        &default_prefix,
+                                    );
+                                    imported_classes.push(imported_class_from_hir(
+                                        class,
+                                        class_prefix,
+                                        Some(local.clone()),
+                                    ));
+                                }
+                                if let Some(members) = exported_enums.get(&key) {
+                                    imported_enums.push((local.clone(), members.clone()));
+                                }
+                            }
+                        }
                         // Register all exports from the source module
                         if let Some(exports) = all_module_exports.get(&resolved_path_str) {
                             for (export_name, origin_path) in exports {
