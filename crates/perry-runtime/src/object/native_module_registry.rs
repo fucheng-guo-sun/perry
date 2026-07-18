@@ -5,7 +5,7 @@
 //! NOTHING here names all buckets together (that would re-pin everything).
 use super::native_module_dispatch::{
     nm_dispatch_assert, nm_dispatch_async_hooks, nm_dispatch_bigint, nm_dispatch_buffer,
-    nm_dispatch_bun, nm_dispatch_child_process, nm_dispatch_cluster, nm_dispatch_console,
+    nm_dispatch_bun, nm_dispatch_bun_ffi, nm_dispatch_child_process, nm_dispatch_cluster, nm_dispatch_console,
     nm_dispatch_crypto, nm_dispatch_dgram, nm_dispatch_dns, nm_dispatch_domain, nm_dispatch_events,
     nm_dispatch_fs, nm_dispatch_http, nm_dispatch_inspector, nm_dispatch_module, nm_dispatch_net,
     nm_dispatch_node_pty, nm_dispatch_os, nm_dispatch_path, nm_dispatch_perf, nm_dispatch_process,
@@ -26,6 +26,7 @@ enum NmBucket {
     Bigint,
     Buffer,
     Bun,
+    BunFfi,
     ChildProcess,
     Cluster,
     Console,
@@ -61,7 +62,10 @@ enum NmBucket {
     Wasi,
     Zlib,
 }
-const NM_BUCKET_COUNT: usize = 38;
+const NM_BUCKET_COUNT: usize = 40;
+// #6580 merge: inserting BunFfi shifted every later NmBucket up one; keep this array
+// big enough to index every variant (Zlib is the last). Guard against silent overflow.
+const _: () = assert!((NmBucket::Zlib as usize) < NM_BUCKET_COUNT);
 
 static NM_DISPATCH_REGISTRY: [AtomicPtr<()>; NM_BUCKET_COUNT] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; NM_BUCKET_COUNT];
@@ -75,6 +79,9 @@ fn nm_module_index(name: &str) -> Option<NmBucket> {
         "bigint" => Some(NmBucket::Bigint),
         "buffer" | "buffer.Buffer" => Some(NmBucket::Buffer),
         "bun" => Some(NmBucket::Bun),
+        // #6562: the `bun:` prefix is part of the name (not stripped like
+        // `node:`).
+        "bun:ffi" => Some(NmBucket::BunFfi),
         "child_process" => Some(NmBucket::ChildProcess),
         "cluster" => Some(NmBucket::Cluster),
         "console" => Some(NmBucket::Console),
@@ -198,6 +205,14 @@ pub extern "C" fn js_nm_install_bigint() {
 pub extern "C" fn js_nm_install_buffer() {
     NM_DISPATCH_REGISTRY[NmBucket::Buffer as usize].store(
         nm_dispatch_buffer as NmDispatchFn as *mut (),
+        Ordering::Relaxed,
+    );
+}
+/// bun:ffi (#6562).
+#[no_mangle]
+pub extern "C" fn js_nm_install_bun_ffi() {
+    NM_DISPATCH_REGISTRY[NmBucket::BunFfi as usize].store(
+        nm_dispatch_bun_ffi as NmDispatchFn as *mut (),
         Ordering::Relaxed,
     );
 }
@@ -456,6 +471,7 @@ pub extern "C" fn js_nm_install_all() {
     js_nm_install_bigint();
     js_nm_install_buffer();
     js_nm_install_bun();
+    js_nm_install_bun_ffi();
     js_nm_install_child_process();
     js_nm_install_cluster();
     js_nm_install_console();

@@ -256,6 +256,8 @@ pub fn declare_phase_b_objects(module: &mut LlModule) {
     module.declare_function("js_nm_install_bigint", VOID, &[]);
     module.declare_function("js_nm_install_buffer", VOID, &[]);
     module.declare_function("js_nm_install_bun", VOID, &[]);
+    // #6562: bun:ffi dispatch bucket.
+    module.declare_function("js_nm_install_bun_ffi", VOID, &[]);
     module.declare_function("js_nm_install_child_process", VOID, &[]);
     module.declare_function("js_nm_install_cluster", VOID, &[]);
     module.declare_function("js_nm_install_console", VOID, &[]);

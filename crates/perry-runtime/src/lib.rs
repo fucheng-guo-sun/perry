@@ -46,6 +46,7 @@ pub mod r#box;
 pub mod buffer;
 pub mod builtins;
 pub mod bun_compat;
+pub mod bun_ffi;
 pub mod child_process;
 pub mod closure;
 pub mod cluster;
