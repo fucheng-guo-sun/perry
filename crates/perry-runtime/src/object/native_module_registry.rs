@@ -5,9 +5,9 @@
 //! NOTHING here names all buckets together (that would re-pin everything).
 use super::native_module_dispatch::{
     nm_dispatch_assert, nm_dispatch_async_hooks, nm_dispatch_bigint, nm_dispatch_buffer,
-    nm_dispatch_child_process, nm_dispatch_cluster, nm_dispatch_console, nm_dispatch_crypto,
-    nm_dispatch_dgram, nm_dispatch_dns, nm_dispatch_domain, nm_dispatch_events, nm_dispatch_fs,
-    nm_dispatch_http, nm_dispatch_inspector, nm_dispatch_module, nm_dispatch_net,
+    nm_dispatch_bun, nm_dispatch_child_process, nm_dispatch_cluster, nm_dispatch_console,
+    nm_dispatch_crypto, nm_dispatch_dgram, nm_dispatch_dns, nm_dispatch_domain, nm_dispatch_events,
+    nm_dispatch_fs, nm_dispatch_http, nm_dispatch_inspector, nm_dispatch_module, nm_dispatch_net,
     nm_dispatch_node_pty, nm_dispatch_os, nm_dispatch_path, nm_dispatch_perf, nm_dispatch_process,
     nm_dispatch_punycode, nm_dispatch_querystring, nm_dispatch_readline, nm_dispatch_repl,
     nm_dispatch_sea, nm_dispatch_sqlite, nm_dispatch_stream, nm_dispatch_timers, nm_dispatch_tls,
@@ -25,6 +25,7 @@ enum NmBucket {
     AsyncHooks,
     Bigint,
     Buffer,
+    Bun,
     ChildProcess,
     Cluster,
     Console,
@@ -73,6 +74,7 @@ fn nm_module_index(name: &str) -> Option<NmBucket> {
         "async_hooks" => Some(NmBucket::AsyncHooks),
         "bigint" => Some(NmBucket::Bigint),
         "buffer" | "buffer.Buffer" => Some(NmBucket::Buffer),
+        "bun" => Some(NmBucket::Bun),
         "child_process" => Some(NmBucket::ChildProcess),
         "cluster" => Some(NmBucket::Cluster),
         "console" => Some(NmBucket::Console),
@@ -196,6 +198,13 @@ pub extern "C" fn js_nm_install_bigint() {
 pub extern "C" fn js_nm_install_buffer() {
     NM_DISPATCH_REGISTRY[NmBucket::Buffer as usize].store(
         nm_dispatch_buffer as NmDispatchFn as *mut (),
+        Ordering::Relaxed,
+    );
+}
+#[no_mangle]
+pub extern "C" fn js_nm_install_bun() {
+    NM_DISPATCH_REGISTRY[NmBucket::Bun as usize].store(
+        nm_dispatch_bun as NmDispatchFn as *mut (),
         Ordering::Relaxed,
     );
 }
@@ -446,6 +455,7 @@ pub extern "C" fn js_nm_install_all() {
     js_nm_install_async_hooks();
     js_nm_install_bigint();
     js_nm_install_buffer();
+    js_nm_install_bun();
     js_nm_install_child_process();
     js_nm_install_cluster();
     js_nm_install_console();
