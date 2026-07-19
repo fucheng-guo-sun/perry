@@ -997,6 +997,24 @@ pub(super) fn try_module_static_methods(
             let is_crypto_module =
                 obj_name == "crypto" || ctx.lookup_builtin_module_alias(obj_name) == Some("crypto");
             if is_crypto_module {
+                // #6668: a spread call declines the whole crypto fast-path.
+                // `lower_crypto_passthrough` AND the manual `sha256`/`md5`/
+                // `getRandomValues` arms below collapse the call into a flat
+                // `Expr::Call`/intrinsic whose args are the lowered AST arguments
+                // verbatim — a spread operand (`crypto.hkdf(...args, cb)`) is
+                // passed as the ARRAY itself, not expanded, so the codegen
+                // fast-path (e.g. `arm_crypto_hkdf_async_alg`) sees too few args
+                // and silently returns `undefined` (callback never fires). Bail so
+                // the generic tail builds an `Expr::CallSpread` with callee
+                // `PropertyGet{ NativeModuleRef("crypto"), method }`; codegen then
+                // routes it through `js_closure_call_apply_with_spread` →
+                // `dispatch_bound_method` → `js_native_call_method`, the same
+                // bound-native dispatch the value-read form
+                // (`const f = crypto.hkdf; f(...)`) already uses. Mirrors the
+                // crypto guard in `globals.rs` (named-import form).
+                if has_spread {
+                    return Ok(Err(args));
+                }
                 if let ast::MemberProp::Ident(method_ident) = &member.prop {
                     let method_name = method_ident.sym.as_ref();
                     // #1434: keep the named-import + dotted form on one
