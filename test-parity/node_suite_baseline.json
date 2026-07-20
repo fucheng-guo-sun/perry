@@ -90,8 +90,8 @@
       "total": 5
     },
     "inspector": {
-      "pass": 2,
-      "total": 3
+      "pass": 4,
+      "total": 37
     },
     "inspector-promises": {
       "pass": 3,
