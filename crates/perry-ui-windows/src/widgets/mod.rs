@@ -635,6 +635,11 @@ pub fn add_child(parent_handle: i64, child_handle: i64) {
             widgets[idx].children.push(child_handle);
         }
     });
+
+    // Layout otherwise only runs at mount + WM_SIZE, so a child added
+    // after mount kept its parking-window bounds and stayed invisible
+    // until the user resized the window.
+    crate::app::request_layout();
 }
 
 /// Add a child widget at a specific index.
@@ -664,6 +669,8 @@ pub fn add_child_at(parent_handle: i64, child_handle: i64, index: i64) {
             widgets[idx].children.insert(insert_at, child_handle);
         }
     });
+
+    crate::app::request_layout();
 }
 
 /// Remove a specific child from a parent container.
@@ -698,6 +705,8 @@ pub fn remove_child(parent_handle: i64, child_handle: i64) {
                     let _ = SetParent(child_hwnd, Some(parking));
                 }
             }
+            // Reflow the surviving siblings into the freed space.
+            crate::app::request_layout();
         }
     }
 
@@ -735,6 +744,7 @@ pub fn clear_children(handle: i64) {
                     windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent_hwnd), None, true);
             }
         }
+        crate::app::request_layout();
     }
 
     let _ = children;
