@@ -122,8 +122,8 @@
       "total": 92
     },
     "perf_hooks": {
-      "pass": 83,
-      "total": 83
+      "pass": 87,
+      "total": 148
     },
     "process": {
       "pass": 95,
