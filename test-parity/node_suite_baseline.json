@@ -210,8 +210,8 @@
       "total": 51
     },
     "worker_threads": {
-      "pass": 17,
-      "total": 17
+      "pass": 38,
+      "total": 205
     },
     "zlib": {
       "pass": 58,
