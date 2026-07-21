@@ -170,8 +170,8 @@
       "total": 2
     },
     "test": {
-      "pass": 7,
-      "total": 11
+      "pass": 33,
+      "total": 90
     },
     "timers": {
       "pass": 90,
