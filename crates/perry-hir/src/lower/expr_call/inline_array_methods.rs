@@ -19,6 +19,20 @@ pub(super) fn try_inline_array_methods(
         if let ast::Expr::Member(member) = expr.as_ref() {
             if let ast::MemberProp::Ident(method_ident) = &member.prop {
                 let method_name = method_ident.sym.as_ref();
+                // #6718: the `args` vector these fast paths receive holds the
+                // EVALUATED spread expression with the spread token dropped, so
+                // any arm that reads a positional slot (`args[0]` as the callback,
+                // comparator, index, search value, …) would bind the spread SOURCE
+                // array itself — `[1,2].map(...[fn])` → "object is not a function",
+                // `[1,2].slice(...[1,3])` → the whole array. Decline on ANY spread
+                // so the generic tail builds an `Expr::CallSpread`, whose
+                // member-callee arm flattens the spread into one argument array and
+                // dispatches the array method by name with `this` bound to the
+                // receiver (`js_native_call_method_apply_by_id`). Inline literals
+                // have no dedicated spread-aware arm, so every method declines.
+                if call.args.iter().any(|a| a.spread.is_some()) {
+                    return Ok(Err(args));
+                }
                 if let ast::Expr::Array(_arr_lit) = member.obj.as_ref() {
                     // Lower the array literal
                     let array_expr = lower_expr(ctx, &member.obj)?;

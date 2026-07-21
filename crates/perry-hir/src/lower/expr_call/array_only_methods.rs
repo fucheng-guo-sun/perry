@@ -338,6 +338,20 @@ pub(super) fn try_array_only_methods(
         if let ast::Expr::Member(member) = expr.as_ref() {
             if let ast::MemberProp::Ident(method_ident) = &member.prop {
                 let method_name = method_ident.sym.as_ref();
+                // #6718: the `args` vector holds the EVALUATED spread expression
+                // with the spread token dropped, so any arm reading a positional
+                // slot (callback, comparator, index, search value, …) would bind
+                // the spread SOURCE array itself — `Object.keys(x).map(...[fn])` →
+                // "object is not a function", `expr.slice(...[1,3])` → the whole
+                // array. Decline on any spread so the generic tail builds an
+                // `Expr::CallSpread`, whose member-callee arm flattens the spread
+                // into one argument array and dispatches the array method by name
+                // with `this` bound to the receiver (`js_native_call_method_apply_by_id`).
+                // `push` is excluded: it has a dedicated spread-aware arm below
+                // (`push_spread`) that materializes the spread correctly.
+                if call.args.iter().any(|a| a.spread.is_some()) && method_name != "push" {
+                    return Ok(Err(args));
+                }
                 // Helper: skip array-method dispatch when the receiver is a
                 // known class instance (e.g. mongo `Collection.find`,
                 // `Stack<T>.map`). Without this guard the lowering blindly

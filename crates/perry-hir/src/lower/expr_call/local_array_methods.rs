@@ -54,6 +54,20 @@ pub(super) fn try_local_array_methods(
         // IMPORTANT: Only apply to actual Array types, not String types
         if let ast::MemberProp::Ident(method_ident) = &member.prop {
             let method_name = method_ident.sym.as_ref();
+            // #6718: the `args` vector holds the EVALUATED spread expression with
+            // the spread token dropped, so any arm reading a positional slot
+            // (callback, comparator, index, search value, …) would bind the spread
+            // SOURCE array itself — `arr.map(...[fn])` → "object is not a function",
+            // `arr.slice(...[1,3])` → the whole array. Decline on any spread so the
+            // generic tail builds an `Expr::CallSpread`, whose member-callee arm
+            // flattens the spread into one argument array and dispatches the array
+            // method by name with `this` bound to the receiver
+            // (`js_native_call_method_apply_by_id`). `push` is excluded: it has a
+            // dedicated spread-aware arm below (`Expr::ArrayPushSpread`) that
+            // materializes the spread correctly.
+            if call.args.iter().any(|a| a.spread.is_some()) && method_name != "push" {
+                return Ok(Err(args));
+            }
             if let ast::Expr::Ident(arr_ident) = member.obj.as_ref() {
                 let arr_name = arr_ident.sym.to_string();
                 // #5196: a Proxy-wrapped array routes ALL its method calls
