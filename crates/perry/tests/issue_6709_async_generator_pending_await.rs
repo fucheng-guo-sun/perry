@@ -33,32 +33,30 @@
 //! generators work — the poll loop sees the Promise settled immediately — so
 //! this is specific to *pending* awaits.
 //!
-//! ## Impact (the reported symptom)
+//! ## Impact
 //!
-//! pi's interactive TUI wires agent → session → UI events through a hand-rolled
-//! `EventStream` async generator (`for await (const event of stream)` on the
-//! consumer side, `stream.push(event)` on the producer side, the generator
-//! `await`ing `new Promise(r => waiting.push(r))`). Under perry the async
-//! generator deadlocks on the first pending `await`, so `agent_start` /
-//! `message_*` / the 401 `error` events never reach the UI subscriber: pressing
-//! Enter runs the whole submit → `session.prompt` → `agent.prompt` chain (the
-//! HTTP request even fires) but no "Working…" and no error ever render. Node,
-//! running the identical bundle, submits and shows the 401.
+//! The push/pull async-iterator shape below (a generator `await`ing
+//! `new Promise(r => waiting.push(r))`, resolved by a later `push()`) is how
+//! pi's interactive TUI wires agent → session → UI events (its hand-rolled
+//! `EventStream`), so this deadlock is on that path. NOTE: fixing this alone
+//! does NOT restore pi's interactivity — an *earlier* keypress→submit
+//! divergence (#6728) means Enter never fires submit under perry, so the
+//! EventStream never runs regardless. This test targets the async-generator
+//! deadlock in isolation, which is a real bug in its own right.
 //!
-//! ## The fix (scoped follow-up)
+//! ## The fix (landed in this PR)
 //!
-//! Make `async function*` bodies suspend on `await` like plain async functions:
-//! split the generator state machine at `await` points (distinct from consumer
-//! `yield` points) and drive them through the existing `AsyncStepChain`
+//! `async function*` bodies now suspend on `await` like plain async functions:
+//! the generator state machine is split at `await` points (distinct from
+//! consumer `yield` points) and driven through the existing `AsyncStepChain`
 //! async-step machinery, so `.next()` returns a pending Promise immediately and
 //! resumes on the microtask queue when the awaited Promise settles. This
-//! touches the async generator lowering (`generator/lower.rs`,
-//! `generator/linearize.rs`) + the `Expr::Yield` discriminator and must be
-//! validated against the full async-generator test262 suite; it is intentionally
-//! not squeezed into this diagnosis change.
+//! touched the async generator lowering (`generator/lower.rs`,
+//! `generator/linearize.rs`) + the `Expr::Yield` discriminator, validated
+//! against the full async-generator test262 suite.
 //!
-//! `#[ignore]`d until that fix lands (the buggy runtime deadlocks; the test uses
-//! a hard timeout so it fails deterministically rather than hanging).
+//! With the fix landed the test is active (no `#[ignore]`); it uses a hard
+//! timeout so a regression fails deterministically rather than hanging.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -118,9 +116,67 @@ main().then(() => log("main:resolved"));
 ///   main:resolved
 const EXPECTED: &str = "GOT agent_start\nGOT turn_start\nGOT message_start\ndone\nmain:resolved\n";
 
+/// A user `return X` sitting in a yield/await-free control-flow block that
+/// precedes an `await` lands in the `StateExit::Await` state's body (the
+/// linearizer's catch-all accumulates it into `current`, which the next `await`
+/// takes as the state body). That return must settle the async generator's
+/// result Promise as an iter-result completion — `.next()` must resolve to
+/// `{value: X, done: true}`, not to the bare value `X`. Regression guard for the
+/// CodeRabbit finding on #6727 (the `StateExit::Await` arm skipped the
+/// `prepend_done_before_returns` + `rewrite_returns_as_done` rewrite the
+/// `Yield`/`Goto`/`Done` arms apply, so the step closure escaped with a raw
+/// `return X`).
+const RETURN_BEFORE_AWAIT_FIXTURE: &str = r#"
+async function* g(cond) {
+  if (cond) { return 5; }
+  await Promise.resolve();
+  yield 1;
+}
+async function main() {
+  const it = g(true);
+  console.log("A " + JSON.stringify(await it.next()));
+  console.log("B " + JSON.stringify(await it.next()));
+  const it2 = g(false);
+  console.log("C " + JSON.stringify(await it2.next()));
+  console.log("D " + JSON.stringify(await it2.next()));
+}
+main();
+"#;
+
+/// Node v26 output (stdout):
+///   A {"value":5,"done":true}
+///   B {"done":true}
+///   C {"value":1,"done":false}
+///   D {"done":true}
+const RETURN_BEFORE_AWAIT_EXPECTED: &str =
+    "A {\"value\":5,\"done\":true}\nB {\"done\":true}\nC {\"value\":1,\"done\":false}\nD {\"done\":true}\n";
+
 #[test]
-#[ignore = "unfixed #6709: async-generator `await` on a pending Promise busy-waits (deadlocks) \
-            instead of suspending; needs the async-generator await-suspension fix"]
+fn async_generator_return_before_await_settles_as_iter_result() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let entry = dir.path().join("main.mjs");
+    let output = dir.path().join("main_bin");
+    std::fs::write(&entry, RETURN_BEFORE_AWAIT_FIXTURE).unwrap();
+
+    let status = Command::new(perry_bin())
+        .arg("compile")
+        .arg(&entry)
+        .arg("-o")
+        .arg(&output)
+        .status()
+        .expect("perry compile");
+    assert!(status.success(), "compile failed");
+
+    let out = Command::new(&output).output().expect("run");
+    assert!(out.status.success(), "binary exited non-zero");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout, RETURN_BEFORE_AWAIT_EXPECTED,
+        "async generator `return` before an `await` diverged from node"
+    );
+}
+
+#[test]
 fn async_generator_pending_await_suspends_not_deadlocks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let entry = dir.path().join("main.mjs");
