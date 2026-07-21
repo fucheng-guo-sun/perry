@@ -10,8 +10,8 @@
       "total": 70
     },
     "async_hooks": {
-      "pass": 5,
-      "total": 5
+      "pass": 78,
+      "total": 193
     },
     "bigint": {
       "pass": 3,
