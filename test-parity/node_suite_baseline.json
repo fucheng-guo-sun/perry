@@ -178,8 +178,8 @@
       "total": 90
     },
     "tls": {
-      "pass": 3,
-      "total": 3
+      "pass": 9,
+      "total": 100
     },
     "trace_events": {
       "pass": 6,
