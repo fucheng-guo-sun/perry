@@ -264,6 +264,30 @@ thread_local! {
 /// faster than the hash overhead (memory access, cache footprint).
 const KEYS_INDEX_THRESHOLD: u32 = 32;
 
+/// Raw dense-slot view of a (validated) keys array: resolve a grow-forward
+/// pointer ONCE, then hand back the backing slots for direct indexing. The
+/// generic `js_array_get` element getter re-runs the whole per-element
+/// gauntlet — forward-resolution, lazy/Map/Set receiver probes (each a TLS +
+/// registry HashMap hit), descriptor gates — on EVERY slot, which made the
+/// keys_array scan loops (`own_key_present`, the sidecar/wide-index builds)
+/// pay ~µs per element. Callers have already validated `keys` is a
+/// `GC_TYPE_ARRAY`; keys arrays are dense (no holes), and a slot that is not
+/// a string simply fails the key match. (#6748 grind)
+#[inline]
+pub(crate) unsafe fn keys_array_dense_slots(
+    keys: *const crate::array::ArrayHeader,
+) -> (*const f64, usize) {
+    let arr = crate::array::clean_arr_ptr(keys);
+    if arr.is_null() {
+        return (std::ptr::null(), 0);
+    }
+    let len = (*arr).length.min((*arr).capacity) as usize;
+    (
+        (arr as *const u8).add(std::mem::size_of::<crate::array::ArrayHeader>()) as *const f64,
+        len,
+    )
+}
+
 /// FNV-1a hash of the bytes behind a string header. Same hash function
 /// as `key_content_hash_impl` so callers can mix paths.
 #[inline(always)]
@@ -313,19 +337,19 @@ unsafe fn keys_index_lookup(
     if needs_rebuild {
         let mut map: std::collections::HashMap<u64, Vec<u32>> =
             std::collections::HashMap::with_capacity(key_count as usize);
-        for i in 0..key_count {
-            let v = crate::array::js_array_get(keys, i);
-            if !v.is_string() {
-                continue;
+        // SSO-aware key decode (#1781 family): short keys can be stored INLINE
+        // (`SHORT_STRING_TAG`), not as heap `STRING_TAG` pointers. The previous
+        // heap-only `is_string()` gate silently dropped them from the index, so
+        // an authoritative-miss caller (the [[Set]] fast path's append, and now
+        // the defineProperty path) could duplicate an SSO-stored key.
+        let mut sso = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+        let (slots, slot_len) = keys_array_dense_slots(keys);
+        for i in 0..key_count.min(slot_len as u32) {
+            let v = crate::JSValue::from_bits((*slots.add(i as usize)).to_bits());
+            if let Some(b) = crate::string::js_string_key_bytes(v, &mut sso) {
+                let h = key_bytes_hash(b.as_ptr(), b.len());
+                map.entry(h).or_default().push(i);
             }
-            let sp = v.as_string_ptr();
-            if sp.is_null() {
-                continue;
-            }
-            let sname_ptr = (sp as *const u8).add(std::mem::size_of::<crate::StringHeader>());
-            let sname_len = (*sp).byte_len as usize;
-            let h = key_bytes_hash(sname_ptr, sname_len);
-            map.entry(h).or_default().push(i);
         }
         KEYS_INDEX.with(|m| {
             m.borrow_mut().insert(obj_addr, (key_count, map));
@@ -335,21 +359,16 @@ unsafe fn keys_index_lookup(
         let m = m.borrow();
         let (_, map) = m.get(&obj_addr)?;
         let candidates = map.get(&key_hash)?;
+        let mut sso = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+        let (slots, slot_len) = keys_array_dense_slots(keys);
         for &i in candidates {
-            let v = crate::array::js_array_get(keys, i);
-            if !v.is_string() {
+            if (i as usize) >= slot_len {
                 continue;
             }
-            let sp = v.as_string_ptr();
-            if sp.is_null() {
+            let v = crate::JSValue::from_bits((*slots.add(i as usize)).to_bits());
+            let Some(stored_bytes) = crate::string::js_string_key_bytes(v, &mut sso) else {
                 continue;
-            }
-            let sname_ptr = (sp as *const u8).add(std::mem::size_of::<crate::StringHeader>());
-            let sname_len = (*sp).byte_len as usize;
-            if sname_len != key_bytes.len() {
-                continue;
-            }
-            let stored_bytes = std::slice::from_raw_parts(sname_ptr, sname_len);
+            };
             if stored_bytes == key_bytes {
                 return Some(i);
             }
