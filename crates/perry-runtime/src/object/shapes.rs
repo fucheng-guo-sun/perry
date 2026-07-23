@@ -74,6 +74,22 @@ pub(crate) fn is_shape_id(v: u32) -> bool {
     (SHAPE_ID_BASE..SHAPE_ID_END).contains(&v)
 }
 
+/// #6804: classify a WIDENED shape token (`object_shape()`'s usize). Ids
+/// stored as usize carry no high bits, so the full-width range test never
+/// misclassifies a real heap address whose LOW 32 bits merely fall in the
+/// id range (`is_shape_id(v as u32)` would).
+#[inline]
+pub(crate) fn is_shape_id_token(v: usize) -> bool {
+    v >= SHAPE_ID_BASE as usize && v < SHAPE_ID_END as usize
+}
+
+/// #6804: lifts a ShapeId into the per-site PIC token space, ABOVE the
+/// 48-bit pointer range, so an id token can never numerically equal a
+/// keys-array pointer token. MUST match the literal the PIC IR emits in
+/// `perry-codegen/src/expr/property_get/generic_dispatch.rs`
+/// (4611686018427387904 = 1 << 62).
+pub(crate) const PIC_ID_TOKEN_BIT: u64 = 1 << 62;
+
 fn alloc_shape_id() -> u32 {
     use std::sync::atomic::Ordering;
     let id = SHAPE_ID_NEXT.fetch_add(1, Ordering::Relaxed);
@@ -102,7 +118,10 @@ pub(crate) fn shape_id_for_keys_ensure(keys: *const ArrayHeader, key_count: u32)
         .or_insert_with(|| Shape {
             indexed_len: 0,
             shape_id: alloc_shape_id(),
-            slots: HashMap::with_capacity(key_count as usize),
+            // `key_count` is a capacity HINT only — some callers pass an
+            // unvalidated header length, so cap it before it sizes an
+            // allocation.
+            slots: HashMap::with_capacity(key_count.min(4096) as usize),
         })
         .shape_id
 }
@@ -380,6 +399,100 @@ mod c3c_tests {
             // Reads still resolve correctly through the id-keyed cache.
             let v = crate::object::js_object_get_field_by_name(obj, key("c3c_d"));
             assert_eq!(f64::from_bits(v.bits()), 2.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod c6804_tests {
+    use super::*;
+
+    /// #6804: shape-cached literal allocation birth-stamps the runtime
+    /// ShapeId, and siblings of one shape share one id.
+    #[test]
+    fn alloc_with_shape_birth_stamps_shared_id() {
+        let _lock = crate::gc::global_side_table_test_lock();
+        unsafe {
+            let packed = b"m6804_a\0m6804_b\0m6804_c";
+            let a = crate::object::js_object_alloc_with_shape(
+                0x0C3C_6804,
+                3,
+                packed.as_ptr(),
+                packed.len() as u32,
+            );
+            let b = crate::object::js_object_alloc_with_shape(
+                0x0C3C_6804,
+                3,
+                packed.as_ptr(),
+                packed.len() as u32,
+            );
+            let stamp_a = (*a).parent_class_id;
+            let stamp_b = (*b).parent_class_id;
+            assert!(
+                is_shape_id(stamp_a),
+                "newborn literal must carry a runtime ShapeId, got {stamp_a:#x}"
+            );
+            assert_eq!(
+                stamp_a, stamp_b,
+                "siblings of one literal shape must share one id"
+            );
+            assert_eq!(
+                (*a).keys_array,
+                (*b).keys_array,
+                "test premise: shared keys"
+            );
+        }
+    }
+
+    /// #6804: `object_shape()` self-heals — an unstamped plain object gets
+    /// stamped at first observation, and the token equals the id every
+    /// sibling already carries (no pre/post-stamp token split).
+    #[test]
+    fn object_shape_token_self_heals_to_shared_id() {
+        let _lock = crate::gc::global_side_table_test_lock();
+        unsafe {
+            let packed = b"m6804_x\0m6804_y";
+            let obj = crate::object::js_object_alloc_with_shape(
+                0x0C3C_6805,
+                2,
+                packed.as_ptr(),
+                packed.len() as u32,
+            );
+            let birth_stamp = (*obj).parent_class_id;
+            assert!(is_shape_id(birth_stamp), "test premise: birth-stamped");
+
+            // Simulate a pre-#6804 / cleared-stamp object of the same shape.
+            (*obj).parent_class_id = 0;
+            let token = crate::typed_feedback::test_object_shape_token(obj as usize);
+            assert_eq!(
+                token, birth_stamp as usize,
+                "self-healed token must equal the shape's canonical id"
+            );
+            assert_eq!(
+                (*obj).parent_class_id,
+                birth_stamp,
+                "observation must re-stamp the object"
+            );
+        }
+    }
+
+    /// #6804: the first dynamic key on a fresh `{}` births a stamped shape.
+    #[test]
+    fn fresh_dynamic_shape_birth_stamps() {
+        let _lock = crate::gc::global_side_table_test_lock();
+        unsafe {
+            let obj = crate::object::js_object_alloc(0, 8);
+            let key = crate::string::js_string_from_bytes(b"m6804_first".as_ptr(), 11);
+            crate::object::js_object_set_field_by_name(obj, key, 42.0);
+            let stamp = (*obj).parent_class_id;
+            // Either stamped at the null-branch birth, or (for a sibling
+            // adopting a cached transition edge) still 0 until first read
+            // — but THIS test allocates a unique key, so the null branch
+            // ran and must have stamped.
+            assert!(
+                is_shape_id(stamp),
+                "first-key birth must stamp the new shape, got {stamp:#x}"
+            );
         }
     }
 }

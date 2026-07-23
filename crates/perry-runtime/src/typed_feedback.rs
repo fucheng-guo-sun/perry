@@ -182,7 +182,15 @@ impl Observation {
     }
 
     fn roots_shape_addr(&self) -> bool {
-        self.is_shape_keyed() && self.shape_addr != 0
+        // #6804: an id token is NOT a heap address — visiting it would let
+        // the GC mark garbage or, worse, rewrite the token if a moved
+        // object's from-space address numerically collided with the id
+        // range. Address tokens (class instances' keys arrays) keep the
+        // visit; a skipped low-address token can only go stale, which the
+        // equality-only usage reads as a benign mismatch.
+        self.is_shape_keyed()
+            && self.shape_addr != 0
+            && !crate::object::shapes::is_shape_id_token(self.shape_addr)
     }
 
     // #854: in-progress typed-feedback shape-change tracking
@@ -720,16 +728,47 @@ fn object_shape(addr: usize) -> (usize, u32, u16) {
             return (0, 0, gc_type);
         }
         let class_id = (*ptr).class_id;
-        // #6759 C3b note: this token is equality-compared only, and the
-        // header-stamped stable shape id (C3c-r) would be a stabler token —
-        // but LAZY stamping means early observations of a shape use the
-        // keys address while later ones would use the id, splitting one
-        // logical shape into two tokens per site (spurious polymorphism).
-        // Switching this token to ids requires EAGER stamping at
-        // allocation (the codegen-assisted remainder of C3c).
-        let shape = (*ptr).keys_array as usize;
+        // #6804: plain objects canonicalize the token on the stable
+        // ShapeId. Shape-cached literals are stamped at birth; anything
+        // else is stamped HERE on first observation (self-healing), so one
+        // logical shape can never split into a pre-stamp address token and
+        // a post-stamp id token within a site. Class instances keep the
+        // keys-address token (their `parent_class_id` is inheritance data).
+        let shape = if class_id == 0 {
+            let stamp = (*ptr).parent_class_id;
+            if crate::object::shapes::is_shape_id(stamp) {
+                stamp as usize
+            } else if crate::regex::regex_header_has_magic(
+                addr as *const crate::regex::RegExpHeader,
+            ) {
+                // RegExpHeader aliases GC_TYPE_OBJECT with a different
+                // layout — never write through the ObjectHeader view; keep
+                // the legacy (equality-only) address token.
+                (*ptr).keys_array as usize
+            } else {
+                let keys = (*ptr).keys_array;
+                if keys.is_null() || (keys as u64) >> 48 != 0 || (keys as usize) < 0x10000 {
+                    keys as usize
+                } else {
+                    let id = crate::object::shapes::shape_id_for_keys_ensure(keys, (*keys).length);
+                    if id != 0 {
+                        (*(ptr as *mut ObjectHeader)).parent_class_id = id;
+                        id as usize
+                    } else {
+                        keys as usize
+                    }
+                }
+            }
+        } else {
+            (*ptr).keys_array as usize
+        };
         (shape, class_id, gc_type)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_object_shape_token(addr: usize) -> usize {
+    object_shape(addr).0
 }
 
 fn observe(site_id: u64, fallback_kind: TypedFeedbackSiteKind, observation: Observation) {
@@ -1573,7 +1612,10 @@ fn object_key_matches_field(
             return false;
         }
         let keys = (*obj).keys_array;
-        if keys.is_null() || (keys as usize) != shape_addr {
+        // #6804: `shape_addr` is an opaque TOKEN (a stable ShapeId for
+        // stamped plain objects), not necessarily the keys address — the
+        // actual contract is carried by the key/slot validation below.
+        if keys.is_null() {
             return false;
         }
         if !plain_array_index_guard(keys, field_index, true) {

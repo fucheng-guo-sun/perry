@@ -424,6 +424,18 @@ pub extern "C" fn js_object_get_field_ic_miss(
             let keys_data = (keys as *const u8).add(8) as *const f64;
             let alloc_limit =
                 std::cmp::max((*obj).field_count, crate::object::INLINE_SLOT_FLOOR as u32) as usize;
+            // #6804: stamp the receiver's stable ShapeId at PIC-miss
+            // resolution, so the id-keyed FIELD_CACHE (and the future
+            // id-comparing PIC) see a stamped object from its first read.
+            if (*obj).class_id == 0
+                && !crate::object::shapes::is_shape_id((*obj).parent_class_id)
+                && !crate::regex::regex_header_has_magic(obj as *const crate::regex::RegExpHeader)
+            {
+                let id = crate::object::shapes::shape_id_for_keys_ensure(keys, key_count as u32);
+                if id != 0 {
+                    (*(obj as *mut ObjectHeader)).parent_class_id = id;
+                }
+            }
             for i in 0..key_count {
                 let k_bits = (*keys_data.add(i)).to_bits();
                 let k_ptr = (k_bits & 0x0000_FFFF_FFFF_FFFF) as *const crate::StringHeader;
@@ -447,16 +459,24 @@ pub extern "C" fn js_object_get_field_ic_miss(
                     // ~900k times per run (40% inclusive samples per
                     // perfcomp.profile).
                     //
-                    // #6759 C3c: only prime the cache for SHAPE-SHARED keys
-                    // arrays (literal shapes, class-keys arrays — both
-                    // shape-cache-resident, process-rooted, address-stable).
-                    // An OWNED keys array can die and have its address
-                    // recycled under a DIFFERENT shape, and this compare is
-                    // the one unvalidated fast path in the system — a stale
-                    // hit reads the wrong slot. Owned/wide receivers are
-                    // served by the validated, shape-id-keyed FIELD_CACHE
-                    // instead.
-                    if keys_cacheable_for_pic(keys) {
+                    // #6804: a stamped plain receiver primes an ID token
+                    // (`stamp | PIC_ID_TOKEN_BIT`, matching the emitted
+                    // PIC's discriminated compare). Ids are never reused,
+                    // so id tokens are immune to the address-recycling ABA
+                    // that keys-pointer tokens have — which also makes
+                    // OWNED keys arrays safely cacheable again for plain
+                    // objects. #6759 C3c: keys-POINTER tokens stay
+                    // restricted to SHAPE-SHARED arrays (literal shapes,
+                    // class-keys arrays — shape-cache-resident,
+                    // process-rooted, address-stable), because that compare
+                    // is unvalidated and a recycled owned-array address
+                    // would read the wrong slot.
+                    let stamp = (*obj).parent_class_id;
+                    if (*obj).class_id == 0 && crate::object::shapes::is_shape_id(stamp) {
+                        (*cache)[0] =
+                            (stamp as u64 | crate::object::shapes::PIC_ID_TOKEN_BIT) as i64;
+                        (*cache)[1] = i as i64;
+                    } else if keys_cacheable_for_pic(keys) {
                         (*cache)[0] = keys as i64;
                         (*cache)[1] = i as i64;
                     }

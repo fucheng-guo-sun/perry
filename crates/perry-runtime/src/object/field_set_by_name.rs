@@ -1336,6 +1336,14 @@ pub extern "C" fn js_object_set_field_by_name(
             // fast path above instead of allocating a fresh 4-elem
             // keys_array here.
             transition_cache_insert(0, interned_key, new_keys as usize, 0);
+            // #6804: birth-stamp the new dynamic shape (once per shape
+            // birth — the transition edge above serves the siblings).
+            if (*obj).class_id == 0 {
+                let id = super::shapes::shape_id_for_keys_ensure(new_keys, 1);
+                if id != 0 {
+                    (*obj).parent_class_id = id;
+                }
+            }
             return;
         }
 

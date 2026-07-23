@@ -258,8 +258,9 @@ pub(crate) struct ObjectHotTables {
     /// and keys_array == null.
     pub(crate) shape_inline_cache:
         std::cell::UnsafeCell<[ShapeCacheEntry; SHAPE_INLINE_CACHE_SIZE]>,
-    /// Overflow map for shape_ids that collide in the inline cache.
-    pub(crate) shape_cache_overflow: RefCell<HashMap<u32, *mut ArrayHeader>>,
+    /// Overflow map for shape_ids that collide in the inline cache. Values
+    /// are `(keys_array, runtime_shape_id)` — see [`ShapeCacheEntry`].
+    pub(crate) shape_cache_overflow: RefCell<HashMap<u32, (*mut ArrayHeader, u32)>>,
     /// Per-thread shape-transition cache for the dynamic-key write path;
     /// see the doc block above `with_transition_cache`. HEAP-allocated
     /// (`Box`) — oversized inline storage overflowed the arm64_32 ILP32
@@ -276,6 +277,7 @@ impl ObjectHotTables {
             shape_inline_cache: std::cell::UnsafeCell::new(
                 [ShapeCacheEntry {
                     shape_id: 0,
+                    runtime_shape_id: 0,
                     keys_array: std::ptr::null_mut(),
                 }; SHAPE_INLINE_CACHE_SIZE],
             ),
@@ -650,6 +652,12 @@ const SHAPE_INLINE_CACHE_SIZE: usize = 256;
 #[derive(Clone, Copy)]
 pub(crate) struct ShapeCacheEntry {
     shape_id: u32,
+    /// #6804: the RUNTIME ShapeId (`shapes::shape_id_for_keys_ensure`) of
+    /// `keys_array`, computed once at insert so the literal-allocation path
+    /// can stamp newborn plain objects without a per-allocation table
+    /// probe. Distinct from `shape_id`, which is the CODEGEN packed-keys
+    /// hash used as this cache's lookup key.
+    runtime_shape_id: u32,
     keys_array: *mut ArrayHeader,
 }
 
@@ -675,13 +683,20 @@ thread_local! {
 /// Hot-path: ~3 ALU ops + 1 load + 1 cmp + 1 branch (no RefCell, no HashMap).
 #[inline(always)]
 fn shape_cache_get(shape_id: u32) -> *mut ArrayHeader {
+    shape_cache_get_with_id(shape_id).0
+}
+
+/// #6804: `shape_cache_get` plus the keys array's RUNTIME ShapeId (0 on
+/// miss), so the literal-allocation birth-stamp costs no extra probe.
+#[inline(always)]
+fn shape_cache_get_with_id(shape_id: u32) -> (*mut ArrayHeader, u32) {
     let st = crate::state::state();
     let slot = (shape_id as usize) & (SHAPE_INLINE_CACHE_SIZE - 1);
     // Safety: the state is per-thread by construction; the UnsafeCell
     // allows zero-overhead reads on the hot path.
     let entry = unsafe { (*st.object_hot.shape_inline_cache.get())[slot] };
     if entry.shape_id == shape_id {
-        return entry.keys_array;
+        return (entry.keys_array, entry.runtime_shape_id);
     }
     // Miss — check the overflow map.
     st.object_hot
@@ -689,7 +704,7 @@ fn shape_cache_get(shape_id: u32) -> *mut ArrayHeader {
         .borrow()
         .get(&shape_id)
         .copied()
-        .unwrap_or(std::ptr::null_mut())
+        .unwrap_or((std::ptr::null_mut(), 0))
 }
 
 /// Insert a keys_array into the cache. Updates the inline slot
@@ -711,18 +726,27 @@ fn shape_cache_insert(shape_id: u32, keys_array: *mut ArrayHeader) {
             (*gc_header).gc_flags |= crate::gc::GC_FLAG_SHAPE_SHARED;
         }
     }
+    // #6804: bind the runtime ShapeId once at insert (one probe per shape
+    // BIRTH), so every later allocation of this shape reads it from the
+    // cache entry it already touches.
+    let runtime_shape_id = if keys_array.is_null() {
+        0
+    } else {
+        shapes::shape_id_for_keys_ensure(keys_array, unsafe { (*keys_array).length })
+    };
     let st = crate::state::state();
     let slot = (shape_id as usize) & (SHAPE_INLINE_CACHE_SIZE - 1);
     unsafe {
         // GC_STORE_AUDIT(ROOT): shape_inline_cache entries are scanned by scan_shape_cache_roots_mut.
         let entry = &mut (*st.object_hot.shape_inline_cache.get())[slot];
         entry.shape_id = shape_id;
+        entry.runtime_shape_id = runtime_shape_id;
         crate::gc::runtime_store_root_raw_mut_ptr_slot(&mut entry.keys_array, keys_array);
     }
     st.object_hot
         .shape_cache_overflow
         .borrow_mut()
-        .insert(shape_id, keys_array);
+        .insert(shape_id, (keys_array, runtime_shape_id));
     crate::gc::runtime_write_barrier_root_raw_ptr(keys_array);
 }
 
@@ -1047,7 +1071,7 @@ pub fn scan_shape_cache_roots_mut(visitor: &mut crate::gc::RuntimeRootVisitor<'_
     }
     {
         let mut cache = st.object_hot.shape_cache_overflow.borrow_mut();
-        for arr_ptr in cache.values_mut() {
+        for (arr_ptr, _runtime_shape_id) in cache.values_mut() {
             visitor.visit_raw_mut_ptr_slot(arr_ptr);
         }
     }
@@ -1262,7 +1286,7 @@ pub(crate) fn test_seed_shape_cache_root(shape_id: u32, keys_array: *mut ArrayHe
     {
         let mut cache = st.object_hot.shape_cache_overflow.borrow_mut();
         cache.clear();
-        cache.insert(shape_id, keys_array);
+        cache.insert(shape_id, (keys_array, 0));
     }
     crate::gc::runtime_write_barrier_root_raw_ptr(keys_array);
 }
@@ -1277,7 +1301,7 @@ pub(crate) fn test_shape_cache_root(shape_id: u32) -> (usize, usize) {
         .shape_cache_overflow
         .borrow()
         .get(&shape_id)
-        .map(|ptr| *ptr as usize)
+        .map(|(ptr, _)| *ptr as usize)
         .unwrap_or(0);
     (inline, overflow)
 }

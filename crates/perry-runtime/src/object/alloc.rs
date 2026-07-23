@@ -604,9 +604,9 @@ pub extern "C" fn js_object_alloc_with_shape(
         crate::gc::layout_init_pointer_free(obj_ptr as *mut u8);
     }
 
-    let cached = shape_cache_get(shape_id);
-    let keys_arr = if !cached.is_null() {
-        cached
+    let (cached, cached_runtime_id) = shape_cache_get_with_id(shape_id);
+    let (keys_arr, runtime_shape_id) = if !cached.is_null() {
+        (cached, cached_runtime_id)
     } else {
         let keys_bytes =
             unsafe { std::slice::from_raw_parts(packed_keys, packed_keys_len as usize) };
@@ -633,11 +633,18 @@ pub extern "C" fn js_object_alloc_with_shape(
             }
         }
         shape_cache_insert(shape_id, arr);
-        arr
+        (arr, shape_cache_get_with_id(shape_id).1)
     };
 
     unsafe {
         set_object_keys_array(obj_ptr, keys_arr);
+        // #6804: birth-stamp the runtime ShapeId (see `ShapeCacheEntry`) —
+        // newborn literals carry their stable identity immediately, so
+        // typed_feedback tokens and the id-keyed FIELD_CACHE never see a
+        // pre-stamp window for shape-cached objects.
+        if runtime_shape_id != 0 {
+            (*obj_ptr).parent_class_id = runtime_shape_id;
+        }
     }
 
     obj_ptr
